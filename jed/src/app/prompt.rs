@@ -74,6 +74,13 @@ pub enum Prompt {
         /// `path:line`, as the question names it.
         place: String,
     },
+    /// Withdrawing the user's approval or change request (`Job::Withdraw`): Withdraw / Cancel.
+    ConfirmWithdraw {
+        job: crate::review_write::Job,
+        /// `!7`, as the question names the merge request.
+        what: String,
+        approved: bool,
+    },
     /// "Terminal: Install Shell Integration": the snippet to source, the shell's init file and the
     /// line that sources it; C copies the line, A appends it, Esc closes.
     InstallShellIntegration {
@@ -297,6 +304,14 @@ impl App {
                 }
                 _ if esc || ch == Some('c') => self.close_prompt(),
                 _ => self.prompt = Some(Prompt::ConfirmDeleteComment { job, place }),
+            },
+            Prompt::ConfirmWithdraw { job, what, approved } => match ch {
+                _ if enter || ch == Some('w') => {
+                    self.close_prompt();
+                    self.review_write(job);
+                }
+                _ if esc || ch == Some('c') => self.close_prompt(),
+                _ => self.prompt = Some(Prompt::ConfirmWithdraw { job, what, approved }),
             },
             Prompt::InstallShellIntegration { snippet, init, line } => match ch {
                 Some('c') => {

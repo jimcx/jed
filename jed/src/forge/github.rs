@@ -17,8 +17,9 @@ use serde_json::{Value, json};
 
 use super::http::{Client, clean_line, clean_text, encode_path, encode_segment};
 use super::{
-    Anchor, ApprovalState, BranchRef, Comment, DraftReview, Forge, ForgeError, MergeRequest, MrComments, MrState,
-    RepoRef, Result, ReviewEvent, Side, SubmitOutcome, Thread, Verdict, latest_approvals, review_body,
+    Anchor, Approval, ApprovalState, BranchRef, Comment, DraftReview, Forge, ForgeError, MergeRequest, MrComments,
+    MrState, RepoRef, Result, ReviewEvent, Side, SubmitOutcome, Thread, Verdict, WITHDRAW_MESSAGE,
+    latest_approvals_with_ids, review_body,
 };
 
 /// Stop a GraphQL connection after this many pages of 100 (a malicious server can't loop us).
@@ -454,14 +455,18 @@ impl Forge for GitHub {
         // DISMISSED is a state of its own: it clears its author's verdict.
         let mut verdicts: Vec<&GqlReview> = reviews.iter().collect();
         verdicts.sort_by(|a, b| a.submitted_at.cmp(&b.submitted_at));
-        let approvals = latest_approvals(verdicts.into_iter().map(|r| {
+        let approvals = latest_approvals_with_ids(verdicts.into_iter().map(|r| {
             let state = match r.state.as_deref() {
                 Some("APPROVED") => Verdict::Set(ApprovalState::Approved),
                 Some("CHANGES_REQUESTED") => Verdict::Set(ApprovalState::ChangesRequested),
                 Some("DISMISSED") => Verdict::Clear,
                 _ => Verdict::Keep,
             };
-            (ghost(r.author.as_ref().and_then(|a| a.login.as_ref())), state)
+            (
+                ghost(r.author.as_ref().and_then(|a| a.login.as_ref())),
+                state,
+                r.database_id.map(|i| i.to_string()),
+            )
         }));
         Ok(MrComments {
             threads: threads.into_iter().map(thread).collect(),
@@ -599,6 +604,27 @@ impl Forge for GitHub {
             .delete(&format!("{}/comments/{id}", Self::pulls(repo)))
             .map(|_| ())
     }
+
+    /// Dismisses the review behind the verdict: `PUT /repos/{o}/{r}/pulls/{n}/reviews/{id}/dismissals`
+    /// with `{"message": …, "event": "DISMISS"}` (the id is the review's `databaseId`). Works on
+    /// approvals and change requests; the token needs write access to the repository (a plain
+    /// reader gets 403/404, and a branch protection may refuse: the message is passed on).
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn withdraw(&self, repo: &RepoRef, number: u64, approval: &Approval) -> Result<()> {
+        let id = approval
+            .id
+            .as_deref()
+            .ok_or_else(|| ForgeError::Config("the review's id is unknown".into()))?;
+        let id = numeric_id(id)?;
+        let body = serde_json::json!({ "message": WITHDRAW_MESSAGE, "event": "DISMISS" }).to_string();
+        self.client
+            .put(
+                &format!("{}/{number}/reviews/{id}/dismissals", Self::pulls(repo)),
+                &body,
+            )
+            .map(|_| ())
+    }
 }
 
 #[cfg(test)]
@@ -636,6 +662,35 @@ mod tests {
             gh.delete_conversation_comment(&repo, "../x"),
             Err(ForgeError::Parse(_))
         ));
+    }
+
+    #[test]
+    fn review_links_b_withdraw_puts_a_dismissal_by_database_id() {
+        let (server, gh, repo) = setup(vec![
+            ("PUT /api/v3/repos/o/r/pulls/7/reviews/31/dismissals", Reply::json("{}")),
+            (
+                "PUT /api/v3/repos/o/r/pulls/7/reviews/32/dismissals",
+                Reply::status(403),
+            ),
+        ]);
+        let ok = Approval {
+            author: "me".into(),
+            state: ApprovalState::ChangesRequested,
+            id: Some("31".into()),
+        };
+        gh.withdraw(&repo, 7, &ok).unwrap();
+        let reqs = server.requests();
+        assert_eq!(reqs[0].method, "PUT");
+        let body: serde_json::Value = serde_json::from_str(&reqs[0].body).unwrap();
+        assert_eq!(body["event"], "DISMISS");
+        assert_eq!(body["message"], crate::forge::WITHDRAW_MESSAGE);
+        let refused = Approval {
+            id: Some("32".into()),
+            ..ok.clone()
+        };
+        assert!(gh.withdraw(&repo, 7, &refused).unwrap_err().to_string().contains("403"));
+        assert!(gh.withdraw(&repo, 7, &Approval { id: None, ..ok }).is_err());
+        assert_eq!(server.requests().len(), 2);
     }
 
     fn setup(routes: Vec<(&str, Reply)>) -> (FakeServer, GitHub, RepoRef) {
@@ -778,7 +833,8 @@ mod tests {
             all.approvals,
             [crate::forge::Approval {
                 author: "cy".into(),
-                state: ApprovalState::Approved
+                state: ApprovalState::Approved,
+                id: Some("11".into()),
             }]
         );
         assert_eq!(all.threads.len(), 2);

@@ -1591,6 +1591,7 @@ impl App {
             Command::ReviewOpenThread => self.review_open_thread(),
             Command::ReviewOpenConversation => self.review_open_conversation(None),
             Command::ReviewOpenOnForge => self.review_link(true),
+            Command::ReviewWithdraw => self.review_withdraw(),
             Command::ReviewCopyLink => self.review_link(false),
             Command::ReviewCommentOnMergeRequest => self.review_comment_on_mr(),
             Command::Review(c) => self.review_command(c),

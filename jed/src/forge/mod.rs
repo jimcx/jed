@@ -164,7 +164,13 @@ pub enum ApprovalState {
 pub struct Approval {
     pub author: String,
     pub state: ApprovalState,
+    /// The review that made the verdict (Gitea's and GitHub's numeric id, which `Forge::withdraw`
+    /// dismisses it by); `None` on GitLab, whose approvals have none.
+    pub id: Option<String>,
 }
+
+/// The reason sent when a verdict is withdrawn (the forges ask for one when dismissing a review).
+pub const WITHDRAW_MESSAGE: &str = "Withdrawn by its author";
 
 /// What one review does to its author's standing verdict.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,14 +186,21 @@ pub enum Verdict {
 
 /// Folds reviews, oldest first, into each author's latest verdict.
 pub fn latest_approvals(reviews: impl IntoIterator<Item = (String, Verdict)>) -> Vec<Approval> {
+    latest_approvals_with_ids(reviews.into_iter().map(|(a, v)| (a, v, None)))
+}
+
+/// [`latest_approvals`] for reviews that have ids (the third field).
+pub fn latest_approvals_with_ids(
+    reviews: impl IntoIterator<Item = (String, Verdict, Option<String>)>,
+) -> Vec<Approval> {
     let mut out: Vec<Approval> = Vec::new();
-    for (author, verdict) in reviews {
+    for (author, verdict, id) in reviews {
         if verdict == Verdict::Keep {
             continue;
         }
         out.retain(|a| a.author != author);
         if let Verdict::Set(state) = verdict {
-            out.push(Approval { author, state });
+            out.push(Approval { author, state, id });
         }
     }
     out
@@ -336,6 +349,10 @@ pub trait Forge: Send + Sync {
         lines: (u32, u32),
     ) -> Result<()>;
     fn delete_comment(&self, repo: &RepoRef, comment_id: &str) -> Result<()>;
+    /// Withdraws the user's verdict (`approval`, from `MrComments::approvals`): dismisses the
+    /// review that made it (GitHub, Gitea) or unapproves (GitLab). An error where the forge
+    /// refuses or has no way to (its message is shown as any failed write's).
+    fn withdraw(&self, repo: &RepoRef, number: u64, approval: &Approval) -> Result<()>;
     /// A plain comment on the merge request's conversation (not on a line); posted at once.
     fn comment(&self, repo: &RepoRef, number: u64, body: &str) -> Result<()>;
     /// Edits a comment of the conversation (`MrComments::conversation`): the endpoint of a plain

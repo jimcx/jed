@@ -49,7 +49,10 @@ pub enum ReviewSpot {
     /// The PENDING header or its buttons.
     Pending,
     /// The summary or anywhere else: the merge request itself.
-    Panel,
+    Panel {
+        /// The approval line names the user: Withdraw My Review applies.
+        withdraw: bool,
+    },
 }
 
 fn review_items(spot: ReviewSpot) -> Vec<MenuItem> {
@@ -110,7 +113,7 @@ fn review_items(spot: ReviewSpot) -> Vec<MenuItem> {
             MenuItem::new("Delete Draft", Command::ReviewDeleteDraft),
         ],
         ReviewSpot::Pending => submit(),
-        ReviewSpot::Panel => {
+        ReviewSpot::Panel { withdraw } => {
             let mut items = vec![
                 MenuItem::new("Refresh", Command::ReviewRefresh),
                 MenuItem::new("Switch Merge Request", Command::ReviewSwitch),
@@ -121,6 +124,9 @@ fn review_items(spot: ReviewSpot) -> Vec<MenuItem> {
             items.extend(links());
             items.push(MenuItem::Separator);
             items.extend(submit());
+            if withdraw {
+                items.push(MenuItem::new("Withdraw My Review", Command::ReviewWithdraw));
+            }
             items
         }
     }

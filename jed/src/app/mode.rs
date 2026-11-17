@@ -64,6 +64,7 @@ impl Mode {
                     | Command::ReviewOpenThread
                     | Command::ReviewOpenConversation
                     | Command::ReviewOpenOnForge
+                    | Command::ReviewWithdraw
                     | Command::ReviewCopyLink
                     | Command::ReviewCommentOnMergeRequest
                     | Command::Review(_)

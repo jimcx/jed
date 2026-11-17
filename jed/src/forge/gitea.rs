@@ -13,8 +13,9 @@ use serde::Deserialize;
 
 use super::http::{Client, clean_line, clean_text, encode_path, encode_segment};
 use super::{
-    Anchor, ApprovalState, BranchRef, Comment, DraftReview, Forge, ForgeError, MergeRequest, MrComments, MrState,
-    RepoRef, Result, ReviewEvent, Side, SubmitOutcome, Thread, Verdict, latest_approvals, review_body,
+    Anchor, Approval, ApprovalState, BranchRef, Comment, DraftReview, Forge, ForgeError, MergeRequest, MrComments,
+    MrState, RepoRef, Result, ReviewEvent, Side, SubmitOutcome, Thread, Verdict, WITHDRAW_MESSAGE,
+    latest_approvals_with_ids, review_body,
 };
 
 pub struct Gitea {
@@ -365,7 +366,7 @@ impl Forge for Gitea {
         // review clears its author's verdict.
         let mut verdicts: Vec<&Review> = reviews.iter().collect();
         verdicts.sort_by(|a, b| a.submitted_at.cmp(&b.submitted_at));
-        let approvals = latest_approvals(verdicts.into_iter().map(|r| {
+        let approvals = latest_approvals_with_ids(verdicts.into_iter().map(|r| {
             let state = match r.state.as_str() {
                 _ if r.dismissed => Verdict::Clear,
                 "APPROVED" => Verdict::Set(ApprovalState::Approved),
@@ -373,7 +374,7 @@ impl Forge for Gitea {
                 _ => Verdict::Keep,
             };
             let author = login(&r.user);
-            (author, state)
+            (author, state, Some(r.id.to_string()))
         }));
         Ok(MrComments {
             threads: threads(line_comments),
@@ -467,6 +468,25 @@ impl Forge for Gitea {
         self.client.delete(&url).map(|_| ())
     }
 
+    /// Dismisses the review behind the verdict: `POST /repos/{o}/{r}/pulls/{n}/reviews/{id}/dismissals`
+    /// with `{"message": …}` (swagger `DismissPullReview`). Approvals and change requests alike;
+    /// the server answers 403 unless the caller is a repository admin (its message is passed on).
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn withdraw(&self, repo: &RepoRef, number: u64, approval: &Approval) -> Result<()> {
+        let id = approval
+            .id
+            .as_deref()
+            .ok_or_else(|| ForgeError::Config("the review's id is unknown".into()))?;
+        let url = format!(
+            "{}/{number}/reviews/{}/dismissals",
+            Self::pulls(repo),
+            encode_segment(id)
+        );
+        let body = serde_json::json!({ "message": WITHDRAW_MESSAGE }).to_string();
+        self.client.post(&url, &body).map(|_| ())
+    }
+
     /// Blocking: call from spawn_blocking.
     fn comment(&self, repo: &RepoRef, number: u64, body: &str) -> Result<()> {
         let url = format!("{}/{number}/comments", Self::issues(repo));
@@ -531,6 +551,41 @@ mod tests {
         assert_eq!(reqs[0].body, r#"{"body":"hello"}"#);
         assert_eq!(reqs[1].body, r#"{"body":"new"}"#);
         assert_eq!(reqs[2].method, "DELETE");
+    }
+
+    #[test]
+    fn review_links_b_withdraw_posts_a_dismissal_with_a_message() {
+        let (server, gitea, repo) = setup(vec![
+            (
+                "POST /api/v1/repos/o/r/pulls/7/reviews/31/dismissals",
+                Reply::json("{}"),
+            ),
+            (
+                "POST /api/v1/repos/o/r/pulls/7/reviews/32/dismissals",
+                Reply::status(403),
+            ),
+        ]);
+        let ok = Approval {
+            author: "me".into(),
+            state: ApprovalState::Approved,
+            id: Some("31".into()),
+        };
+        gitea.withdraw(&repo, 7, &ok).unwrap();
+        let reqs = server.requests();
+        assert_eq!(reqs[0].method, "POST");
+        assert_eq!(
+            reqs[0].body,
+            format!(r#"{{"message":"{}"}}"#, crate::forge::WITHDRAW_MESSAGE)
+        );
+        let refused = Approval {
+            id: Some("32".into()),
+            ..ok.clone()
+        };
+        let err = gitea.withdraw(&repo, 7, &refused).unwrap_err().to_string();
+        assert!(err.contains("403"), "{err}");
+        let no_id = Approval { id: None, ..ok };
+        assert!(gitea.withdraw(&repo, 7, &no_id).is_err());
+        assert_eq!(server.requests().len(), 2, "no id: nothing sent");
     }
 
     fn setup(routes: Vec<(&str, Reply)>) -> (FakeServer, Gitea, RepoRef) {
@@ -777,6 +832,7 @@ mod tests {
         let got: Vec<(&str, ApprovalState)> = a.iter().map(|a| (a.author.as_str(), a.state)).collect();
         // bob's dismissed approval leaves nothing; sam's stale approval still stands.
         assert_eq!(got, [("sam", ApprovalState::Approved)]);
+        assert!(a[0].id.is_some(), "the review's id is kept, for withdrawing it");
     }
 
     #[test]

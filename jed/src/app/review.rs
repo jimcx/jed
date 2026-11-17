@@ -805,7 +805,9 @@ impl App {
     /// What is at `at` in the panel, that row selected and given the keys.
     fn review_spot(&mut self, at: (u16, u16)) -> ReviewSpot {
         let Some(hit) = self.hits.review.clone() else {
-            return ReviewSpot::Panel;
+            return ReviewSpot::Panel {
+                withdraw: self.can_withdraw_own(),
+            };
         };
         let p = Position { x: at.0, y: at.1 };
         if hit.list.contains(p) && hit.rows.get((p.y - hit.list.y) as usize).is_some() {
@@ -835,7 +837,9 @@ impl App {
         if hit.pending_header.contains(p) || hit.pending_buttons.iter().any(|b| b.0.contains(p)) {
             return ReviewSpot::Pending;
         }
-        ReviewSpot::Panel
+        ReviewSpot::Panel {
+            withdraw: self.can_withdraw_own(),
+        }
     }
 
     /// CONVERSATIONS row `row`: a thread (with whether the user wrote in it and whether its

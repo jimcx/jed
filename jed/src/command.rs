@@ -442,6 +442,7 @@ pub enum Command {
     /// "Code Review: Open Conversation" (unbound): the merge request's conversation tab (its description and comments).
     ReviewOpenConversation,
     ReviewOpenOnForge,
+    ReviewWithdraw,
     ReviewCopyLink,
     ReviewCommentOnMergeRequest,
     /// The Code Review panel's list (`Context::Review`).
@@ -1342,6 +1343,7 @@ impl Command {
             Command::ReviewOpenThread,
             Command::ReviewOpenConversation,
             Command::ReviewOpenOnForge,
+            Command::ReviewWithdraw,
             Command::ReviewCopyLink,
             Command::ReviewCommentOnMergeRequest,
         ]);
@@ -1763,6 +1765,7 @@ impl Command {
             Command::ReviewOpenThread => "review.openThread".into(),
             Command::ReviewOpenConversation => "review.openConversation".into(),
             Command::ReviewOpenOnForge => "review.openOnForge".into(),
+            Command::ReviewWithdraw => "review.withdraw".into(),
             Command::ReviewCopyLink => "review.copyLink".into(),
             Command::ReviewCommentOnMergeRequest => "review.commentOnMergeRequest".into(),
             Command::Review(c) => format!(
@@ -2205,6 +2208,7 @@ impl Command {
             Command::ReviewOpenThread => "Code Review: Open Thread",
             Command::ReviewOpenConversation => "Code Review: Open Conversation",
             Command::ReviewOpenOnForge => "Code Review: Open on Forge",
+            Command::ReviewWithdraw => "Code Review: Withdraw My Review",
             Command::ReviewCopyLink => "Code Review: Copy Link",
             Command::ReviewCommentOnMergeRequest => "Code Review: Comment on Merge Request",
             Command::Review(c) => match c {
@@ -2440,6 +2444,7 @@ mod tests {
             Command::ReviewCommentOnMergeRequest => 183,
             Command::ReviewOpenOnForge => 184,
             Command::ReviewCopyLink => 185,
+            Command::ReviewWithdraw => 186,
             Command::Review(_) => 154,
             Command::ToggleToolTrace => 92,
             Command::RestartServer => 93,

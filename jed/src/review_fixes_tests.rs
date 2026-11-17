@@ -210,6 +210,7 @@ mod approvals {
             .map(|(n, s)| Approval {
                 author: n.into(),
                 state: s,
+                id: None,
             })
             .to_vec();
         assert_eq!(got, want);

@@ -4,6 +4,10 @@
 //! it) on the review's own host, and anything else (another host, plain http, no URL) says "The
 //! forge sent no usable link" and neither opens nor copies. The pure check is unit-tested in
 //! `forge/url.rs`.
+//!
+//! review_links-b, Withdraw My Review (`review_links_b_*`): on the Gitea fake, the command asks first,
+//! then dismisses the user's review and refreshes; Cancel sends nothing; with no verdict of the
+//! user's it says so; a refusal's message is shown; the panel's menu lists the item only then.
 
 use crate::app::App;
 use crate::command::Command;
@@ -246,4 +250,178 @@ async fn review_links_a_the_selected_row_beats_the_caret() {
     let row = review(&mut app).conv_len() - 1;
     select_row(&mut app, row);
     assert_eq!(copy_link(&mut app), sel);
+}
+
+mod withdraw {
+    use super::*;
+    use crate::app::Prompt;
+    use crate::forge::fake::Reply;
+    use crate::mr_review_tests::threads::{loaded_app_reviews, loaded_app_with};
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    const REVIEWS: &str = r#"[{"id":1,"user":{"login":"bob"},"body":"","state":"COMMENT","comments_count":9,
+        "submitted_at":"2026-01-02T10:00:00Z","html_url":"u"},
+        {"id":5,"user":{"login":"Sam"},"body":"","state":"APPROVED",
+        "submitted_at":"2026-01-03T10:00:00Z","html_url":"u"}]"#;
+    const DISMISS: &str = "/api/v1/repos/alice/project/pulls/7/reviews/5/dismissals";
+
+    fn dismissals(server: &crate::forge::fake::FakeServer) -> Vec<crate::forge::fake::Request> {
+        server.requests().into_iter().filter(|r| r.target == DISMISS).collect()
+    }
+
+    fn reads(server: &crate::forge::fake::FakeServer) -> usize {
+        server.requests().iter().filter(|r| r.method == "GET").count()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_links_b_withdraw_asks_then_dismisses_the_review_and_refreshes() {
+        let dir = tempfile::tempdir().unwrap();
+        let extra = vec![(format!("POST {DISMISS}"), Reply::json("{}"))];
+        let (mut app, server) = loaded_app_with(dir.path(), None, Some(REVIEWS), None, extra).await;
+        app.review.user = Some("sam".into());
+        app.test_execute(Command::ReviewWithdraw);
+        assert!(matches!(
+            app.prompt,
+            Some(Prompt::ConfirmWithdraw { approved: true, .. })
+        ));
+        // Declined: nothing is sent.
+        app.press(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.prompt.is_none());
+        assert!(dismissals(&server).is_empty());
+        let before = reads(&server);
+        app.test_execute(Command::ReviewWithdraw);
+        app.press(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.settle(|_| !dismissals(&server).is_empty()).await);
+        let sent = &dismissals(&server)[0];
+        assert_eq!(sent.method, "POST");
+        let body: serde_json::Value = serde_json::from_str(&sent.body).unwrap();
+        assert_eq!(body["message"], crate::forge::WITHDRAW_MESSAGE);
+        assert!(app.settle(|a| !a.review.writing && !a.review.loading).await);
+        assert!(reads(&server) > before, "the merge request is read again");
+        assert_eq!(message(&app), "Review withdrawn");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_links_b_a_refusal_shows_the_forges_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let extra = vec![(format!("POST {DISMISS}"), Reply::status(403))];
+        let (mut app, server) = loaded_app_with(dir.path(), None, Some(REVIEWS), None, extra).await;
+        app.review.user = Some("sam".into());
+        app.test_execute(Command::ReviewWithdraw);
+        app.press(KeyCode::Char('w'), KeyModifiers::NONE);
+        assert!(app.settle(|a| a.review.error.is_some()).await);
+        assert_eq!(dismissals(&server).len(), 1);
+        let err = app.review.error.clone().unwrap();
+        assert!(err.contains("refused") && err.contains("403"), "{err}");
+    }
+
+    /// GitLab: the user's approval is unapproved after the prompt; their change request is refused
+    /// before any prompt, and the panel menu does not offer it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_links_b_gitlab_unapproves_and_refuses_a_change_request_before_asking() {
+        use crate::mr_review_tests::gitlab::{API, boot, server_with_routes};
+        use crate::mr_review_tests::write::repo;
+        let unapprove = format!("{API}/merge_requests/7/unapprove");
+        let posts = |server: &crate::forge::fake::FakeServer| {
+            server.requests().into_iter().filter(|r| r.target == unapprove).count()
+        };
+        let routes = || {
+            vec![
+                (
+                    format!("{API}/merge_requests/7/approvals"),
+                    Reply::json(r#"{"approved_by":[{"user":{"username":"sam"}}]}"#),
+                ),
+                (
+                    format!("{API}/merge_requests/7/reviewers"),
+                    Reply::json(
+                        r#"[{"user":{"username":"bob"},"state":"requested_changes","created_at":"2026-01-01T00:00:00Z"}]"#,
+                    ),
+                ),
+                (format!("POST {unapprove}"), Reply::json("{}")),
+            ]
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let (root, head, main) = repo(dir.path());
+        let server = server_with_routes(&main, &head, Reply::json("{}"), "bob", "remark", routes());
+        let mut app = boot(&root, &server, None).await;
+        app.review.user = Some("bob".into());
+        app.test_execute(Command::ReviewWithdraw);
+        assert!(app.prompt.is_none(), "refused before asking");
+        assert!(
+            message(&app).contains("GitLab cannot withdraw a change request"),
+            "{}",
+            message(&app)
+        );
+        assert_eq!(posts(&server), 0);
+        app.review.user = Some("sam".into());
+        app.test_execute(Command::ReviewWithdraw);
+        assert!(matches!(
+            app.prompt,
+            Some(Prompt::ConfirmWithdraw { approved: true, .. })
+        ));
+        app.press(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(posts(&server), 0, "Cancel sends nothing");
+        app.test_execute(Command::ReviewWithdraw);
+        app.press(KeyCode::Char('w'), KeyModifiers::NONE);
+        assert!(app.settle(|_| posts(&server) == 1).await);
+        assert!(app.settle(|a| !a.review.writing).await);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_links_b_a_withdrawn_verdict_leaves_no_menu_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let extra = vec![(format!("POST {DISMISS}"), Reply::json("{}"))];
+        let (mut app, _server) = loaded_app_with(dir.path(), None, Some(REVIEWS), None, extra).await;
+        app.review.user = Some("sam".into());
+        app.test_execute(Command::ReviewWithdraw);
+        assert!(app.prompt.is_some());
+        app.press(KeyCode::Esc, KeyModifiers::NONE);
+        // The lookup after the withdraw no longer lists the approval.
+        let mut review = app.review.review().unwrap().clone();
+        review.approvals.retain(|a| a.author != "Sam");
+        app.review.content = crate::review::Content::Loaded(Box::new(review));
+        app.test_execute(Command::ReviewWithdraw);
+        assert_eq!(message(&app), "You have no approval or change request to withdraw");
+        assert!(app.prompt.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_links_b_without_a_verdict_of_the_users_nothing_is_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, server) = loaded_app_reviews(dir.path(), None, Some(REVIEWS)).await;
+        app.test_execute(Command::ReviewWithdraw);
+        assert_eq!(message(&app), "The forge hasn't said who you are yet");
+        app.review.user = Some("bob".into());
+        app.test_execute(Command::ReviewWithdraw);
+        assert_eq!(message(&app), "You have no approval or change request to withdraw");
+        assert!(app.prompt.is_none());
+        assert!(dismissals(&server).is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_links_b_the_panel_menu_lists_it_only_for_the_users_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _server) = loaded_app_reviews(dir.path(), None, Some(REVIEWS)).await;
+        let hit = app.hits.review.clone().unwrap();
+        let right_click = |app: &mut App| {
+            app.context_menu = None;
+            app.mouse(
+                crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Right),
+                hit.summary.x + 2,
+                hit.summary.y,
+            );
+            let menu = app.context_menu.as_ref().expect("a menu is open");
+            menu.items.iter().any(|i| {
+                matches!(
+                    i,
+                    crate::context_menu::MenuItem::Item { label, command: Command::ReviewWithdraw, .. }
+                        if label == "Withdraw My Review"
+                )
+            })
+        };
+        app.review.user = Some("bob".into());
+        assert!(!right_click(&mut app));
+        app.review.user = Some("sam".into());
+        assert!(right_click(&mut app));
+    }
 }

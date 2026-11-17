@@ -192,6 +192,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) -> Option<R
             lines.push(Line::raw(""));
             lines.push(buttons(&[("D", "elete"), ("C", "ancel")]));
         }
+        Prompt::ConfirmWithdraw { what, approved, .. } => {
+            let verdict = if *approved { "approval" } else { "change request" };
+            lines.push(Line::raw(format!(" Withdraw your {verdict} of {what}?")));
+            lines.push(Line::raw(
+                " The forge dismisses your review; the merge request is not changed.",
+            ));
+            lines.push(Line::raw(""));
+            lines.push(buttons(&[("W", "ithdraw"), ("C", "ancel")]));
+        }
         Prompt::InstallShellIntegration { snippet, init, line } => {
             let home = crate::paths::home();
             let short = |p: &std::path::Path| match p.strip_prefix(&home) {

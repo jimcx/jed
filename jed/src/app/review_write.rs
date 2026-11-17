@@ -339,6 +339,50 @@ impl App {
         }
     }
 
+    /// The user's standing verdict on the open merge request, if the approval line names them.
+    pub(super) fn own_verdict(&self) -> Option<forge::Approval> {
+        let user = self.review.user.as_deref()?;
+        self.review
+            .review()?
+            .approvals
+            .iter()
+            .find(|a| a.author.eq_ignore_ascii_case(user))
+            .cloned()
+    }
+
+    /// Whether the forge has a way to withdraw `approval` (GitLab has none for a change request).
+    fn can_withdraw(&self, approval: &forge::Approval) -> bool {
+        let gitlab = self.review.review().is_some_and(|r| r.kind == forge::Kind::GitLab);
+        !(gitlab && approval.state == forge::ApprovalState::ChangesRequested)
+    }
+
+    /// The panel menu offers Withdraw My Review: the user has a verdict the forge can withdraw.
+    pub(super) fn can_withdraw_own(&self) -> bool {
+        self.own_verdict().is_some_and(|a| self.can_withdraw(&a))
+    }
+
+    /// "Code Review: Withdraw My Review": asks first, then `Job::Withdraw` (a refresh follows).
+    pub(super) fn review_withdraw(&mut self) {
+        let Some(review) = self.review.review() else {
+            return self.notify(Level::Info, "No merge request to show".into());
+        };
+        let number = review.mr.number;
+        if self.review.user.is_none() {
+            return self.notify(Level::Info, "The forge hasn't said who you are yet".into());
+        }
+        let Some(approval) = self.own_verdict() else {
+            return self.notify(Level::Info, "You have no approval or change request to withdraw".into());
+        };
+        if !self.can_withdraw(&approval) {
+            return self.notify(Level::Info, forge::gitlab::NO_WITHDRAW_CHANGES.into());
+        }
+        self.prompt = Some(Prompt::ConfirmWithdraw {
+            what: format!("!{number}"),
+            approved: approval.state == forge::ApprovalState::Approved,
+            job: Job::Withdraw { number, approval },
+        });
+    }
+
     pub(super) fn review_need_target(&mut self) -> Option<ThreadRow> {
         let row = self.review_target();
         if row.is_none() {

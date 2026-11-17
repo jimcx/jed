@@ -60,6 +60,11 @@ pub enum Job {
     DeleteConversation {
         comment_id: String,
     },
+    /// Withdraws the user's verdict.
+    Withdraw {
+        number: u64,
+        approval: forge::Approval,
+    },
 }
 
 /// A reply draft as Submit Review posts it.
@@ -87,6 +92,7 @@ impl Job {
             Job::Delete { .. } | Job::DeleteConversation { .. } => "Comment deleted",
             Job::Comment { .. } => "Comment posted",
             Job::EditConversation { .. } => "Comment edited",
+            Job::Withdraw { .. } => "Review withdrawn",
         }
     }
 
@@ -100,6 +106,7 @@ impl Job {
             Job::Delete { .. } | Job::DeleteConversation { .. } => "deleting the comment",
             Job::Comment { .. } => "commenting",
             Job::EditConversation { .. } => "editing the comment",
+            Job::Withdraw { .. } => "withdrawing the review",
         }
     }
 }
@@ -213,6 +220,7 @@ pub fn run(req: Request, job: Job) -> Done {
         Job::Comment { number, body } => api.comment(repo, *number, body),
         Job::EditConversation { comment_id, body } => api.edit_conversation_comment(repo, comment_id, body),
         Job::DeleteConversation { comment_id } => api.delete_conversation_comment(repo, comment_id),
+        Job::Withdraw { number, approval } => api.withdraw(repo, *number, approval),
     };
     match result {
         Ok(()) => {

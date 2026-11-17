@@ -20,9 +20,13 @@ use serde_json::{Value, json};
 
 use super::http::{Client, clean_line, clean_text, encode_segment};
 use super::{
-    Anchor, ApprovalState, BranchRef, Comment, DraftReview, Forge, ForgeError, MergeRequest, MrComments, MrState,
-    RepoRef, Result, ReviewEvent, Side, SubmitOutcome, Thread, Verdict, latest_approvals,
+    Anchor, Approval, ApprovalState, BranchRef, Comment, DraftReview, Forge, ForgeError, MergeRequest, MrComments,
+    MrState, RepoRef, Result, ReviewEvent, Side, SubmitOutcome, Thread, Verdict, latest_approvals,
 };
+
+/// Why a change request can't be withdrawn (the app says it before asking, the adapter again).
+pub const NO_WITHDRAW_CHANGES: &str =
+    "GitLab cannot withdraw a change request: approve the merge request, or ask the author to re-request your review";
 
 pub struct GitLab {
     client: Client,
@@ -738,6 +742,20 @@ impl Forge for GitLab {
         self.client.delete(&note_path(repo, comment_id)?).map(|_| ())
     }
 
+    /// `POST /projects/:id/merge_requests/:iid/unapprove` (no body) removes the user's approval.
+    /// GitLab has no call that withdraws a "requested changes" state (it is replaced by approving,
+    /// or reset when the author re-requests the review), so that case is refused here with a
+    /// message; an unapprove the user may not do answers 401/403/404.
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn withdraw(&self, repo: &RepoRef, number: u64, approval: &Approval) -> Result<()> {
+        if approval.state == ApprovalState::ChangesRequested {
+            return Err(ForgeError::Config(NO_WITHDRAW_CHANGES.into()));
+        }
+        let url = format!("{}/unapprove", Self::mr_path(repo, number));
+        self.client.post(&url, "").map(|_| ())
+    }
+
     /// Blocking: call from spawn_blocking.
     fn comment(&self, repo: &RepoRef, number: u64, body: &str) -> Result<()> {
         let url = format!("{}/notes", Self::mr_path(repo, number));
@@ -814,6 +832,35 @@ mod tests {
         assert_eq!(reqs[0].body, r#"{"body":"hello"}"#);
         assert_eq!(reqs[1].body, r#"{"body":"```suggestion\nx\n```"}"#);
         assert_eq!(reqs[2].method, "DELETE");
+    }
+
+    #[test]
+    fn review_links_b_withdraw_unapproves_and_refuses_a_change_request() {
+        let (server, gl, repo) = setup(vec![
+            (
+                &format!("POST {}", route("/merge_requests/7/unapprove")),
+                Reply::status(201).with_body("{}"),
+            ),
+            (
+                &format!("POST {}", route("/merge_requests/8/unapprove")),
+                Reply::status(403),
+            ),
+        ]);
+        let ok = Approval {
+            author: "me".into(),
+            state: ApprovalState::Approved,
+            id: None,
+        };
+        gl.withdraw(&repo, 7, &ok).unwrap();
+        assert_eq!(server.requests()[0].method, "POST");
+        assert!(gl.withdraw(&repo, 8, &ok).unwrap_err().to_string().contains("403"));
+        let changes = Approval {
+            state: ApprovalState::ChangesRequested,
+            ..ok
+        };
+        let err = gl.withdraw(&repo, 7, &changes).unwrap_err().to_string();
+        assert!(err.contains("cannot withdraw a change request"), "{err}");
+        assert_eq!(server.requests().len(), 2, "a change request sends nothing");
     }
 
     fn setup(routes: Vec<(&str, Reply)>) -> (FakeServer, GitLab, RepoRef) {
