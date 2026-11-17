@@ -2,7 +2,7 @@
 id: review_links
 name: Code review links and verdicts
 summary: open or copy the forge's link of a merge request, thread or comment, withdraw your approval, and tag threads the forge calls outdated
-status: open
+status: in-progress
 priority: 0
 dependencies: [mr_review, review_fixes]
 ---
@@ -16,7 +16,8 @@ Three small things the forge data already allows. Three subtasks in order, one c
   - Outdated: `Thread::outdated` (the forge's own flag) is read by all three adapters but only Claude's tool sees it; jed places threads itself. Tag a thread the forge calls outdated but jed placed (`outdated on <forge>` dimmed, in its CONVERSATIONS row and its block's header), so a thread that looks current here and hidden on the web page is explained. GitLab's flag is jed's own guess (`position.head_sha` differs from the head: every thread made before the latest push): don't tag on GitLab unless [review_forge_fixes](review_forge_fixes.md) found a better signal.
   - Done when: the three commands work on Gitea, GitHub and GitLab fakes as above, a foreign or non-HTTPS link is never opened, the outdated tag is drawn on Gitea and GitHub threads (not GitLab's), and `scripts/check` is green.
   - Subtasks (one agent and one commit each):
-    - review_links-a: Open on Forge and Copy Link
+    - ✅ review_links-a: Open on Forge and Copy Link
+        - Done: `forge::url::usable_link(url, host, allow_http)` (scheme, exact authority incl. port, no userinfo / whitespace / control characters); `Review::allow_http` from the lookup's `Resolved`. `App::review_link_url` (app/review_write.rs: selected CONVERSATIONS row, else the review diff's caret thread or a thread tab's thread, else the conversation tab's caret row — row 0 the description, row k `conversation[k-1]` — else `mr.url`) and `review_link(open)` (open via `open_url`, copy to `app.clipboard`). `Command::{ReviewOpenOnForge, ReviewCopyLink}`; menu items on the panel's Thread, Comment and Panel spots (diff / thread tabs have no context menu: not added). Tests: `review_links_tests.rs` (Gitea fake only: the target logic is forge-agnostic). Subtask b can reuse the file's helpers.
         - The two commands, the target choice (CONVERSATIONS row's thread or comment, else the caret's thread in a review diff or thread tab, else the merge request), the context-menu entries (panel and thread block), the URL check (scheme and host against the review's configured host, `allow_http`) as a small pure function with unit tests; `url::open` through `spawn_blocking`.
         - Tests: open and copy for a thread, a comment and the merge request (`url::opened`); a link to another host, a non-HTTPS link and an empty URL refused with the message.
     - review_links-b: Withdraw My Review

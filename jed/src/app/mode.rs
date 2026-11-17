@@ -63,6 +63,8 @@ impl Mode {
                     | Command::ReviewInsertSuggestion
                     | Command::ReviewOpenThread
                     | Command::ReviewOpenConversation
+                    | Command::ReviewOpenOnForge
+                    | Command::ReviewCopyLink
                     | Command::ReviewCommentOnMergeRequest
                     | Command::Review(_)
                     | Command::TogglePanel

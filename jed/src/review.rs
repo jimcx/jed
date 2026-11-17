@@ -59,6 +59,8 @@ pub struct Review {
     pub mcp_read_only: bool,
     /// The host's forge (what it accepts differs: GitHub refuses comments outside the diff).
     pub kind: forge::Kind,
+    /// The host's entry allows plain `http://` (links to the forge may use it too).
+    pub allow_http: bool,
     /// Each file's hunks from the merge base to the head, by path (a file whose commits or
     /// blobs weren't readable is missing).
     pub hunks: Arc<BTreeMap<String, FileHunks>>,
@@ -293,6 +295,7 @@ pub fn lookup(req: Request) -> Outcome {
             relation,
             mcp_read_only,
             kind: resolved.kind,
+            allow_http: resolved.allow_http,
             hunks: Arc::new(hunks),
         }),
         viewed,

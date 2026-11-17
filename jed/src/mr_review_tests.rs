@@ -1373,6 +1373,8 @@ pub(crate) mod threads {
                 "Edit Comment: off",
                 "Delete Comment: off",
                 "Apply Suggestion: off",
+                "Open on Forge: on",
+                "Copy Link: on",
             ]
         );
     }
@@ -2238,7 +2240,12 @@ mod drafts {
         app.mouse(right, hit.conv_list.x + 4, hit.conv_list.y);
         assert_eq!(
             super::menu_labels(&app),
-            ["Open Conversation: on", "Comment on Merge Request: on"]
+            [
+                "Open Conversation: on",
+                "Comment on Merge Request: on",
+                "Open on Forge: on",
+                "Copy Link: on"
+            ]
         );
         assert!(app.review.view.conv.focused);
     }

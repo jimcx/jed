@@ -281,6 +281,64 @@ impl App {
         review.threads.iter().find(|r| &r.thread.id == id).cloned()
     }
 
+    /// What a link command is about: the selected CONVERSATIONS row's thread or comment, else
+    /// the thread at the caret of a review diff or thread tab (the caret's comment in the
+    /// conversation tab), else the merge request. The forge's own URL for it, if it has one.
+    fn review_link_url(&self) -> Option<String> {
+        let review = self.review.review()?;
+        let thread_url = |row: &ThreadRow| row.thread.comments.first().map(|c| c.url.clone());
+        if self.review.view.conv.focused
+            && let Some(i) = self.review.view.conv.selected(review.conv_len())
+        {
+            return match review.threads.get(i) {
+                Some(row) => thread_url(row),
+                None => review.conversation.get(i - review.threads.len()).map(|c| c.url.clone()),
+            };
+        }
+        if let Some(d) = self.group().active_diff() {
+            if d.conv.is_some() {
+                // Row 0 is the description, then one row per comment.
+                if let Some(c) = d.cursor.checked_sub(1).and_then(|i| review.conversation.get(i)) {
+                    return Some(c.url.clone());
+                }
+            } else if d.pair.is_review() || d.pair.is_thread() {
+                let row = match &d.thread {
+                    Some(tab) => review.threads.iter().find(|r| r.thread.id == tab.id),
+                    None => d
+                        .thread_at_caret()
+                        .and_then(|i| review.threads.iter().find(|r| r.thread.id == d.threads.list()[i].id)),
+                };
+                if let Some(row) = row {
+                    return thread_url(row);
+                }
+            }
+        }
+        Some(review.mr.url.clone())
+    }
+
+    /// `review.openOnForge` (`open`) / `review.copyLink`: the target's link, if it is one this
+    /// review's host could have sent.
+    pub(super) fn review_link(&mut self, open: bool) {
+        let Some(review) = self.review.review() else {
+            return self.notify(Level::Info, "No merge request to show".into());
+        };
+        let url = self.review_link_url().unwrap_or_default();
+        let usable = forge::url::usable_link(&url, &review.repo.host, review.allow_http).map(str::to_string);
+        let Some(url) = usable else {
+            return self.notify(Level::Info, "The forge sent no usable link".into());
+        };
+        if open {
+            self.open_url(url);
+        } else {
+            self.clipboard.write(crate::clipboard::Copied {
+                text: url,
+                whole_line: false,
+                pieces: Vec::new(),
+            });
+            self.notify(Level::Info, "Link copied".into());
+        }
+    }
+
     pub(super) fn review_need_target(&mut self) -> Option<ThreadRow> {
         let row = self.review_target();
         if row.is_none() {

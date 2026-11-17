@@ -441,6 +441,8 @@ pub enum Command {
     ReviewOpenThread,
     /// "Code Review: Open Conversation" (unbound): the merge request's conversation tab (its description and comments).
     ReviewOpenConversation,
+    ReviewOpenOnForge,
+    ReviewCopyLink,
     ReviewCommentOnMergeRequest,
     /// The Code Review panel's list (`Context::Review`).
     Review(ReviewCommand),
@@ -1339,6 +1341,8 @@ impl Command {
             Command::ReviewInsertSuggestion,
             Command::ReviewOpenThread,
             Command::ReviewOpenConversation,
+            Command::ReviewOpenOnForge,
+            Command::ReviewCopyLink,
             Command::ReviewCommentOnMergeRequest,
         ]);
         all.extend(ReviewCommand::ALL.map(Command::Review));
@@ -1758,6 +1762,8 @@ impl Command {
             Command::ReviewInsertSuggestion => "review.insertSuggestion".into(),
             Command::ReviewOpenThread => "review.openThread".into(),
             Command::ReviewOpenConversation => "review.openConversation".into(),
+            Command::ReviewOpenOnForge => "review.openOnForge".into(),
+            Command::ReviewCopyLink => "review.copyLink".into(),
             Command::ReviewCommentOnMergeRequest => "review.commentOnMergeRequest".into(),
             Command::Review(c) => format!(
                 "reviewView.{}",
@@ -2198,6 +2204,8 @@ impl Command {
             Command::ReviewInsertSuggestion => "Code Review: Insert Suggestion",
             Command::ReviewOpenThread => "Code Review: Open Thread",
             Command::ReviewOpenConversation => "Code Review: Open Conversation",
+            Command::ReviewOpenOnForge => "Code Review: Open on Forge",
+            Command::ReviewCopyLink => "Code Review: Copy Link",
             Command::ReviewCommentOnMergeRequest => "Code Review: Comment on Merge Request",
             Command::Review(c) => match c {
                 ReviewCommand::Up => "Code Review: Select Previous File",
@@ -2430,6 +2438,8 @@ mod tests {
             Command::ReviewOpenThread => 181,
             Command::ReviewOpenConversation => 182,
             Command::ReviewCommentOnMergeRequest => 183,
+            Command::ReviewOpenOnForge => 184,
+            Command::ReviewCopyLink => 185,
             Command::Review(_) => 154,
             Command::ToggleToolTrace => 92,
             Command::RestartServer => 93,

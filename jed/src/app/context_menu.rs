@@ -62,8 +62,14 @@ fn review_items(spot: ReviewSpot) -> Vec<MenuItem> {
         ]
     };
     let enabled = |item: MenuItem, on: bool| if on { item } else { item.disabled() };
+    let links = || {
+        [
+            MenuItem::new("Open on Forge", Command::ReviewOpenOnForge),
+            MenuItem::new("Copy Link", Command::ReviewCopyLink),
+        ]
+    };
     let thread = |thread: bool, own: bool, suggestion: bool| {
-        vec![
+        let mut items = vec![
             enabled(MenuItem::new("Go to Thread", Command::Review(R::Open)), thread),
             MenuItem::Separator,
             enabled(MenuItem::new("Reply", Command::ReviewReply), thread),
@@ -80,15 +86,23 @@ fn review_items(spot: ReviewSpot) -> Vec<MenuItem> {
                 MenuItem::new("Apply Suggestion", Command::ReviewApplySuggestion),
                 thread && suggestion,
             ),
-        ]
+            MenuItem::Separator,
+        ];
+        items.extend(links());
+        items
     };
     match spot {
         ReviewSpot::File => vec![MenuItem::new("Toggle Viewed", Command::Review(R::ToggleViewed))],
         ReviewSpot::Thread { own, suggestion } => thread(true, own, suggestion),
-        ReviewSpot::Comment => vec![
-            MenuItem::new("Open Conversation", Command::ReviewOpenConversation),
-            MenuItem::new("Comment on Merge Request", Command::ReviewCommentOnMergeRequest),
-        ],
+        ReviewSpot::Comment => {
+            let mut items = vec![
+                MenuItem::new("Open Conversation", Command::ReviewOpenConversation),
+                MenuItem::new("Comment on Merge Request", Command::ReviewCommentOnMergeRequest),
+                MenuItem::Separator,
+            ];
+            items.extend(links());
+            items
+        }
         ReviewSpot::Draft => vec![
             MenuItem::new("Go to Draft", Command::Review(R::Open)),
             MenuItem::Separator,
@@ -104,6 +118,8 @@ fn review_items(spot: ReviewSpot) -> Vec<MenuItem> {
                 MenuItem::new("Comment on Merge Request", Command::ReviewCommentOnMergeRequest),
                 MenuItem::Separator,
             ];
+            items.extend(links());
+            items.push(MenuItem::Separator);
             items.extend(submit());
             items
         }

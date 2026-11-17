@@ -36,6 +36,23 @@ pub fn parse_remote(url: &str) -> Option<RepoRef> {
     })
 }
 
+/// `url` when it is safe to open as a link on `host` (a review's host, lowercase, with its port
+/// if it has one): `https://` (or `http://` when `allow_http`), the same authority as `host`
+/// (no user info, case ignored), and no whitespace or control characters. The URL is remote
+/// text, so anything else is `None`.
+pub fn usable_link<'a>(url: &'a str, host: &str, allow_http: bool) -> Option<&'a str> {
+    if url.is_empty() || url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return None;
+    }
+    let (scheme, rest) = url.split_once("://")?;
+    let scheme_ok = scheme.eq_ignore_ascii_case("https") || (allow_http && scheme.eq_ignore_ascii_case("http"));
+    if !scheme_ok {
+        return None;
+    }
+    let authority = rest.split(['/', '?', '#']).next()?;
+    (!authority.contains('@') && authority.eq_ignore_ascii_case(host)).then_some(url)
+}
+
 fn strip_user(authority: &str) -> &str {
     authority.rsplit_once('@').map_or(authority, |(_, h)| h)
 }
@@ -50,6 +67,46 @@ fn strip_port(host: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn usable_link_checks_scheme_and_host() {
+        let ok = |u, h, a| usable_link(u, h, a).is_some();
+        assert!(ok(
+            "https://git.example.com/alice/project/pulls/7",
+            "git.example.com",
+            false
+        ));
+        assert!(ok("HTTPS://Git.Example.com/x", "git.example.com", false));
+        assert!(ok("https://git.example.com", "git.example.com", false));
+        assert!(ok("https://git.example.com:3000/x#c1", "git.example.com:3000", false));
+        assert!(ok("http://git.example.com/x", "git.example.com", true));
+        assert!(!ok("http://git.example.com/x", "git.example.com", false));
+        assert!(!ok("", "git.example.com", true));
+        assert!(!ok("https://evil.example.org/x", "git.example.com", false));
+        assert!(!ok("https://git.example.com.evil.org/x", "git.example.com", false));
+        assert!(!ok("https://git.example.com@evil.org/x", "git.example.com", false));
+        assert!(!ok("https://evil.org@git.example.com/x", "git.example.com", false));
+        assert!(!ok("https://git.example.com:8080/x", "git.example.com", false));
+        assert!(!ok("https://git.example.com/x y", "git.example.com", false));
+        assert!(!ok("https://git.example.com/x\u{1b}[0m", "git.example.com", false));
+        assert!(!ok("file:///etc/passwd", "git.example.com", true));
+        assert!(!ok("javascript:alert(1)", "git.example.com", true));
+        assert!(!ok("ftp://git.example.com/x", "git.example.com", true));
+        // Host edge cases: prefixes, suffixes, ports, backslashes and user info.
+        assert!(!ok("https://evilgit.example.com/x", "git.example.com", false));
+        assert!(!ok("https://git.example.com.evil.org", "git.example.com", false));
+        assert!(!ok("https://sub.git.example.com/x", "git.example.com", false));
+        assert!(!ok("https://git.example.com/x", "git.example.com:3000", false));
+        assert!(!ok("https://git.example.com:3000/x", "git.example.com", false));
+        assert!(!ok("https://git.example.com:/x", "git.example.com", false));
+        assert!(!ok("https://git.example.com\\@evil.org/x", "git.example.com", false));
+        assert!(!ok("https://git.example.com\\.evil.org/x", "git.example.com", false));
+        assert!(ok("https://git.example.com/a@b", "git.example.com", false));
+        assert!(ok("https://git.example.com?q=a@b", "git.example.com", false));
+        assert!(ok("https://GIT.EXAMPLE.COM#frag", "git.example.com", false));
+        assert!(!ok("https:///git.example.com/x", "git.example.com", false));
+        assert!(!ok("git.example.com/x", "git.example.com", false));
+    }
     use super::*;
 
     fn r(host: &str, path: &str) -> Option<RepoRef> {

@@ -154,6 +154,8 @@ mod review_fixes_tests;
 mod review_followups_tests;
 #[cfg(test)]
 mod review_forge_fixes_tests;
+#[cfg(test)]
+mod review_links_tests;
 mod review_write;
 mod scm;
 mod scrollbar;
