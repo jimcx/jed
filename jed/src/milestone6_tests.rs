@@ -26,6 +26,7 @@ use ratatui::backend::TestBackend;
 use crate::app::App;
 use crate::buffer::Buffer;
 use crate::buffer::pos::ByteIdx;
+use crate::command::{ColumnMotion, Command, FindCommand};
 use crate::milestone_tests::test_app;
 use crate::selection::{Selection, Selections};
 
@@ -51,14 +52,6 @@ const LINE_COMMAND_BUDGET: Duration = Duration::from_millis(80);
 /// quadratic, which at 60k selections takes minutes.
 const LINE_COMMAND_DEBUG_BOUND: Duration = Duration::from_secs(5);
 
-fn cmd() -> M {
-    if cfg!(target_os = "macos") {
-        M::SUPER
-    } else {
-        M::CONTROL
-    }
-}
-
 fn app_with(dir: &tempfile::TempDir, text: &str, cursor: usize) -> App {
     let mut app = test_app(dir.path(), Buffer::from_str(text));
     set_cursor(&mut app, cursor);
@@ -73,19 +66,19 @@ fn set_cursor(app: &mut App, at: usize) {
 }
 
 fn add_next(app: &mut App) {
-    app.press(K::Char('d'), cmd());
+    app.test_execute(Command::AddNextMatch);
 }
 
 fn select_all(app: &mut App) {
-    app.press(K::Char('l'), cmd() | M::SHIFT);
+    app.test_execute(Command::SelectAllMatches);
 }
 
 fn skip(app: &mut App) {
-    app.press(K::Char('d'), cmd() | M::ALT);
+    app.test_execute(Command::SkipToNextMatch);
 }
 
 fn cursor_undo(app: &mut App) {
-    app.press(K::Char('u'), cmd());
+    app.test_execute(Command::CursorUndo);
 }
 
 fn draw(term: &mut Terminal<TestBackend>, app: &mut App) {
@@ -128,7 +121,7 @@ fn milestone_6_cmd_d_word_mode_then_edit_and_undo() {
     let before = sels(&app);
     app.type_text("bar");
     assert_eq!(text(&app), "bar Foo foobar foo_x\nbar.bar");
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), "foo Foo foobar foo_x\nfoo.foo");
     assert_eq!(
         sels(&app),
@@ -244,7 +237,7 @@ async fn milestone_6_esc_in_editor_and_palette() {
     select_all(&mut app);
     assert_eq!(ranges(&app).len(), 3);
     // Esc in the palette only closes it.
-    app.press(K::Char('p'), cmd() | M::SHIFT);
+    app.test_execute(Command::ShowCommands);
     assert!(app.palette.is_some());
     app.press(K::Esc, M::NONE);
     assert!(app.palette.is_none());
@@ -267,7 +260,7 @@ async fn milestone_6_focus_loss_ends_word_mode() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app_with(&dir, "foo foobar Foo foo", 0);
     add_next(&mut app);
-    app.press(K::Char('p'), cmd() | M::SHIFT);
+    app.test_execute(Command::ShowCommands);
     app.press(K::Esc, M::NONE);
     add_next(&mut app);
     assert_eq!(ranges(&app), vec![(0, 3), (4, 7)], "selection mode now: inside foobar");
@@ -350,7 +343,7 @@ fn milestone_6_other_group_follows_multi_cursor_edit() {
     let first = app.groups.active;
     select_all(&mut app);
     // Split: the second group starts with a copy of the three selections.
-    app.press(K::Char('\\'), cmd());
+    app.test_execute(Command::SplitRight);
     let second = app.groups.active;
     assert_ne!(first, second);
     let first_sels = |app: &App| {
@@ -366,13 +359,13 @@ fn milestone_6_other_group_follows_multi_cursor_edit() {
         vec![(0, 1), (2, 3), (4, 5)],
         "still around each replaced word"
     );
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), "ab ab ab\nend");
     assert_eq!(ranges(&app), vec![(0, 2), (3, 5), (6, 8)]);
     assert_eq!(first_sels(&app), vec![(0, 2), (3, 5), (6, 8)]);
 
     // The other view's cursor history was cleared by the edit.
-    app.press(K::Char('1'), cmd());
+    app.test_execute(Command::FocusGroup(1));
     let before = first_sels(&app);
     cursor_undo(&mut app);
     assert_eq!(first_sels(&app), before);
@@ -407,8 +400,8 @@ fn milestone_6_select_all_matches_on_one_mb() {
     println!("Cmd+Shift+L: {count} selections in {select_time:?}");
 
     // A second group on the buffer with the same selections, mapping through every edit.
-    app.press(K::Char('\\'), cmd());
-    app.press(K::Char('1'), cmd());
+    app.test_execute(Command::SplitRight);
+    app.test_execute(Command::FocusGroup(1));
     let before = sels(&app);
 
     let n = 5u32;
@@ -442,7 +435,7 @@ fn milestone_6_select_all_matches_on_one_mb() {
     );
 
     let t = Instant::now();
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     let undo_time = t.elapsed();
     assert!(undo_time < DEBUG_BOUND, "undo took {undo_time:?}");
     println!("undo: {undo_time:?}");
@@ -530,7 +523,7 @@ fn milestone_6_session_belongs_to_its_view() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app_with(&dir, "foo foobar foo", 0);
     add_next(&mut app); // word mode: selects foo
-    app.press(K::Char('\\'), cmd());
+    app.test_execute(Command::SplitRight);
     assert_eq!(ranges(&app), vec![(0, 3)], "the new group copies the selection");
     add_next(&mut app);
     assert_eq!(ranges(&app), vec![(0, 3), (4, 7)], "selected-text mode in this view");
@@ -543,7 +536,7 @@ fn milestone_6_esc_outside_the_editor_keeps_cursors() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app_with(&dir, "ab ab ab", 0);
     select_all(&mut app);
-    app.press(K::Char('e'), cmd() | M::SHIFT);
+    app.test_execute(Command::FocusExplorer);
     assert_eq!(app.ui.focus, crate::app::Focus::SidePanel);
     app.press(K::Esc, M::NONE);
     assert_eq!(ranges(&app).len(), 3, "Esc in the explorer");
@@ -553,7 +546,7 @@ fn milestone_6_esc_outside_the_editor_keeps_cursors() {
     select_all(&mut app);
     let before = ranges(&app);
     assert_eq!(before.len(), 3);
-    app.press(K::Char('w'), cmd());
+    app.test_execute(Command::CloseTab);
     assert!(app.prompt.is_some(), "save before closing?");
     app.press(K::Esc, M::NONE);
     assert!(app.prompt.is_none());
@@ -586,19 +579,28 @@ fn milestone_6_newest_survives_typing() {
 // ---- move / copy lines.
 
 fn add_below(app: &mut App) {
-    app.press(K::Down, cmd() | M::ALT);
+    app.test_execute(Command::AddCursorBelow);
 }
 
 fn add_above(app: &mut App) {
-    app.press(K::Up, cmd() | M::ALT);
+    app.test_execute(Command::AddCursorAbove);
 }
 
 fn box_key(app: &mut App, key: K) {
-    app.press(key, cmd() | M::ALT | M::SHIFT);
+    let motion = match key {
+        K::Up => ColumnMotion::Up,
+        K::Down => ColumnMotion::Down,
+        K::Left => ColumnMotion::Left,
+        K::Right => ColumnMotion::Right,
+        K::PageUp => ColumnMotion::PageUp,
+        K::PageDown => ColumnMotion::PageDown,
+        other => panic!("no box-select key {other:?}"),
+    };
+    app.test_execute(Command::ColumnSelect(motion));
 }
 
 fn undo(app: &mut App) {
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
 }
 
 fn paste_text(app: &mut App, text: &str) {
@@ -674,12 +676,12 @@ fn milestone_6_cursors_at_line_ends() {
     app.press(K::Down, M::SHIFT);
     app.press(K::End, M::SHIFT);
     // Terminals report Shift+Alt+I as `I` or `i` with Shift.
-    app.press(K::Char('I'), M::ALT | M::SHIFT);
+    app.test_execute(Command::CursorsAtLineEnds);
     assert_eq!(ranges(&app), vec![(9, 9), (20, 20), (30, 30)]);
     app.type_text(";");
     assert_eq!(text(&app), "let a = 1;\nlet bb = 2;\nlet c = 3;\nend");
     // Only cursors: nothing to do.
-    app.press(K::Char('i'), M::ALT | M::SHIFT);
+    app.test_execute(Command::CursorsAtLineEnds);
     assert_eq!(ranges(&app), vec![(10, 10), (22, 22), (33, 33)]);
 }
 
@@ -794,7 +796,7 @@ async fn milestone_6_paste_spreads_across_cursors() {
         ],
         0,
     );
-    app.press(K::Char('c'), cmd());
+    app.test_execute(Command::Copy);
     assert_eq!(app.clipboard.read().unwrap(), "one\ntwo\nthree");
     let view = app.active_mut().unwrap().1;
     view.selections = Selections::new([15, 17, 19].map(|p| Selection::cursor(ByteIdx(p))).to_vec(), 0);
@@ -814,7 +816,7 @@ async fn milestone_6_paste_spreads_across_cursors() {
 
     // A whole line copied from one empty cursor goes above each cursor's line, never spread.
     set_cursor(&mut app, 0);
-    app.press(K::Char('c'), cmd());
+    app.test_execute(Command::Copy);
     let view = app.active_mut().unwrap().1;
     view.selections = Selections::new([15, 17].map(|p| Selection::cursor(ByteIdx(p))).to_vec(), 0);
     paste_text(&mut app, "one two three\n");
@@ -824,7 +826,7 @@ async fn milestone_6_paste_spreads_across_cursors() {
     // Two cursors' lines copied (not whole-line any more, as VS Code) spread back one each.
     let view = app.active_mut().unwrap().1;
     view.selections = Selections::new([15, 17].map(|p| Selection::cursor(ByteIdx(p))).to_vec(), 0);
-    app.press(K::Char('c'), cmd());
+    app.test_execute(Command::Copy);
     assert_eq!(app.clipboard.read().unwrap(), "x\ny\n");
     let view = app.active_mut().unwrap().1;
     view.selections = Selections::new([17, 19].map(|p| Selection::cursor(ByteIdx(p))).to_vec(), 0);
@@ -853,7 +855,7 @@ async fn milestone_6_paste_spreads_across_cursors() {
         ],
         0,
     );
-    app.press(K::Char('c'), cmd());
+    app.test_execute(Command::Copy);
     assert_eq!(app.clipboard.read().unwrap(), "one\nthree\nx");
     let view = app.active_mut().unwrap().1;
     view.selections = Selections::new([17, 19].map(|p| Selection::cursor(ByteIdx(p))).to_vec(), 0);
@@ -865,8 +867,8 @@ async fn milestone_6_paste_spreads_across_cursors() {
 fn milestone_6_move_and_copy_lines() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app_with(&dir, "a\r\nb\r\nc\r\nd", 3);
-    let alt_up = |app: &mut App| app.press(K::Up, M::ALT);
-    let alt_down = |app: &mut App| app.press(K::Down, M::ALT);
+    let alt_up = |app: &mut App| app.test_execute(Command::MoveLinesUp);
+    let alt_down = |app: &mut App| app.test_execute(Command::MoveLinesDown);
 
     // At the top already: nothing happens and there's nothing to undo.
     set_cursor(&mut app, 0);
@@ -894,11 +896,11 @@ fn milestone_6_move_and_copy_lines() {
     assert_eq!(ranges(&app), vec![(3, 3), (6, 6)]);
 
     // Copy down: the cursors go with the lower copies; copy up: they stay on the upper ones.
-    app.press(K::Down, M::ALT | M::SHIFT);
+    app.test_execute(Command::CopyLinesDown);
     assert_eq!(text(&app), "a\r\nb\r\nb\r\nc\r\nc\r\nd");
     assert_eq!(ranges(&app), vec![(6, 6), (12, 12)]);
     undo(&mut app);
-    app.press(K::Up, M::ALT | M::SHIFT);
+    app.test_execute(Command::CopyLinesUp);
     assert_eq!(text(&app), "a\r\nb\r\nb\r\nc\r\nc\r\nd");
     assert_eq!(ranges(&app), vec![(3, 3), (9, 9)]);
     undo(&mut app);
@@ -909,16 +911,19 @@ fn milestone_6_move_and_copy_lines() {
     let mut app = app_with(&dir, "1\n22\n333\n4", 2);
     app.press(K::Down, M::SHIFT);
     app.press(K::Down, M::SHIFT);
-    app.press(K::Up, M::ALT);
+    app.test_execute(Command::MoveLinesUp);
     assert_eq!(text(&app), "22\n333\n1\n4");
     assert_eq!(ranges(&app), vec![(0, 7)]);
 
     // Read-only buffers: line commands change nothing.
     app.active_mut().unwrap().0.read_only = Some("test".into());
     set_cursor(&mut app, 7);
-    for mods in [M::ALT, M::ALT | M::SHIFT] {
-        app.press(K::Up, mods);
-        app.press(K::Down, mods);
+    for (up, down) in [
+        (Command::MoveLinesUp, Command::MoveLinesDown),
+        (Command::CopyLinesUp, Command::CopyLinesDown),
+    ] {
+        app.test_execute(up);
+        app.test_execute(down);
     }
     assert_eq!(text(&app), "22\n333\n1\n4");
 }
@@ -956,27 +961,31 @@ fn milestone_6_cursor_and_line_commands_on_one_mb() {
         }
     };
     timed(&mut app, "copy lines down", &|app| {
-        app.press(K::Down, M::ALT | M::SHIFT)
+        app.test_execute(Command::CopyLinesDown)
     });
     assert_eq!(ranges(&app).len(), count);
     assert!(text(&app).starts_with("let item = value_0; // item\nlet item = value_0; // item\n\n"));
-    timed(&mut app, "undo", &|app| app.press(K::Char('z'), cmd()));
+    timed(&mut app, "undo", &|app| app.test_execute(Command::Undo));
     assert_eq!(text(&app), original);
     assert_eq!(sels(&app), before);
 
-    timed(&mut app, "move lines down", &|app| app.press(K::Down, M::ALT));
+    timed(&mut app, "move lines down", &|app| {
+        app.test_execute(Command::MoveLinesDown)
+    });
     assert!(text(&app).starts_with("\nlet item = value_0; // item\n\nlet item = value_1;"));
     assert_eq!(ranges(&app).len(), count);
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), original);
 
     // Each line's two selections land on the blank line below as one cursor.
-    timed(&mut app, "add cursor below", &|app| app.press(K::Down, cmd() | M::ALT));
+    timed(&mut app, "add cursor below", &|app| {
+        app.test_execute(Command::AddCursorBelow)
+    });
     assert_eq!(ranges(&app).len(), count + i);
 
-    app.press(K::Char('a'), cmd());
+    app.test_execute(Command::SelectAll);
     timed(&mut app, "cursors at line ends", &|app| {
-        app.press(K::Char('I'), M::ALT | M::SHIFT)
+        app.test_execute(Command::CursorsAtLineEnds)
     });
     assert_eq!(ranges(&app).len(), 2 * i, "every line but the empty last one");
 }
@@ -992,31 +1001,27 @@ const FIND_KEY_BUDGET: Duration = Duration::from_millis(30);
 /// Debug builds (~250 ms a find key, ~190 ms replace all): only catches going quadratic.
 const FIND_DEBUG_BOUND: Duration = Duration::from_secs(3);
 
-fn mac() -> bool {
-    cfg!(target_os = "macos")
-}
-
 fn open_find(app: &mut App) {
-    app.press(K::Char('f'), cmd());
+    app.test_execute(Command::OpenFind);
 }
 
-/// Cmd+Alt+F on macOS, Ctrl+H on Linux.
 fn open_replace(app: &mut App) {
-    if mac() {
-        app.press(K::Char('f'), M::SUPER | M::ALT);
-    } else {
-        app.press(K::Char('h'), M::CONTROL);
-    }
+    app.test_execute(Command::OpenReplace);
 }
 
-/// Cmd+Alt+C / W / R on macOS, Alt+C / W / R on Linux.
+/// Toggles the find option `c`: `c` match case, `w` whole word, `r` regex.
 fn toggle(app: &mut App, c: char) {
-    let mods = if mac() { M::SUPER | M::ALT } else { M::ALT };
-    app.press(K::Char(c), mods);
+    let option = match c {
+        'c' => FindCommand::ToggleCase,
+        'w' => FindCommand::ToggleWholeWord,
+        'r' => FindCommand::ToggleRegex,
+        other => panic!("no find option {other}"),
+    };
+    app.test_execute(Command::Find(option));
 }
 
 fn replace_all(app: &mut App) {
-    app.press(K::Enter, cmd() | M::ALT);
+    app.test_execute(Command::Find(FindCommand::ReplaceAll));
 }
 
 fn count(app: &App) -> String {
@@ -1146,7 +1151,7 @@ fn milestone_6_find_toggles_and_invalid_regex() {
     // Enter, Alt+Enter and replace with an invalid regex do nothing (the first replace all
     // only shows the replace input).
     app.press(K::Enter, M::NONE);
-    app.press(K::Enter, M::ALT);
+    app.test_execute(Command::Find(FindCommand::SelectAllMatches));
     replace_all(&mut app);
     assert!(app.find.replace_visible);
     replace_all(&mut app);
@@ -1233,8 +1238,7 @@ fn milestone_6_replace_one_with_regex_groups() {
     app.press(K::Enter, M::NONE);
     assert_eq!(text(&app), "v1=k1\nk2=v2\nk3=v3\n");
     assert_eq!(ranges(&app), vec![(6, 11)]);
-    // Cmd+Shift+1 too (reported by the terminal as Cmd+!).
-    app.press(K::Char('!'), cmd());
+    app.test_execute(Command::Find(FindCommand::ReplaceOne));
     assert_eq!(text(&app), "v1=k1\nv2=k2\nk3=v3\n");
     assert_eq!(ranges(&app), vec![(12, 17)]);
     // Not on a match: replace one only moves to the next.
@@ -1284,7 +1288,7 @@ fn milestone_6_replace_all_is_one_undo_step() {
     undo(&mut app);
     assert_eq!(text(&app), original, "one undo restores the exact text");
     assert_eq!(sels(&app), before, "and the selections");
-    app.press(K::Char('z'), cmd() | M::SHIFT);
+    app.test_execute(Command::Redo);
     assert_eq!(text(&app), "1:a$, 22:bb$;\n333:cc$ 1:a$\n");
 }
 
@@ -1352,15 +1356,15 @@ fn milestone_6_find_follows_edits_and_tabs() {
 
     // Another buffer in a new tab (same revision 0): its own matches, drawn.
     app.test_open(Buffer::from_str("zz\nzz ab\n"));
-    app.press(K::PageUp, M::CONTROL);
-    app.press(K::PageDown, M::CONTROL);
+    app.test_execute(Command::PrevTab);
+    app.test_execute(Command::NextTab);
     assert_eq!(app.find.matches().len(), 1);
     draw(&mut term, &mut app);
     assert!(screen_row(&term, 1).contains("? of 1"), "{:?}", screen_row(&term, 1));
     let (x, y) = screen_of(&term, &app, 1);
     assert_eq!(bg(&term, x + 3, y), highlight);
     assert_ne!(bg(&term, x, y), highlight);
-    app.press(K::PageUp, M::CONTROL);
+    app.test_execute(Command::PrevTab);
     assert_eq!(app.find.matches().len(), 3);
 
     // Esc, then F3 shows the widget again with the focus in the editor; edits update it.
@@ -1424,7 +1428,7 @@ fn milestone_6_alt_enter_selects_every_match() {
     let mut app = app_with(&dir, "ab x ab y ab", 6);
     open_find(&mut app);
     assert_eq!(ranges(&app), vec![(5, 7)]);
-    app.press(K::Enter, M::ALT);
+    app.test_execute(Command::Find(FindCommand::SelectAllMatches));
     assert_eq!(ranges(&app), vec![(0, 2), (5, 7), (10, 12)]);
     assert_eq!(sels(&app).primary_index(), 1, "the current match stays primary");
     assert_eq!(app.ui.focus, Focus::Editor, "focus goes back to the editor");

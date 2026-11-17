@@ -113,9 +113,11 @@ fn command_driven_tests_every_binding_resolves_to_its_command() {
     }
 }
 
-/// The command each `press_bound(Command::..)` in the test sources names (spelled as its Debug
-/// output: `Find(Next)`), with the file it is in.
-fn press_bound_commands() -> Vec<(String, String)> {
+/// The command each `press_bound(Command::..)` / `press_field_key(Command::..)` in the test
+/// sources names (spelled as its Debug output: `Find(Next)`), with the call and the file it is
+/// in. The argument is the whole balanced expression, so `Command::Shell(ShellCommand::Top)` is
+/// `Shell(Top)`.
+fn press_calls() -> Vec<(&'static str, String, String)> {
     let mut out = Vec::new();
     let mut files = sources();
     files.push((
@@ -123,21 +125,24 @@ fn press_bound_commands() -> Vec<(String, String)> {
         include_str!("command_driven_tests.rs").into(),
     ));
     for (path, src) in files {
-        let mut rest = src.as_str();
-        while let Some(at) = rest.find(".press_bound(Command::") {
-            let from = at + ".press_bound(Command::".len();
-            let arg = call_args(&rest[from..]).0;
-            let name: String = arg
-                .replace("Command::", "")
-                .chars()
-                .filter(|c| !c.is_whitespace())
-                .collect();
-            // `FindCommand::Next` inside the parentheses is `Next` in the Debug output.
-            let name = strip_paths(&name);
-            if name.starts_with(|c: char| c.is_ascii_uppercase()) {
-                out.push((name, path.clone()));
+        for call in ["press_bound", "press_field_key"] {
+            // This file's own `press_field_key` test names a command the editor doesn't bind.
+            if call == "press_field_key" && path == "command_driven_tests.rs" {
+                continue;
             }
-            rest = &rest[from..];
+            let needle = format!(".{call}(Command::");
+            let mut rest = src.as_str();
+            while let Some(at) = rest.find(&needle) {
+                let from = at + needle.len();
+                let arg = call_args(&rest[from..]).0;
+                let name: String = arg.chars().filter(|c| !c.is_whitespace()).collect();
+                // Every `Path::` prefix goes (`Find(FindCommand::Next)` is `Find(Next)`).
+                let name = strip_paths(&name);
+                if name.starts_with(|c: char| c.is_ascii_uppercase()) {
+                    out.push((call, name, path.clone()));
+                }
+                rest = &rest[from..];
+            }
         }
     }
     out
@@ -156,18 +161,38 @@ fn strip_paths(text: &str) -> String {
 }
 
 #[test]
-fn command_driven_tests_press_bound_commands_are_bound_on_both_platforms() {
+fn command_driven_tests_press_calls_are_bound_on_both_platforms() {
     let all: HashMap<String, Command> = Command::all().into_iter().map(|c| (format!("{c:?}"), c)).collect();
     let keymaps: Vec<(Platform, Keymap)> = PLATFORMS.iter().map(|p| (*p, Keymap::default_for(*p))).collect();
-    for (name, file) in press_bound_commands() {
+    let calls = press_calls();
+    assert!(
+        calls.iter().any(|(call, ..)| *call == "press_field_key")
+            && calls.iter().any(|(_, name, _)| name.contains('(')),
+        "the scanner finds press_field_key calls and nested command paths"
+    );
+    for (call, name, file) in calls {
         // `Command::Foo` with the variant's arguments left out (`Move { .. }`) isn't a name.
         let Some(cmd) = all.get(&name) else {
-            panic!("{file}: press_bound(Command::{name}) names no command in Command::all()");
+            panic!("{file}: {call}(Command::{name}) names no command in Command::all()");
         };
         for (platform, km) in &keymaps {
+            // A field takes the editor context's key; `press_bound` takes the current context's,
+            // which the guard can't know, so any context (or a global) will do for it.
+            let bound = if call == "press_field_key" {
+                km.bindings().any(|(combo, _, c)| {
+                    c == *cmd && km.lookup(&KeyEvent::new(combo.code, combo.mods), Context::Editor) == Some(*cmd)
+                })
+            } else {
+                km.bindings().any(|(_, _, c)| c == *cmd)
+            };
             assert!(
-                km.bindings().any(|(_, _, c)| c == *cmd),
-                "{file}: press_bound({cmd:?}) but {platform:?} binds no key to it"
+                bound,
+                "{file}: {call}({cmd:?}) but {platform:?} binds no {}key to it",
+                if call == "press_field_key" {
+                    "editor-context "
+                } else {
+                    ""
+                }
             );
         }
     }
@@ -553,6 +578,14 @@ async fn command_driven_tests_press_bound_names_the_command_and_context_when_unb
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[should_panic(expected = "press_field_key: the editor context binds no key to Shell(Top)")]
+async fn command_driven_tests_press_field_key_names_the_command_when_the_editor_binds_none() {
+    let (_d, mut app) = base();
+    // Shell top is the shell context's binding; the editor context has none.
+    app.press_field_key(Command::Shell(crate::command::ShellCommand::Top));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn command_driven_tests_a_shell_tab_gets_plain_ctrl_letters_except_ctrl_q() {
     let (_d, mut app) = shell_tab().await;
     app.test_dispatch_log = Some(Vec::new());
@@ -638,7 +671,6 @@ const ALLOWED_FILES: &[(&str, &str)] = &[
     ("clear_scrollback_tests.rs", "not migrated yet: subtask d"),
     ("compare_files_tests.rs", "not migrated yet: subtask c"),
     ("conflicts_tests.rs", "not migrated yet: subtask c"),
-    ("fixes_tests.rs", "not migrated yet: subtask b"),
     ("focus_groups_tests.rs", "not migrated yet: subtask d"),
     ("fuzz_tests.rs", "not migrated yet: subtask d"),
     ("git_editor_tests.rs", "not migrated yet: subtask c"),
@@ -647,21 +679,12 @@ const ALLOWED_FILES: &[(&str, &str)] = &[
     ("hex_more_tests.rs", "not migrated yet: subtask c"),
     ("hex_tests.rs", "not migrated yet: subtask c"),
     ("history_view_tests.rs", "not migrated yet: subtask c"),
-    ("indentation_tests.rs", "not migrated yet: subtask b"),
-    ("keys_tests.rs", "not migrated yet: subtask b"),
     ("kitty_recent_tests.rs", "not migrated yet: subtask d"),
     ("markdown_preview_tests.rs", "not migrated yet: subtask c"),
     ("milestone10_tests.rs", "not migrated yet: subtask c"),
     ("milestone11_tests.rs", "not migrated yet: subtask c"),
     ("milestone12_tests.rs", "not migrated yet: subtask c"),
     ("milestone13_tests.rs", "not migrated yet: subtask c"),
-    ("milestone2_tests.rs", "not migrated yet: subtask b"),
-    ("milestone3_tests.rs", "not migrated yet: subtask b"),
-    ("milestone4_tests.rs", "not migrated yet: subtask b"),
-    ("milestone5_tests.rs", "not migrated yet: subtask b"),
-    ("milestone6_tests.rs", "not migrated yet: subtask b"),
-    ("milestone7_tests.rs", "not migrated yet: subtask b"),
-    ("milestone8_tests.rs", "not migrated yet: subtask b"),
     ("milestone9_tests.rs", "not migrated yet: subtask c"),
     ("mr_review_tests.rs", "not migrated yet: subtask d"),
     ("mr_review_tests/done_when.rs", "not migrated yet: subtask d"),
@@ -669,26 +692,88 @@ const ALLOWED_FILES: &[(&str, &str)] = &[
     ("mr_review_tests/gitlab.rs", "not migrated yet: subtask d"),
     ("mr_review_tests/live.rs", "not migrated yet: subtask d"),
     ("mr_review_tests/suggest.rs", "not migrated yet: subtask d"),
-    ("replace_tests.rs", "not migrated yet: subtask b"),
     ("review_conversation_tests.rs", "not migrated yet: subtask d"),
     ("review_fixes_tests.rs", "not migrated yet: subtask d"),
     ("review_forge_fixes_tests.rs", "not migrated yet: subtask d"),
     ("shell_tests.rs", "not migrated yet: subtask d"),
-    ("soft_wrap_tests.rs", "not migrated yet: subtask b"),
     ("spell_check_tests.rs", "not migrated yet: subtask c"),
     ("syntax_plugins_tests.rs", "not migrated yet: subtask d"),
     ("term_area_tests.rs", "not migrated yet: subtask d"),
     ("term_search_tests.rs", "not migrated yet: subtask d"),
     ("term_select_tests.rs", "not migrated yet: subtask d"),
-    ("todo_tests.rs", "not migrated yet: subtask b"),
     ("tools_tests.rs", "not migrated yet: subtask d"),
     ("typescript_tests.rs", "not migrated yet: subtask c"),
-    ("untitled_tests.rs", "not migrated yet: subtask b"),
 ];
 
 /// Single presses that stay: (path under `jed/src`, text of the line, reason). The guard fails
 /// on an entry whose line is gone.
-const ALLOWED_LINES: &[(&str, &str, &str)] = &[];
+const ALLOWED_LINES: &[(&str, &str, &str)] = &[
+    (
+        "todo_tests.rs",
+        "app.press(K::Char('y'), M::CONTROL);",
+        "the test's own keybindings.toml binds ctrl+y: the key is the subject, it is no default binding",
+    ),
+    (
+        "todo_tests.rs",
+        "app.press(K::Char('k'), M::CONTROL);",
+        "the test's own keybindings.toml binds ctrl+k in the find context",
+    ),
+    (
+        "todo_tests.rs",
+        "app.press(K::Char('h'), M::CONTROL | M::ALT);",
+        "the live-reload test's keybindings.toml binds ctrl+alt+h",
+    ),
+    (
+        "todo_tests.rs",
+        "app.press(paste.code, paste.mods);",
+        "the key the keymap binds to Paste (none on macOS, where Cmd+V is the terminal's): the field takes it",
+    ),
+    (
+        "todo_tests.rs",
+        "app.press(K::Char('a'), M::CONTROL); // select all in the editor",
+        "no binding in the context menu: the test is that a key the menu does not bind is swallowed",
+    ),
+    (
+        "milestone5_tests.rs",
+        "app.press(save_key.code, save_key.mods);",
+        "the test's keybindings.toml rebinds file.save: the default Save key is pressed to show it no longer saves",
+    ),
+    (
+        "milestone5_tests.rs",
+        "app.press(K::Char('s'), M::CONTROL | M::ALT);",
+        "the key the test's keybindings.toml binds to file.save",
+    ),
+    (
+        "milestone5_tests.rs",
+        "app.press(sidebar_key.code, sidebar_key.mods);",
+        "the test's keybindings.toml binds the side bar key to palette.next in the palette context only",
+    ),
+    (
+        "milestone6_tests.rs",
+        "app.press(K::Char('n'), M::CONTROL);",
+        "the test's keybindings.toml binds ctrl+n to find.next in the find context; the editor's own Ctrl+N is checked after",
+    ),
+    (
+        "milestone7_tests.rs",
+        "app.press(K::Char('t'), M::CONTROL);",
+        "the test's keybindings.toml binds ctrl+t to search.toggleCase in the search context",
+    ),
+    (
+        "milestone7_tests.rs",
+        "app.press(default_toggle.code, default_toggle.mods);",
+        "the default toggle key, which the test's keybindings.toml has taken the command from",
+    ),
+    (
+        "keys_tests.rs",
+        "app.press(K::Char('k'), M::ALT);",
+        "Alt+K is the Keyboard Shortcuts view's record key: it is no command binding",
+    ),
+    (
+        "keys_tests.rs",
+        "app.press(code, mods);",
+        "the key recorded by the Keyboard Shortcuts view's record mode: the key is the subject",
+    ),
+];
 
 /// Every `.rs` under `jed/src` with its path relative to it (`/`-separated), except this file.
 fn sources() -> Vec<(String, String)> {

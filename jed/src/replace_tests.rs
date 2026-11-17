@@ -42,25 +42,9 @@ use ratatui::backend::TestBackend;
 
 use crate::app::{App, Focus};
 use crate::buffer::Buffer;
+use crate::command::{Command, Motion, SearchCommand};
 use crate::milestone_tests::test_app;
 use crate::search_view::RowKey;
-
-fn cmd() -> M {
-    if cfg!(target_os = "macos") {
-        M::SUPER
-    } else {
-        M::CONTROL
-    }
-}
-
-/// The find / search toggles: Cmd+Alt on macOS, Alt on Linux.
-fn toggle() -> M {
-    if cfg!(target_os = "macos") {
-        M::SUPER | M::ALT
-    } else {
-        M::ALT
-    }
-}
 
 fn write(root: &Path, rel: &str, text: &str) {
     let path = root.join(rel);
@@ -92,7 +76,7 @@ pub(crate) fn draw(term: &mut Terminal<TestBackend>, app: &mut App) {
 
 /// Cmd+Shift+F, the query typed, and the search run to the end.
 pub(crate) async fn search_for(app: &mut App, text: &str) {
-    app.press(K::Char('f'), cmd() | M::SHIFT);
+    app.test_execute(Command::FindInFiles);
     app.type_text(text);
     app.press(K::Enter, M::NONE);
     settled(app).await;
@@ -166,7 +150,7 @@ async fn replace_whole_word_toggle_narrows_the_search() {
     assert_eq!(total(&app), 8, "foobar and foo_bar too");
 
     // The key: whole word, the Search view's own option (not the find widget's).
-    app.press(K::Char('w'), toggle());
+    app.test_execute(Command::Search(SearchCommand::ToggleWholeWord));
     assert!(app.search_view.options.whole_word && !app.find_options.whole_word);
     settled(&mut app).await;
     assert_eq!(
@@ -186,7 +170,7 @@ async fn replace_whole_word_toggle_narrows_the_search() {
     app.press(K::Esc, M::NONE);
     assert_eq!(app.ui.focus, Focus::Editor);
     app.type_text("foobar foo ");
-    app.press(K::Char('f'), cmd() | M::SHIFT);
+    app.test_execute(Command::FindInFiles);
     settled(&mut app).await;
     let a = &app.search.as_ref().unwrap().files[0];
     assert_eq!(a.lines[0].text, "foobar foo foo one");
@@ -277,7 +261,7 @@ async fn replace_file_rows_collapse_and_expand() {
 
     // A new search shows everything expanded.
     run_command(&mut app, "Search: Collapse All");
-    app.press(K::Char('f'), cmd() | M::SHIFT);
+    app.test_execute(Command::FindInFiles);
     settled(&mut app).await;
     assert!(app.search.as_ref().unwrap().files.iter().all(|f| !f.collapsed));
 }
@@ -453,7 +437,7 @@ async fn replace_dismissing_files_by_button_and_collapsed_row() {
 
     // A re-search from the editor: everything back, expanded, nothing recorded.
     app.press(K::Esc, M::NONE);
-    app.press(K::Char('f'), cmd() | M::SHIFT);
+    app.test_execute(Command::FindInFiles);
     settled(&mut app).await;
     assert_eq!(total(&app), 8);
     assert_eq!(result_lines(&app).len(), 7);
@@ -465,7 +449,7 @@ async fn replace_dismissing_files_by_button_and_collapsed_row() {
 
 /// Runs a palette command by its title, through the keys.
 fn run_command(app: &mut App, title: &str) {
-    app.press(K::Char('p'), cmd() | M::SHIFT);
+    app.test_execute(Command::ShowCommands);
     app.type_text(title);
     let p = app.palette.as_ref().unwrap();
     assert_eq!(p.rows[p.selected].label, title);
@@ -494,9 +478,9 @@ fn started(mut app: App) -> App {
 
 /// A regex search for `foo(\d)`, run to the end (the toggle pressed in the query).
 async fn regex_search(app: &mut App) {
-    app.press(K::Char('f'), cmd() | M::SHIFT);
+    app.test_execute(Command::FindInFiles);
     if !app.search_view.options.regex {
-        app.press(K::Char('r'), toggle());
+        app.test_execute(Command::Search(SearchCommand::ToggleRegex));
     }
     app.type_text(r"foo(\d)");
     app.press(K::Enter, M::NONE);
@@ -590,7 +574,7 @@ async fn replace_input_toggle_keys_and_tab_order() {
     // text), and the search runs now.
     app.press(K::Esc, M::NONE);
     assert_eq!(app.ui.focus, Focus::Editor);
-    app.press(K::Char('h'), cmd() | M::SHIFT);
+    app.test_execute(Command::Search(SearchCommand::ReplaceInFiles));
     assert_eq!(app.ui.focus, Focus::SidePanel);
     assert!(app.search_view.replacing && app.search_view.replace.selection().is_some());
     assert_eq!(at(&app), (false, Input::Replace));
@@ -603,7 +587,7 @@ async fn replace_input_toggle_keys_and_tab_order() {
     }
     assert_eq!(app.search_view.query.text, "");
     app.press(K::Esc, M::NONE);
-    app.press(K::Char('h'), cmd() | M::SHIFT);
+    app.test_execute(Command::Search(SearchCommand::ReplaceInFiles));
     assert_eq!(at(&app), (false, Input::Query));
 }
 
@@ -616,7 +600,7 @@ async fn replace_previews_strike_through_each_match() {
     regex_search(&mut app).await;
     assert_eq!(result_lines(&app), ["a.txt:1", "a.txt:3", "a.txt:4", "src/b.rs:1"]);
     let generation = generation_of(&app);
-    app.press(K::Char('h'), cmd() | M::SHIFT);
+    app.test_execute(Command::Search(SearchCommand::ReplaceInFiles));
     settled(&mut app).await;
     let generation = generation_of(&app).max(generation);
     app.type_text("bar$1");
@@ -673,7 +657,7 @@ async fn replace_preview_diff_tab() {
     // An unsaved edit: the preview shows the buffer, not the disk.
     app.type_text("foo9 ");
     regex_search(&mut app).await;
-    app.press(K::Char('h'), cmd() | M::SHIFT);
+    app.test_execute(Command::Search(SearchCommand::ReplaceInFiles));
     settled(&mut app).await;
     app.type_text("bar$1");
 
@@ -806,7 +790,7 @@ async fn replace_previews_are_not_kept_in_sessions() {
     let mut app = started(app);
     assert!(app.settle(|a| !a.session.loading()).await);
     regex_search(&mut app).await;
-    app.press(K::Char('h'), cmd() | M::SHIFT);
+    app.test_execute(Command::Search(SearchCommand::ReplaceInFiles));
     settled(&mut app).await;
     app.type_text("bar$1");
     app.press(K::Tab, M::NONE);
@@ -957,9 +941,9 @@ async fn replace_all_across_the_workspace() {
     app.type_text("foo9 ");
     let mut term = Terminal::new(TestBackend::new(120, 90)).unwrap();
 
-    app.press(K::Char('h'), cmd() | M::SHIFT);
-    app.press(K::Char('r'), toggle());
-    app.press(K::Char('c'), toggle());
+    app.test_execute(Command::Search(SearchCommand::ReplaceInFiles));
+    app.test_execute(Command::Search(SearchCommand::ToggleRegex));
+    app.test_execute(Command::Search(SearchCommand::ToggleCase));
     app.type_text(r"foo(\d)");
     app.press(K::Enter, M::NONE);
     settled(&mut app).await;
@@ -991,7 +975,7 @@ async fn replace_all_across_the_workspace() {
     assert_eq!(app.search.as_ref().unwrap().files.len(), 19);
 
     // Replace All asks first, with the counts.
-    app.press(K::Enter, cmd() | M::ALT);
+    app.test_execute(Command::Search(SearchCommand::ReplaceAll));
     assert!(matches!(
         &app.prompt,
         Some(crate::app::Prompt::ConfirmReplace { occurrences, files: 19, with }) if *occurrences == total && with == "bar$1"
@@ -1044,10 +1028,10 @@ async fn replace_all_across_the_workspace() {
     }
     app.press(K::Esc, M::NONE);
     assert_eq!(app.ui.focus, Focus::Editor);
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(buf(&app, "f01.txt"), (format!("foo9 {}", files[1].1), true));
-    app.press(K::PageUp, M::CONTROL);
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::PrevTab);
+    app.test_execute(Command::Undo);
     assert_eq!(buf(&app, "f00.txt"), (files[0].1.clone(), false));
 
     // Searched again: nothing left but the dismissed file, which stays dismissed.
@@ -1085,7 +1069,7 @@ async fn replace_rereads_files_changed_since_the_search() {
     fs::write(root.join("d.txt"), b"foo1 \xff\n").unwrap();
     fs::remove_file(root.join("e.txt")).unwrap();
 
-    app.press(K::Enter, cmd() | M::ALT);
+    app.test_execute(Command::Search(SearchCommand::ReplaceAll));
     assert!(app.prompt.is_some());
     app.press(K::Char('r'), M::NONE);
     replaced(&mut app, 1).await;
@@ -1132,8 +1116,8 @@ async fn replace_one_line_one_file_and_the_rest() {
     write(&root, "b.txt", "foo\nfoo\n");
     let mut app = started(test_app(&root, Buffer::open(&root.join("open.txt")).unwrap()));
     let mut term = term();
-    app.press(K::Char('f'), cmd() | M::SHIFT);
-    app.press(K::Char('w'), toggle());
+    app.test_execute(Command::FindInFiles);
+    app.test_execute(Command::Search(SearchCommand::ToggleWholeWord));
     app.type_text("foo");
     app.press(K::Enter, M::NONE);
     settled(&mut app).await;
@@ -1143,7 +1127,7 @@ async fn replace_one_line_one_file_and_the_rest() {
     app.press(K::Down, M::NONE);
     app.press(K::Down, M::NONE);
     assert_eq!(app.search_view.list.selected(), Some(&key("a.txt", 1)));
-    app.press(K::Char('1'), cmd() | M::SHIFT);
+    app.test_execute(Command::Search(SearchCommand::ReplaceOne));
     assert!(message(&app).starts_with("Show the replace input"));
     assert_eq!(app.replace.done, 0);
 
@@ -1153,7 +1137,7 @@ async fn replace_one_line_one_file_and_the_rest() {
     app.type_text("X");
     app.press(K::Down, M::NONE);
     assert_eq!(app.search_view.list.selected(), Some(&key("a.txt", 1)));
-    app.press(K::Char('!'), cmd());
+    app.test_execute(Command::Search(SearchCommand::ReplaceOne));
     replaced(&mut app, 1).await;
     assert_eq!(
         fs::read_to_string(root.join("a.txt")).unwrap(),
@@ -1178,7 +1162,7 @@ async fn replace_one_line_one_file_and_the_rest() {
     app.press(K::Enter, M::NONE);
     settled(&mut app).await;
     assert_eq!(result_lines(&app), ["a.txt:3", "c.txt:1", "d.txt:1"]);
-    app.press(K::Enter, cmd() | M::ALT);
+    app.test_execute(Command::Search(SearchCommand::ReplaceAll));
     assert!(app.prompt.is_some());
     app.press(K::Esc, M::NONE);
     assert!(app.prompt.is_none());
@@ -1235,7 +1219,10 @@ async fn replace_leaves_alone_what_it_cant_do_safely() {
     // A line added at the top of open.txt: its dismissed line (foo2) is line 3 now.
     app.press(K::Esc, M::NONE);
     assert_eq!(app.ui.focus, Focus::Editor);
-    app.press_file_start();
+    app.test_execute(Command::Move {
+        motion: Motion::DocStart,
+        select: false,
+    });
     app.type_text("x");
     app.press(K::Enter, M::NONE);
     let buf_text = |app: &App| app.active_buffer().unwrap().rope.to_string();
@@ -1268,6 +1255,6 @@ async fn replace_leaves_alone_what_it_cant_do_safely() {
     assert_eq!(buf_text(&app), "x\nfoo1\nbar2\nfoo3\n");
     assert_eq!(fs::read_to_string(root.join("open.txt")).unwrap(), "foo1\nfoo2\nfoo3\n");
     app.press(K::Esc, M::NONE);
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(buf_text(&app), "x\nfoo1\nfoo2\nfoo3\n", "one undo step");
 }

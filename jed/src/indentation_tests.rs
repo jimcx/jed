@@ -44,14 +44,6 @@ use crate::palette::{self, Mode};
 use crate::workspace::trust::TrustStore;
 use crate::workspace::{self, Workspace};
 
-fn cmd() -> M {
-    if cfg!(target_os = "macos") {
-        M::SUPER
-    } else {
-        M::CONTROL
-    }
-}
-
 fn write(root: &Path, rel: &str, text: &str) -> PathBuf {
     let path = root.join(rel);
     fs::write(&path, text).unwrap();
@@ -115,7 +107,7 @@ fn open_app_inner(
 
 /// Opens `name` through quick open (the load runs off-thread, as any open's).
 async fn quick_open(app: &mut App, name: &str) {
-    app.press(KeyCode::Char('p'), cmd());
+    app.test_execute(Command::QuickOpen);
     app.type_text(name);
     let found = app
         .settle(|a| {
@@ -182,9 +174,9 @@ async fn indentation_a_tab_indented_c_file_gets_tabs() {
     assert!(text(&app).starts_with("int main() {\n\t\n\tif"), "{:?}", text(&app));
     app.type_text("z();");
     // Cmd+] on that line adds a tab.
-    app.press(KeyCode::Char(']'), cmd());
+    app.test_execute(Command::IndentLines);
     assert!(text(&app).starts_with("int main() {\n\t\tz();\n"), "{:?}", text(&app));
-    app.press(KeyCode::Char('['), cmd());
+    app.test_execute(Command::OutdentLines);
     assert!(text(&app).starts_with("int main() {\n\tz();\n"), "{:?}", text(&app));
 }
 
@@ -203,7 +195,7 @@ async fn indentation_a_two_space_python_file_gets_two_spaces() {
     // Tab at the start of the file inserts two spaces; Cmd+[ removes them.
     app.press(KeyCode::Tab, M::NONE);
     assert!(text(&app).starts_with("  def f():\n"), "{:?}", text(&app));
-    app.press(KeyCode::Char('['), cmd());
+    app.test_execute(Command::OutdentLines);
     assert!(text(&app).starts_with("def f():\n"), "{:?}", text(&app));
     // Enter after `def f():` indents one level of two.
     app.press(KeyCode::End, M::NONE);
@@ -379,11 +371,7 @@ async fn indentation_a_format_document_sends_the_guess() {
     let dir = tempfile::tempdir().unwrap();
     let files = [("a.cpp", C_TABS), (".workspace", USER)];
     let (mut app, fake, _) = crate::milestone9_tests::lsp_project(dir.path(), &files, true).await;
-    if cfg!(target_os = "macos") {
-        app.press(KeyCode::Char('f'), M::SHIFT | M::ALT);
-    } else {
-        app.press(KeyCode::Char('i'), M::CONTROL | M::SHIFT);
-    }
+    app.test_execute(Command::FormatDocument);
     assert!(
         app.settle(|_| !fake.requests("textDocument/formatting").is_empty())
             .await,
@@ -398,7 +386,7 @@ async fn indentation_a_format_document_sends_the_guess() {
 
 /// Runs `title` from the command palette (typed, then Enter).
 fn run_from_palette(app: &mut App, title: &str) {
-    app.press(KeyCode::Char('p'), cmd() | M::SHIFT);
+    app.test_execute(Command::ShowCommands);
     app.type_text(title);
     let first = app.palette.as_ref().unwrap().rows.first().map(|r| r.label.clone());
     assert_eq!(first.as_deref(), Some(title));
@@ -503,7 +491,7 @@ async fn indentation_b_status_bar_click_opens_the_actions() {
     app.press(KeyCode::Tab, M::NONE);
     assert!(text(&app).starts_with("   int main"), "{:?}", text(&app));
     // Cmd+] adds three more.
-    app.press(KeyCode::Char(']'), cmd());
+    app.test_execute(Command::IndentLines);
     assert!(text(&app).starts_with("      int main"), "{:?}", text(&app));
 
     // A click on the rest of the status bar opens nothing.
@@ -573,9 +561,9 @@ async fn indentation_b_change_tab_display_size_keeps_the_indent_size() {
     app.press(KeyCode::Enter, M::NONE);
     assert!(text(&app).starts_with("  def f():\n    \n"), "{:?}", text(&app));
     app.type_text("w");
-    app.press(KeyCode::Char('['), cmd());
+    app.test_execute(Command::OutdentLines);
     assert!(text(&app).starts_with("  def f():\n  w\n"), "{:?}", text(&app));
-    app.press(KeyCode::Char(']'), cmd());
+    app.test_execute(Command::IndentLines);
     assert!(text(&app).starts_with("  def f():\n    w\n"), "{:?}", text(&app));
     let line = status_line(&mut app);
     assert!(line.contains("Ln 2, Col 6"), "the column counts spaces: {line}");
@@ -653,7 +641,7 @@ async fn indentation_b_nothing_on_a_hex_tab() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, root) = open_app(&dir, USER, &[("b.py", PY_2)]);
     fs::write(root.join("bin.dat"), [0u8, 1, 2, 3]).unwrap();
-    app.press(KeyCode::Char('p'), cmd());
+    app.test_execute(Command::QuickOpen);
     app.type_text("bin.dat");
     assert!(
         app.settle(|a| a.palette.as_ref().is_some_and(|p| !p.rows.is_empty()))
@@ -771,11 +759,11 @@ async fn indentation_done_when_convert_to_tabs_then_one_undo() {
         ByteIdx(18),
         "the other split still at `y()`"
     );
-    app.press(KeyCode::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), PY_2, "one undo restores them");
     assert!(!app.active_buffer().unwrap().is_dirty());
     assert_eq!(head(&app), ByteIdx(27));
-    app.press(KeyCode::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), PY_2, "nothing more to undo");
 
     // Converting the spaces at 8 leaves levels of two: they're less than a tab (VS Code too).
@@ -859,9 +847,9 @@ async fn indentation_c_convert_to_spaces_from_the_status_item() {
         "int main() {\r\n\tif (x) {\r\n\t\ty();\r\n\t\t\r\n\tz();\r\n\t}\r\n}\r\n"
     );
     assert_eq!(resolved(&app), (false, 4, 4));
-    app.press(KeyCode::Char('z'), cmd());
-    app.press(KeyCode::Char('z'), cmd());
-    app.press(KeyCode::Char('z'), cmd());
+    app.test_execute(Command::Undo);
+    app.test_execute(Command::Undo);
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), c);
 }
 
@@ -895,13 +883,7 @@ async fn indentation_done_when_format_document_sends_each_files_guess() {
     let dir = tempfile::tempdir().unwrap();
     let fake = crate::lsp::fake::FakeLauncher::new(crate::lsp::fake::FakeOptions::default());
     let (mut app, root) = open_app_with(&dir, USER, &[("a.c", C_TABS), ("b.py", PY_2)], Some(fake.clone()));
-    let format = |app: &mut App| {
-        if cfg!(target_os = "macos") {
-            app.press(KeyCode::Char('f'), M::SHIFT | M::ALT);
-        } else {
-            app.press(KeyCode::Char('i'), M::CONTROL | M::SHIFT);
-        }
-    };
+    let format = |app: &mut App| app.test_execute(Command::FormatDocument);
     let expect = [
         ("a.c", serde_json::json!({ "tabSize": 4, "insertSpaces": false })),
         ("b.py", serde_json::json!({ "tabSize": 2, "insertSpaces": true })),
@@ -943,7 +925,7 @@ fn milestone_indentation_budget_convert_1mb() {
     crate::milestone9_tests::put_cursor(&mut app, 8);
     let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
     term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
-    app.press(KeyCode::Char('l'), cmd() | M::SHIFT);
+    app.test_execute(Command::SelectAllMatches);
     let count = app.group().active_tab().unwrap().view.selections.len();
     assert_eq!(count, 2 * i);
     let budget = Duration::from_millis(80);
@@ -965,7 +947,7 @@ fn milestone_indentation_budget_convert_1mb() {
     assert!(text(&app).starts_with("\tlet item = value_0;\n\t\titem();\n\tlet"));
     assert_eq!(app.group().active_tab().unwrap().view.selections.len(), count);
     assert_eq!(head(&app), ByteIdx(9), "on the first `item`'s end, after the tab");
-    timed(&mut app, "undo", &|app| app.press(KeyCode::Char('z'), cmd()));
+    timed(&mut app, "undo", &|app| app.test_execute(Command::Undo));
     assert_eq!(text(&app), original);
     timed(&mut app, "convert indentation to spaces", &|app| {
         app.test_execute(Command::ConvertIndentationToSpaces)

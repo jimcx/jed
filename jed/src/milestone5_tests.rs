@@ -24,14 +24,6 @@ use crate::selection::{Selection, Selections};
 use crate::workspace::trust::{Trust, TrustStore};
 use crate::workspace::{self, Workspace};
 
-fn cmd() -> M {
-    if cfg!(target_os = "macos") {
-        M::SUPER
-    } else {
-        M::CONTROL
-    }
-}
-
 fn open_app(root: &Path, file: Option<&str>) -> App {
     let initial = file.map(|f| InitialFile {
         buffer: Buffer::open(&root.join(f)).unwrap(),
@@ -52,7 +44,7 @@ fn workspace_dir() -> (tempfile::TempDir, std::path::PathBuf) {
 }
 
 fn command_palette(app: &mut App) {
-    app.press(K::Char('p'), cmd() | M::SHIFT);
+    app.test_execute(Command::ShowCommands);
 }
 
 fn mode(app: &App) -> Option<Mode> {
@@ -145,19 +137,10 @@ async fn milestone_5_every_command_runs_from_the_palette() {
     }
     // The first default key is the one shown (Cmd+Shift+P, not F1; Cmd+Q, not Ctrl+Q).
     let keys_of = |cmd: Command| listed.iter().find(|(c, _)| *c == cmd).unwrap().1.clone();
-    let mac = cfg!(target_os = "macos");
-    assert_eq!(
-        keys_of(Command::Save).as_deref(),
-        Some(if mac { "Cmd+S" } else { "Ctrl+S" })
-    );
-    assert_eq!(
-        keys_of(Command::ShowCommands).as_deref(),
-        Some(if mac { "Cmd+Shift+P" } else { "Ctrl+Shift+P" })
-    );
-    assert_eq!(
-        keys_of(Command::Quit).as_deref(),
-        Some(if mac { "Cmd+Q" } else { "Ctrl+Q" })
-    );
+    for c in [Command::Save, Command::ShowCommands, Command::Quit] {
+        let first = app.keymap.binding_for(c).unwrap().label();
+        assert_eq!(keys_of(c).as_deref(), Some(first.as_str()), "{c:?}");
+    }
     assert_eq!(keys_of(Command::GoToLine).as_deref(), Some("Ctrl+G"));
     assert_eq!(keys_of(Command::ManageWorkspaceTrust), None);
     app.press(K::Esc, M::NONE);
@@ -208,7 +191,7 @@ async fn milestone_5_palette_commands_take_effect() {
 
     // Explorer commands act on the explorer when it has focus.
     assert!(app.settle(|a| a.explorer.rows().len() == 2).await);
-    app.press(K::Char('e'), cmd() | M::SHIFT);
+    app.test_execute(Command::FocusExplorer);
     assert_eq!(app.ui.focus, Focus::SidePanel);
     command_palette(&mut app);
     app.type_text("explorer select last");
@@ -219,7 +202,7 @@ async fn milestone_5_palette_commands_take_effect() {
     app.press(K::Enter, M::NONE);
     assert_eq!(app.explorer.selected, Some(root.join("a.txt")));
     assert_eq!(app.ui.focus, Focus::SidePanel, "the palette gives focus back");
-    app.press(K::Char('1'), cmd());
+    app.test_execute(Command::FocusGroup(1));
 
     app.type_text("X");
     command_palette(&mut app);
@@ -267,7 +250,7 @@ async fn milestone_5_palette_commands_take_effect() {
     app.type_text(">");
     assert_eq!(mode(&app), Some(Mode::Commands));
     // A non-palette key closes the palette first, then acts.
-    app.press(K::Char('w'), cmd());
+    app.test_execute(Command::CloseTab);
     assert!(app.palette.is_none());
     assert_eq!(app.groups.len(), 1, "Cmd+W closed the second group's tab");
 }
@@ -288,15 +271,18 @@ async fn milestone_5_esc_closes_the_palette_and_nothing_else() {
 
     // Every way in; Esc in the editor alone would drop the extra cursor.
     let openers = [
-        (K::Char('p'), cmd() | M::SHIFT),
-        (K::Char('p'), cmd()),
-        (K::Char('g'), M::CONTROL),
-        (K::F(1), M::NONE),
+        Some(Command::ShowCommands),
+        Some(Command::QuickOpen),
+        Some(Command::GoToLine),
+        None, // F1
     ];
     assert!(app.settle(|a| a.explorer.rows().len() == 1).await);
     let before = snapshot(&app);
-    for (code, mods) in openers {
-        app.press(code, mods);
+    for opener in openers {
+        match opener {
+            Some(c) => app.test_execute(c),
+            None => app.press(K::F(1), M::NONE),
+        }
         assert!(app.palette.is_some());
         // With a row selected that Enter would run or open.
         app.type_text("a");
@@ -308,7 +294,7 @@ async fn milestone_5_esc_closes_the_palette_and_nothing_else() {
         assert_eq!(snapshot(&app), before);
     }
     // From the explorer too: focus and the explorer's selection stay.
-    app.press(K::Char('e'), cmd() | M::SHIFT);
+    app.test_execute(Command::FocusExplorer);
     app.press(K::Down, M::NONE);
     assert!(app.explorer.selected.is_some());
     let before = snapshot(&app);
@@ -321,7 +307,7 @@ async fn milestone_5_esc_closes_the_palette_and_nothing_else() {
     let changed = tokio::time::timeout(Duration::from_millis(300), app.settle(|a| snapshot(a) != before)).await;
     assert!(changed.is_err(), "{}", snapshot(&app));
     // With the palette closed, Esc is the editor's again.
-    app.press(K::Char('1'), cmd());
+    app.test_execute(Command::FocusGroup(1));
     app.press(K::Esc, M::NONE);
     assert_eq!(app.group().active_tab().unwrap().view.selections.len(), 1);
 }
@@ -331,7 +317,11 @@ async fn milestone_5_keybindings_toml_replaces_default_and_shows_in_palette() {
     let (_dir, root) = workspace_dir();
     fs::write(root.join("a.txt"), "one\n").unwrap();
     let config = root.join(keymap::FILE_NAME);
-    let cmd_b = if cfg!(target_os = "macos") { "cmd+b" } else { "ctrl+b" };
+    // The default keys this test rebinds or leaves alone: pressed raw, since the key is the subject.
+    let defaults = Keymap::default_for(Platform::current());
+    let save_key = defaults.binding_for(Command::Save).unwrap();
+    let sidebar_key = defaults.binding_for(Command::ToggleSidebar).unwrap();
+    let cmd_b = sidebar_key.label().to_lowercase();
     fs::write(
         &config,
         format!(
@@ -361,7 +351,7 @@ async fn milestone_5_keybindings_toml_replaces_default_and_shows_in_palette() {
 
     // The default no longer saves; the new key does.
     app.type_text("X");
-    app.press(K::Char('s'), cmd());
+    app.press(save_key.code, save_key.mods);
     assert!(app.active_buffer().unwrap().is_dirty());
     app.press(K::Char('s'), M::CONTROL | M::ALT);
     assert!(app.settle(|a| !a.active_buffer().unwrap().is_dirty()).await);
@@ -378,7 +368,7 @@ async fn milestone_5_keybindings_toml_replaces_default_and_shows_in_palette() {
     // The palette-context binding wins in the palette; elsewhere the key keeps its default.
     app.press(K::Esc, M::NONE);
     command_palette(&mut app);
-    app.press(K::Char('b'), cmd());
+    app.press(sidebar_key.code, sidebar_key.mods);
     assert!(
         app.palette.is_some(),
         "didn't toggle the side bar (which closes the palette)"
@@ -394,7 +384,7 @@ async fn milestone_5_keybindings_toml_replaces_default_and_shows_in_palette() {
     app.press(K::Up, M::NONE);
     assert_eq!(app.palette.as_ref().unwrap().selected, 0, "other commands keep theirs");
     app.press(K::Esc, M::NONE);
-    app.press(K::Char('b'), cmd());
+    app.press(sidebar_key.code, sidebar_key.mods);
     assert!(!app.ui.side_visible, "outside the palette Cmd+B toggles the side bar");
 }
 
@@ -415,7 +405,7 @@ async fn milestone_5_quick_open() {
     fs::write(root.join(".jed/history/needle.rs"), "").unwrap();
     let mut app = open_app(&root, None);
 
-    app.press(K::Char('p'), cmd());
+    app.test_execute(Command::QuickOpen);
     assert_eq!(mode(&app), Some(Mode::Files));
     assert!(
         app.settle(|a| a.palette.as_ref().is_some_and(|p| p.rows.len() == 4))
@@ -454,7 +444,7 @@ async fn milestone_5_quick_open() {
     assert_eq!(cursor(&app), (1, 1), "line 2, column 2");
 
     // Again on the already open file: moves the cursor.
-    app.press(K::Char('p'), cmd());
+    app.test_execute(Command::QuickOpen);
     app.type_text("needle:3");
     assert!(
         app.settle(|a| a.palette.as_ref().is_some_and(|p| p.rows.len() == 1))
@@ -465,7 +455,7 @@ async fn milestone_5_quick_open() {
     assert_eq!(cursor(&app), (2, 0));
 
     // A pasted `file:line` goes into the input, not the editor behind it.
-    app.press(K::Char('p'), cmd());
+    app.test_execute(Command::QuickOpen);
     app.handle_test_event(crossterm::event::Event::Paste("needle.rs:2\n".into()));
     assert_eq!(app.palette.as_ref().unwrap().field.text, "needle.rs:2");
     assert!(
@@ -477,7 +467,7 @@ async fn milestone_5_quick_open() {
     assert_eq!(cursor(&app), (1, 0));
 
     // No match: Enter does nothing and the palette stays.
-    app.press(K::Char('p'), cmd());
+    app.test_execute(Command::QuickOpen);
     app.type_text("zzzz");
     assert!(
         app.settle(|a| a
@@ -496,7 +486,7 @@ async fn milestone_5_go_to_line() {
     fs::write(root.join("a.txt"), "one\ntwo\nthree\nfour\n").unwrap();
     let mut app = open_app(&root, Some("a.txt"));
 
-    app.press(K::Char('g'), M::CONTROL);
+    app.test_execute(Command::GoToLine);
     assert_eq!(mode(&app), Some(Mode::GoToLine));
     let hint = app.palette.as_ref().unwrap().hint.clone().unwrap();
     assert!(
@@ -508,40 +498,40 @@ async fn milestone_5_go_to_line() {
     assert!(app.palette.is_none());
     assert_eq!(cursor(&app), (2, 0));
 
-    app.press(K::Char('g'), M::CONTROL);
+    app.test_execute(Command::GoToLine);
     app.type_text("2,3");
     app.press(K::Enter, M::NONE);
     assert_eq!(cursor(&app), (1, 2));
 
     // A column past the end of the line clamps to it; from the explorer, focus goes to the editor.
-    app.press(K::Char('e'), cmd() | M::SHIFT);
-    app.press(K::Char('g'), M::CONTROL);
+    app.test_execute(Command::FocusExplorer);
+    app.test_execute(Command::GoToLine);
     app.type_text("3:99");
     app.press(K::Enter, M::NONE);
     assert_eq!(cursor(&app), (2, 5));
     assert_eq!(app.ui.focus, Focus::Editor);
 
     // Past the end clamps; not a number: Enter does nothing.
-    app.press(K::Char('g'), M::CONTROL);
+    app.test_execute(Command::GoToLine);
     app.type_text("99");
     app.press(K::Enter, M::NONE);
     assert_eq!(cursor(&app).0, 4);
-    app.press(K::Char('g'), M::CONTROL);
+    app.test_execute(Command::GoToLine);
     app.type_text("x");
     app.press(K::Enter, M::NONE);
     assert!(app.palette.is_some());
     app.press(K::Esc, M::NONE);
 
     // Same widget: `:` typed in quick open is go to line.
-    app.press(K::Char('p'), cmd());
+    app.test_execute(Command::QuickOpen);
     app.type_text(":1");
     app.press(K::Enter, M::NONE);
     assert_eq!(cursor(&app), (0, 0));
 
     // No file open: a hint, and Enter does nothing.
-    app.press(K::Char('w'), cmd());
+    app.test_execute(Command::CloseTab);
     assert!(app.active_buffer().is_none());
-    app.press(K::Char('g'), M::CONTROL);
+    app.test_execute(Command::GoToLine);
     app.type_text("2");
     assert_eq!(
         app.palette.as_ref().unwrap().hint.as_deref(),
@@ -635,8 +625,8 @@ async fn milestone_5_palette_drawn_and_clickable() {
     let screen = screen_text(&term);
     assert!(screen.contains(">split editor"), "{screen}");
     assert!(screen.contains("View: Split Editor Right"));
-    let keys = if cfg!(target_os = "macos") { "Cmd+\\" } else { "Ctrl+\\" };
-    assert!(screen.contains(keys), "binding shown: {screen}");
+    let keys = app.keymap.binding_for(Command::SplitRight).unwrap().label();
+    assert!(screen.contains(&keys), "binding shown: {screen}");
 
     // Click the "Split Editor Down" row.
     let hit = app.hits.palette.unwrap();

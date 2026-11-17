@@ -38,6 +38,7 @@ use ratatui::backend::TestBackend;
 use serde_json::{Value, json};
 
 use crate::app::App;
+use crate::command::Command;
 use crate::lsp::fake::{FakeLauncher, FakeOptions};
 use crate::milestone9_tests::{
     buffer_id, diag, draw, find_cells, idle, open_app, open_app_watched, open_synced, popup_rows, project, publish,
@@ -400,17 +401,9 @@ async fn fixes_hover_failed_answer_keeps_the_diagnostics() {
 
 // ---- fixes-b: code actions ----
 
-fn cmd() -> M {
-    if cfg!(target_os = "macos") {
-        M::SUPER
-    } else {
-        M::CONTROL
-    }
-}
-
 /// Cmd+. (Ctrl+. on Linux).
 fn quick_fix(app: &mut App) {
-    app.press(K::Char('.'), cmd());
+    app.test_execute(Command::QuickFix);
 }
 
 /// Where `needle` starts in `TEXT`.
@@ -604,7 +597,7 @@ async fn fixes_code_action_edit_is_one_undo_step() {
         app.settle(|a| fake.document(&u).is_some_and(|d| d.text == text_of(a)))
             .await
     );
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text_of(&app), TEXT, "one undo step");
     assert!(fake.errors().is_empty(), "{:?}", fake.errors());
     app.shutdown_servers().await;
@@ -630,7 +623,7 @@ async fn fixes_code_action_resolve_command_and_apply_edit() {
     app.press(K::Enter, M::NONE);
     assert!(app.settle(|a| text_of(a).contains("int value;\nint x")).await);
     assert_eq!(fake.requests("codeAction/resolve"), [lazy]);
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text_of(&app), TEXT);
 
     // Resolved to a command: it runs, and the server's edit comes back as applyEdit.
@@ -905,7 +898,7 @@ async fn fixes_code_actions_send_only_that_servers_diagnostics() {
         app.settle(|app| app.buffers.get(a).unwrap().diagnostics.all().len() == 3)
             .await
     );
-    app.press(K::Char('w'), cmd());
+    app.test_execute(Command::CloseTab);
     assert!(
         app.settle(|app| app.active_buffer().is_some_and(|b| b.path == path))
             .await
@@ -1051,7 +1044,7 @@ async fn fixes_code_action_edits_a_file_not_open() {
     // The edited buffer's undo is one step.
     let tab = app.group().tabs.iter().position(|t| t.buffer() == Some(a)).unwrap();
     app.group_mut().active = tab;
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(app.buffers.get(a).unwrap().rope.to_string(), TEXT);
     assert!(fake.errors().is_empty(), "{:?}", fake.errors());
     app.shutdown_servers().await;
@@ -1127,7 +1120,7 @@ async fn fixes_code_action_edit_for_an_older_version() {
     put_cursor(&mut app, at("int x"));
     app.handle_test_event(crossterm::event::Event::Paste("ab".into()));
     app.pump();
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     app.pump();
     let id = buffer_id(&app, &path);
     assert_eq!(app.lsp.version(id), Some(3), "the paste and its undo sent");
@@ -1150,7 +1143,7 @@ async fn fixes_code_action_edit_for_an_older_version() {
         TEXT.replace("value;", "valve;"),
         "version 1's text is the buffer's"
     );
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     app.pump();
 
     fake.respond(
@@ -1269,7 +1262,7 @@ fn select(app: &mut App, title: &str) {
 }
 
 async fn save(app: &mut App) {
-    app.press(K::Char('s'), cmd());
+    app.test_execute(Command::Save);
     assert!(
         app.settle(|a| a.message.as_ref().is_some_and(|m| m.text.starts_with("Saved")))
             .await,
@@ -1464,7 +1457,7 @@ async fn fixes_done_when_rust_analyzer() {
         text_of(&app),
         app.message.as_ref().map(|m| &m.text)
     );
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text_of(&app), RA_FIXES_MAIN, "one undo step");
 
     // The preferred one (an edit of its own), then a save: the warning goes with the next publish.
@@ -1502,7 +1495,7 @@ async fn fixes_done_when_rust_analyzer() {
     select(&mut app, fix);
     app.press(K::Enter, M::NONE);
     assert_eq!(text_of(&app), without.replace("Strin", "String"));
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text_of(&app), without, "one undo step");
     // Whether E0425 is still marked now depends on when rust-analyzer republishes (sometimes
     // before the next save's check), so it isn't asserted.
@@ -1591,7 +1584,7 @@ async fn fixes_done_when_clangd() {
         "message {:?}",
         app.message.as_ref().map(|m| &m.text)
     );
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text_of(&app), CLANGD_C, "one undo step");
     // clangd labels this fix with version 1 still (it publishes nothing for the undone edit):
     // applied, as that version's text is the buffer's.
@@ -1648,7 +1641,7 @@ async fn fixes_done_when_clangd() {
         text_of(&app),
         app.message.as_ref().map(|m| &m.text)
     );
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text_of(&app), CLANGD_CPP, "one undo step");
 
     // Stopped: no squiggles in either file, and the hover on `std` shows none.
@@ -1725,7 +1718,7 @@ async fn fixes_done_when_ty() {
         "undefined_name  # ty: ignore[unresolved-reference]\n",
     );
     assert_eq!(text_of(&app), ignored);
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text_of(&app), TY_PY);
     assert!(
         settle_for(&mut app, 30, |a| has_code(a, &path, "unresolved-reference")).await,

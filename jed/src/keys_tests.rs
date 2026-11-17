@@ -19,13 +19,10 @@ use crate::layout::ScrollTarget;
 mod keys {
     use super::*;
 
-    /// Cmd on macOS, Ctrl on Linux.
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
+    /// The modifiers of Save As's key as typed into the search box ("ctrl+shift" / "cmd+shift").
+    fn modifiers_query(app: &App) -> String {
+        let label = app.keymap.binding_for(Command::SaveAs).unwrap().label().to_lowercase();
+        label.rsplit_once('+').unwrap().0.to_string()
     }
 
     fn open_app(dir: &tempfile::TempDir) -> App {
@@ -93,14 +90,7 @@ mod keys {
         app.type_text("x");
         app.press(K::Tab, M::NONE);
         app.press(K::F(1), M::SHIFT);
-        app.press(
-            K::Char('p'),
-            if cfg!(target_os = "macos") {
-                M::SUPER
-            } else {
-                M::CONTROL
-            },
-        );
+        app.press_bound(Command::QuickOpen);
         app.handle_test_event(Event::Paste("pasted".into()));
         assert_eq!(app.active_buffer().unwrap().rope.to_string(), "abc\n");
         assert!(app.palette.is_none());
@@ -194,11 +184,8 @@ mod keys {
         app.test_execute(Command::KeyboardShortcuts);
         let all = app.keys.as_ref().unwrap().rows.len();
         // As key text is labelled on this platform.
-        let query = if cfg!(target_os = "macos") {
-            "cmd+shift"
-        } else {
-            "ctrl+shift"
-        };
+        let query = modifiers_query(&app);
+        let query = query.as_str();
         app.type_text(query);
         let view = app.keys.as_ref().unwrap();
         assert_eq!(view.query, query);
@@ -382,8 +369,8 @@ mod keys {
         assert!(errors.is_empty(), "{errors:?}");
         app.set_keymap(keymap, errors);
 
-        // The palette command opens the view (Cmd+Shift+P, then its title).
-        app.press(K::Char('p'), cmd() | M::SHIFT);
+        // The palette command opens the view (the palette, then its title).
+        app.test_execute(Command::ShowCommands);
         app.type_text("Keyboard Shortcuts");
         app.press(K::Enter, M::NONE);
         assert!(app.palette.is_none(), "the palette closes for it");
@@ -453,12 +440,8 @@ mod keys {
         app.test_execute(Command::KeyboardShortcuts);
         let all = app.keys.as_ref().unwrap().all.len();
         // Typing key text filters (as it is labelled on this platform).
-        let typed = if cfg!(target_os = "macos") {
-            "cmd+shift"
-        } else {
-            "ctrl+shift"
-        };
-        app.type_text(typed);
+        let typed = modifiers_query(&app);
+        app.type_text(&typed);
         let view = app.keys.as_ref().unwrap();
         assert_eq!(view.query, typed);
         assert!(view.rows.len() < all, "the search narrows the list");
@@ -478,11 +461,8 @@ mod keys {
         assert_eq!(view.selected, selected + 1);
 
         // The next combo becomes the query (its label) and filters to its bindings.
-        let (code, mods) = if cfg!(target_os = "macos") {
-            (K::Char('s'), M::SUPER | M::SHIFT)
-        } else {
-            (K::Char('s'), M::CONTROL | M::SHIFT)
-        };
+        let save_as = app.keymap.binding_for(Command::SaveAs).unwrap();
+        let (code, mods) = (save_as.code, save_as.mods);
         let label = KeyCombo::from_event(&KeyEvent::new(code, mods)).label();
         app.press(code, mods);
         let view = app.keys.as_ref().unwrap();

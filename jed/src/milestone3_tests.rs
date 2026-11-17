@@ -10,17 +10,10 @@ use ratatui::backend::TestBackend;
 
 use crate::app::{App, InitialFile, Prompt};
 use crate::buffer::Buffer;
+use crate::command::Command;
 use crate::layout::GroupId;
 use crate::workspace::trust::TrustStore;
 use crate::workspace::{self, Workspace};
-
-fn cmd() -> M {
-    if cfg!(target_os = "macos") {
-        M::SUPER
-    } else {
-        M::CONTROL
-    }
-}
 
 fn open_app(root: &Path, file: &str) -> App {
     let buffer = Buffer::open(&root.join(file)).unwrap();
@@ -62,7 +55,7 @@ async fn milestone_3_splits_and_shared_buffers() {
 
     // Cursor to line 2, then split right: the new group shows the same buffer, same cursor.
     app.press(K::Down, M::NONE);
-    app.press(K::Char('\\'), cmd());
+    app.test_execute(Command::SplitRight);
     let second = app.groups.active;
     assert_ne!(first, second);
     assert_eq!(app.groups.ids(), vec![first, second]);
@@ -77,12 +70,12 @@ async fn milestone_3_splits_and_shared_buffers() {
     assert_eq!(heads(&app, second), vec![2]);
 
     // Undo in the second group: the first group's cursor goes back too.
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), "hello\nworld\n");
     assert_eq!(heads(&app, first), vec![6]);
 
     // Focus the first group and type there; the second group sees the text.
-    app.press(K::Char('1'), cmd());
+    app.test_execute(Command::FocusGroup(1));
     assert_eq!(app.groups.active, first);
     app.type_text("Z");
     assert_eq!(heads(&app, first), vec![7]);
@@ -91,22 +84,22 @@ async fn milestone_3_splits_and_shared_buffers() {
 
     // Cmd+3 with two groups splits again; closing its only tab closes the group (no prompt:
     // the buffer is still shown elsewhere).
-    app.press(K::Char('3'), cmd());
+    app.test_execute(Command::FocusGroup(3));
     assert_eq!(app.groups.len(), 3);
-    app.press(K::Char('w'), cmd());
+    app.test_execute(Command::CloseTab);
     assert!(app.prompt.is_none());
     assert_eq!(app.groups.len(), 2);
 
     // Same for the second group.
-    app.press(K::Char('2'), cmd());
+    app.test_execute(Command::FocusGroup(2));
     assert_eq!(app.groups.active, second);
-    app.press(K::Char('w'), cmd());
+    app.test_execute(Command::CloseTab);
     assert!(app.prompt.is_none());
     assert_eq!(app.groups.len(), 1);
     assert_eq!(app.groups.active, first);
 
     // Last tab showing the unsaved buffer: asked. Don't Save drops it; the last group stays.
-    app.press(K::Char('w'), cmd());
+    app.test_execute(Command::CloseTab);
     assert!(matches!(app.prompt, Some(Prompt::SaveBeforeClose { .. })));
     app.press(K::Char('d'), M::NONE);
     assert_eq!(app.groups.len(), 1);
@@ -122,14 +115,14 @@ async fn save_from_close_prompt_in_one_of_two_groups() {
     fs::write(root.join("a.txt"), "a\n").unwrap();
     let mut app = open_app(&root, "a.txt");
     app.type_text("1");
-    app.press(K::Char('\\'), cmd());
+    app.test_execute(Command::SplitRight);
     let second = app.groups.active;
 
     // Closing one of two tabs on a dirty buffer doesn't ask; closing the last one does.
-    app.press(K::Char('w'), cmd());
+    app.test_execute(Command::CloseTab);
     assert!(app.prompt.is_none());
     assert_ne!(app.groups.active, second);
-    app.press(K::Char('w'), cmd());
+    app.test_execute(Command::CloseTab);
     assert!(matches!(app.prompt, Some(Prompt::SaveBeforeClose { .. })));
     app.press(K::Char('s'), M::NONE);
     assert!(app.settle(|a| a.group().tabs.is_empty()).await);
@@ -144,7 +137,7 @@ async fn split_down_mouse_focus_and_divider_drag() {
     let mut app = open_app(&root, "a.txt");
     let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
 
-    app.press(K::Char('\\'), cmd() | M::ALT);
+    app.test_execute(Command::SplitDown);
     let (top, bottom) = (app.groups.ids()[0], app.groups.ids()[1]);
     assert_eq!(app.groups.active, bottom);
     draw(&mut app, &mut term);
@@ -187,7 +180,7 @@ async fn borders_join_with_junction_glyphs() {
     fs::write(root.join("a.txt"), "one\ntwo\n").unwrap();
     let mut app = open_app(&root, "a.txt");
     let mut term = Terminal::new(TestBackend::new(100, 40)).unwrap();
-    app.press(K::Char('\\'), cmd() | M::ALT);
+    app.test_execute(Command::SplitDown);
     draw(&mut app, &mut term);
     let side = app.hits.regions.side.expect("the side panel is shown");
     let edge = side.x + side.width - 1;

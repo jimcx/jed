@@ -77,6 +77,7 @@ use ratatui::style::Style;
 
 use crate::app::App;
 use crate::buffer::Buffer;
+use crate::command::{Command, Motion};
 use crate::milestone_tests::test_app;
 use crate::syntax::Language;
 use crate::theme::Theme;
@@ -91,14 +92,6 @@ const KEYSTROKE_WORST: Duration = Duration::from_millis(16);
 const KEYSTROKE_DEBUG_BOUND: Duration = Duration::from_millis(400);
 /// The first parse of the 1 MB file, off the UI thread (release).
 const FIRST_PARSE_BUDGET: Duration = Duration::from_millis(1500);
-
-fn cmd() -> M {
-    if cfg!(target_os = "macos") {
-        M::SUPER
-    } else {
-        M::CONTROL
-    }
-}
 
 fn write(root: &Path, rel: &str, text: impl AsRef<[u8]>) -> PathBuf {
     let path = root.join(rel);
@@ -282,13 +275,13 @@ async fn milestone_8_edits_keep_the_tree_current() {
     current(&mut app).await;
 
     // Every `int` becomes `long` at once (several changes in one set), then undo / redo.
-    app.press(K::Char('g'), M::CONTROL);
+    app.test_execute(Command::GoToLine);
     app.type_text("5");
     app.press(K::Enter, M::NONE);
     app.press(K::Right, M::SHIFT);
     app.press(K::Right, M::SHIFT);
     app.press(K::Right, M::SHIFT);
-    app.press(K::Char('l'), cmd() | M::SHIFT);
+    app.test_execute(Command::SelectAllMatches);
     assert!(app.group().active_tab().unwrap().view.selections.len() > 3);
     app.type_text("long");
     current(&mut app).await;
@@ -299,9 +292,9 @@ async fn milestone_8_edits_keep_the_tree_current() {
             .to_string()
             .contains("long twice(long x)")
     );
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     current(&mut app).await;
-    app.press(K::Char('z'), cmd() | M::SHIFT);
+    app.test_execute(Command::Redo);
     current(&mut app).await;
 
     // A paste.
@@ -318,7 +311,7 @@ async fn milestone_8_edits_during_the_first_parse() {
     // Typed before the first parse can have finished (it started in `test_start`).
     app.type_text("int x; ");
     app.press(K::Enter, M::NONE);
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     app.type_text("// done");
     // No `AppEvent` has been handled yet, so the first parse's result can't have been taken.
     assert!(!parsed(&app), "typed while the first parse runs");
@@ -354,9 +347,9 @@ async fn milestone_8_no_tree_past_the_size_limit() {
         app.settle(|a| a.active_buffer().unwrap().name() == "small.py" && parsed(a))
             .await
     );
-    app.press(K::Char('w'), cmd());
+    app.test_execute(Command::CloseTab);
     assert_eq!(app.active_buffer().unwrap().name(), "big.py");
-    app.press(K::Char('a'), cmd());
+    app.test_execute(Command::SelectAll);
     app.press(K::Backspace, M::NONE);
     assert!(app.settle(parsed).await);
     assert_tree_current(&app);
@@ -385,7 +378,7 @@ async fn milestone_8_typing_in_a_one_mb_cpp_file() {
 
     let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
     // Somewhere in the middle, inside a function body.
-    app.press(K::Char('g'), M::CONTROL);
+    app.test_execute(Command::GoToLine);
     app.type_text(&(text.lines().count() / 2).to_string());
     app.press(K::Enter, M::NONE);
     app.press(K::End, M::NONE);
@@ -431,16 +424,16 @@ async fn milestone_8_typing_in_a_one_mb_cpp_file() {
     assert!(comment < KEYSTROKE_DEBUG_BOUND, "/* took {comment:?}");
     assert!(app.settle(parsed).await);
     assert_tree_current(&app);
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert!(app.settle(parsed).await);
 
     // Every `t` (~63k cursors): too wide a change set to edit the tree with, so it is dropped (and
     // freed off-thread) and a fresh parse runs in the background.
-    app.press(K::Char('g'), M::CONTROL);
+    app.test_execute(Command::GoToLine);
     app.type_text("7");
     app.press(K::Enter, M::NONE);
     app.press(K::Right, M::SHIFT);
-    app.press(K::Char('l'), cmd() | M::SHIFT);
+    app.test_execute(Command::SelectAllMatches);
     let count = app.group().active_tab().unwrap().view.selections.len();
     assert!(count > text.len() / 20, "{count}");
     let t = Instant::now();
@@ -474,7 +467,7 @@ async fn milestone_8_rename_redetects_the_language() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, root) = open_app(&dir, "", "tool.txt", "def f():\n    return 1\n");
     assert_eq!(app.active_buffer().unwrap().syntax.language(), Language::PlainText);
-    app.press(K::Char('e'), cmd() | M::SHIFT);
+    app.test_execute(Command::FocusExplorer);
     let from = root.join("tool.txt");
     assert!(app.settle(|a| a.explorer.find(&from).is_some()).await);
     app.press(K::Home, M::NONE);
@@ -568,7 +561,7 @@ async fn milestone_8_highlighting() {
     assert_ne!(fg(&app, "keyword"), fg(&app, "keyword.control"));
 
     // A selection over `return`: the selection's background, the keyword's colour.
-    app.press(K::Char('g'), M::CONTROL);
+    app.test_execute(Command::GoToLine);
     app.type_text("4");
     app.press(K::Enter, M::NONE);
     app.press(K::Home, M::NONE);
@@ -583,7 +576,7 @@ async fn milestone_8_highlighting() {
 
     // Find matches: their backgrounds, the tokens' colours (`const`'s `o` is the current match, in
     // a keyword; `hello`'s is another, in a string).
-    app.press(K::Char('f'), cmd());
+    app.test_execute(Command::OpenFind);
     app.type_text("o");
     draw(&mut term, &mut app);
     let cell = fg_of(&term, "\"hello\"", 5);
@@ -593,7 +586,7 @@ async fn milestone_8_highlighting() {
     assert_eq!(cell.fg, fg(&app, "keyword"));
     assert_eq!(cell.bg, app.theme.get("editor.findMatch").bg);
     app.press(K::Esc, M::NONE);
-    app.press(K::Char('g'), M::CONTROL);
+    app.test_execute(Command::GoToLine);
     app.type_text("4");
     app.press(K::Enter, M::NONE);
     app.press(K::End, M::NONE);
@@ -623,7 +616,7 @@ async fn milestone_8_highlighting() {
     draw(&mut term, &mut app);
     assert_eq!(fg_of(&term, "int main", 0).fg, fg(&app, "comment"));
     assert_eq!(fg_of(&term, "return 42", 0).fg, fg(&app, "keyword.control"));
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert!(app.settle(parsed).await);
     draw(&mut term, &mut app);
     assert_eq!(fg_of(&term, "return 42", 0).fg, fg(&app, "keyword.control"));
@@ -649,11 +642,11 @@ async fn milestone_8_colours_survive_a_background_reparse() {
     assert_eq!(fg_of(&term, "/// Holds item 0", 4).fg, fg(&app, "comment"));
 
     // Every `t` at once: the tree is dropped and re-parsed in the background.
-    app.press(K::Char('g'), M::CONTROL);
+    app.test_execute(Command::GoToLine);
     app.type_text("7");
     app.press(K::Enter, M::NONE);
     app.press(K::Right, M::SHIFT);
-    app.press(K::Char('l'), cmd() | M::SHIFT);
+    app.test_execute(Command::SelectAllMatches);
     assert!(app.group().active_tab().unwrap().view.selections.len() > 1000);
     app.press(K::Char('X'), M::SHIFT);
     app.pump();
@@ -741,7 +734,7 @@ async fn milestone_8_highlighted_one_mb_cpp_file_frames() {
         .into_iter()
         .enumerate()
     {
-        app.press(K::Char('g'), M::CONTROL);
+        app.test_execute(Command::GoToLine);
         app.type_text(&at.to_string());
         app.press(K::Enter, M::NONE);
         app.press(K::End, M::NONE);
@@ -904,21 +897,21 @@ async fn milestone_8_comment_line_toggles_and_undoes_in_one_step() {
     app.press(K::Down, M::SHIFT);
     app.press(K::Down, M::SHIFT);
     app.press(K::Down, M::SHIFT);
-    app.press(K::Char('/'), cmd());
+    app.test_execute(Command::CommentLine);
     assert_eq!(
         text(&app),
         "int f() {\n    // int x = 1;\n\n    // return x;\n}\n",
         "blank line skipped, the line the selection ends at the start of left alone"
     );
     assert_eq!(sels(&app), vec![(10, 46)], "the same lines stay selected");
-    app.press(K::Char('/'), cmd());
+    app.test_execute(Command::CommentLine);
     assert_eq!(text(&app), cpp);
-    app.press(K::Char('/'), cmd());
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::CommentLine);
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), cpp, "one undo step");
-    app.press(K::Char('z'), cmd() | M::SHIFT);
-    app.press(K::Char('a'), cmd());
-    app.press(K::Char('/'), cmd());
+    app.test_execute(Command::Redo);
+    app.test_execute(Command::SelectAll);
+    app.test_execute(Command::CommentLine);
     assert_eq!(
         text(&app),
         "// int f() {\n//     // int x = 1;\n\n//     // return x;\n// }\n",
@@ -930,23 +923,23 @@ async fn milestone_8_comment_line_toggles_and_undoes_in_one_step() {
 
     let py = "def f(x):\n    # twice\n    return x * 2\n";
     let (mut app, _) = open_app(&dir, "", "a.py", py);
-    app.press(K::Char('a'), cmd());
-    app.press(K::Char('/'), cmd());
+    app.test_execute(Command::SelectAll);
+    app.test_execute(Command::CommentLine);
     assert_eq!(text(&app), "# def f(x):\n#     # twice\n#     return x * 2\n");
-    app.press(K::Char('/'), cmd());
+    app.test_execute(Command::CommentLine);
     assert_eq!(text(&app), py);
     // A cursor on one line.
     set_cursors(&mut app, &[26]);
-    app.press(K::Char('/'), cmd());
+    app.test_execute(Command::CommentLine);
     assert_eq!(text(&app), "def f(x):\n    # twice\n    # return x * 2\n");
 
     // Plain text has no comment token; read-only buffers refuse.
     let (mut app, _) = open_app(&dir, "", "a.txt", "notes\n");
-    app.press(K::Char('/'), cmd());
+    app.test_execute(Command::CommentLine);
     assert_eq!(text(&app), "notes\n");
     let (mut app, _) = open_app(&dir, "", "b.cpp", "int x;\n");
     app.active_mut().unwrap().0.read_only = Some("test".into());
-    app.press(K::Char('/'), cmd());
+    app.test_execute(Command::CommentLine);
     assert_eq!(text(&app), "int x;\n");
     assert!(app.message.as_ref().unwrap().text.contains("Read-only"));
 }
@@ -974,15 +967,17 @@ async fn milestone_8_auto_close_type_over_wrap_and_delete() {
     app.type_text(")");
     assert_eq!(text(&app), "foo(x);())\n");
     // Wrap a selection in quotes, still selected.
-    app.press(K::Char('a'), cmd());
+    app.test_execute(Command::SelectAll);
     app.press(K::Backspace, M::NONE);
     app.type_text("say hi");
-    let word = if cfg!(target_os = "macos") { M::ALT } else { M::CONTROL };
-    app.press(K::Left, M::SHIFT | word);
+    app.test_execute(Command::Move {
+        motion: Motion::WordLeft,
+        select: true,
+    });
     app.type_text("\"");
     assert_eq!(text(&app), "say \"hi\"");
     assert_eq!(sels(&app), vec![(5, 7)]);
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), "say hi", "the wrap is one undo step");
     // Paste never auto-closes.
     app.press(K::End, M::NONE);
@@ -1011,7 +1006,7 @@ async fn milestone_8_auto_close_pairs_setting_off() {
     app.press(K::Left, M::SHIFT);
     app.type_text("[");
     assert_eq!(text(&app), "x([\n", "no wrap: the selection is replaced");
-    app.press(K::Char('/'), cmd());
+    app.test_execute(Command::CommentLine);
     assert_eq!(text(&app), "// x([\n", "comment line isn't affected");
 }
 
@@ -1033,7 +1028,7 @@ async fn milestone_8_pairs_and_comment_line_on_one_mb() {
     let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
     draw(&mut term, &mut app);
     set_cursors(&mut app, &[5]);
-    app.press(K::Char('l'), cmd() | M::SHIFT);
+    app.test_execute(Command::SelectAllMatches);
     app.press(K::Right, M::NONE);
     let count = sels(&app).len();
     assert_eq!(count, 2 * i);
@@ -1068,10 +1063,10 @@ async fn milestone_8_pairs_and_comment_line_on_one_mb() {
     let (mut app, _) = open_app(&dir, "", "lines.cpp", &lines);
     let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
     draw(&mut term, &mut app);
-    app.press(K::Char('a'), cmd());
+    app.test_execute(Command::SelectAll);
     let mut toggle = |app: &mut App, what: &str| {
         let t = Instant::now();
-        app.press(K::Char('/'), cmd());
+        app.test_execute(Command::CommentLine);
         draw(&mut term, app);
         let took = t.elapsed();
         println!("Cmd+/ {what} on {n} lines: {took:?}");
@@ -1085,7 +1080,7 @@ async fn milestone_8_pairs_and_comment_line_on_one_mb() {
     toggle(&mut app, "uncommenting");
     assert_eq!(text(&app), lines);
     // Every line its own cursor: each toggles alone.
-    app.press(K::Char('I'), M::ALT | M::SHIFT);
+    app.test_execute(Command::CursorsAtLineEnds);
     assert_eq!(sels(&app).len(), n);
     toggle(&mut app, "at a cursor per line");
     assert!(text(&app).starts_with("  // f(0);\n"));
@@ -1218,7 +1213,7 @@ async fn milestone_8_open_user_settings() {
     let (mut app, _, config_dir) = user_app(&dir, None, "", "a.cpp", "x\n");
     fs::remove_dir(&config_dir).unwrap();
     let path = config_dir.join(crate::config::settings::FILE_NAME);
-    app.press(K::Char('p'), cmd() | M::SHIFT);
+    app.test_execute(Command::ShowCommands);
     app.type_text("Open User Settings");
     app.press(K::Enter, M::NONE);
     assert!(app.settle(|a| a.active_buffer().is_some_and(|b| b.path == path)).await);
@@ -1233,7 +1228,7 @@ async fn milestone_8_open_user_settings() {
     let dir2 = tempfile::tempdir().unwrap();
     let (mut app, _, _) = user_app(&dir2, None, "", "a.cpp", "x\n");
     app.config_dir = config_dir;
-    app.press(K::Char('p'), cmd() | M::SHIFT);
+    app.test_execute(Command::ShowCommands);
     app.type_text("Open User Settings");
     app.press(K::Enter, M::NONE);
     assert!(app.settle(|a| a.active_buffer().is_some_and(|b| b.path == path)).await);
@@ -1289,7 +1284,7 @@ async fn milestone_8_auto_indent_cpp_and_python() {
         "int f(int x) {\n    if (x) {\n        return g(1,\n            2);\n    }\n    return 0;\n}\n"
     );
     // Enter and its indentation group with the typing around it, as typing does.
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), "");
 
     // With auto-close: `{` closes, Enter between the pair puts `}` on its own line.
@@ -1376,7 +1371,7 @@ async fn milestone_8_auto_indent_and_match_brackets_settings() {
     assert_eq!(text(&app), "  f() {\n}\n", "a plain line break");
     app.type_text("  }");
     assert_eq!(text(&app), "  f() {\n  }}\n", "no outdent");
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), "  f() {}\n");
 
     fs::write(
@@ -1419,7 +1414,7 @@ async fn milestone_8_auto_indent_and_bracket_matching_on_one_mb() {
     set_cursors(&mut app, &[original.find('{').unwrap()]);
     app.press(K::Right, M::SHIFT);
     app.press(K::Right, M::SHIFT);
-    app.press(K::Char('l'), cmd() | M::SHIFT);
+    app.test_execute(Command::SelectAllMatches);
     app.press(K::Left, M::NONE);
     app.press(K::Right, M::NONE);
     let count = sels(&app).len();
@@ -1459,7 +1454,7 @@ async fn milestone_8_auto_indent_and_bracket_matching_on_one_mb() {
         .find(|(_, l)| l.contains("for (auto x"))
         .unwrap()
         .0;
-    app.press(K::Char('g'), M::CONTROL);
+    app.test_execute(Command::GoToLine);
     app.type_text(&(line + 1).to_string());
     app.press(K::Enter, M::NONE);
     app.press(K::End, M::NONE);
@@ -1707,9 +1702,9 @@ async fn milestone_8_more_languages_editing() {
         ("h.xml", "<a/>\n", "<a/>\n"),
     ] {
         let (mut app, _) = open_app(&dir, "", rel, src);
-        app.press(K::Char('/'), cmd());
+        app.test_execute(Command::CommentLine);
         assert_eq!(text(&app), commented, "{rel}");
-        app.press(K::Char('/'), cmd());
+        app.test_execute(Command::CommentLine);
         assert_eq!(text(&app), src, "{rel} back");
     }
 
@@ -1857,7 +1852,7 @@ async fn milestone_8_more_languages_one_mb_frames() {
         draw(&mut term, &mut app);
         worst = worst.max(f.elapsed());
         let lines = text.lines().count();
-        app.press(K::Char('g'), M::CONTROL);
+        app.test_execute(Command::GoToLine);
         app.type_text(&(lines / 2).to_string());
         app.press(K::Enter, M::NONE);
         app.press(K::End, M::NONE);

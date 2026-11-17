@@ -148,15 +148,6 @@ fn find(rows: &[String], needle: &str) -> Vec<(u16, u16)> {
     out
 }
 
-/// VS Code's toggle: Alt+Z, Option+Command+Z on macOS.
-fn toggle_mods() -> KeyModifiers {
-    if cfg!(target_os = "macos") {
-        KeyModifiers::SUPER | KeyModifiers::ALT
-    } else {
-        KeyModifiers::ALT
-    }
-}
-
 #[test]
 fn soft_wrap_setting_defaults_off() {
     assert_eq!(settings::parse("").overrides.word_wrap, None);
@@ -171,7 +162,7 @@ async fn soft_wrap_toggle_flips_the_effective_mode_for_the_session() {
     assert_eq!(app.settings.word_wrap, WordWrap::Off);
     assert_eq!(app.word_wrap(), WordWrap::Off);
 
-    app.press(KeyCode::Char('z'), toggle_mods());
+    app.test_execute(Command::ToggleWordWrap);
     assert_eq!(app.last_command, Some(Command::ToggleWordWrap));
     assert_eq!(app.settings.word_wrap, WordWrap::Off, "the setting is untouched");
     assert_eq!(app.word_wrap(), WordWrap::On);
@@ -181,7 +172,7 @@ async fn soft_wrap_toggle_flips_the_effective_mode_for_the_session() {
     fs::write(root.join(".workspace"), "[settings]\nword_wrap = \"on\"\n").unwrap();
     assert!(app.settle(|a| a.settings.word_wrap == WordWrap::On).await);
     assert_eq!(app.word_wrap(), WordWrap::Off);
-    app.press(KeyCode::Char('z'), toggle_mods());
+    app.test_execute(Command::ToggleWordWrap);
     assert_eq!(app.word_wrap(), WordWrap::On);
 
     // Never written to either file.
@@ -205,15 +196,6 @@ async fn soft_wrap_setting_on_is_toggled_off_and_back() {
     assert_eq!(app.word_wrap(), WordWrap::Off);
     app.test_execute(Command::ToggleWordWrap);
     assert_eq!(app.word_wrap(), WordWrap::On);
-}
-
-/// The key that opens the find widget (Cmd+F on macOS, Ctrl+F elsewhere).
-fn cmd() -> KeyModifiers {
-    if cfg!(target_os = "macos") {
-        KeyModifiers::SUPER
-    } else {
-        KeyModifiers::CONTROL
-    }
 }
 
 /// A drawn cell's background (`None` for the terminal's default).
@@ -376,7 +358,7 @@ async fn soft_wrap_find_match_on_a_continuation_row() {
     );
     plain_editor(&mut app);
     app.test_execute(Command::ToggleWordWrap);
-    app.press(KeyCode::Char('f'), cmd());
+    app.test_execute(Command::OpenFind);
     app.type_text("qrst");
     let term = draw(&mut app, 30, 14);
     let screen = cells(&term);

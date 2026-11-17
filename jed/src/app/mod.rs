@@ -1891,6 +1891,28 @@ impl App {
         panic!("press_bound: no key resolves to {cmd:?} in context {context:?}; bindings tried: {tried:?}");
     }
 
+    /// Presses the key the editor context binds to `cmd`, for a text field or prompt, which take
+    /// the editor's moves, deletes, select all and copy / cut / paste (`field_key`) though their
+    /// own context binds none of them. Panics when the editor context has no such key.
+    pub fn press_field_key(&mut self, cmd: Command) {
+        let mut combos: Vec<_> = self
+            .keymap
+            .bindings()
+            .filter(|(_, _, c)| *c == cmd)
+            .map(|(combo, _, _)| combo)
+            .collect();
+        combos.sort_by_key(|c| (self.keymap.binding_for(cmd) != Some(*c), c.label()));
+        combos.dedup();
+        for combo in &combos {
+            let ev = crossterm::event::KeyEvent::new(combo.code, combo.mods);
+            if self.keymap.lookup(&ev, Context::Editor) == Some(cmd) {
+                self.handle_event(Event::Key(ev));
+                return;
+            }
+        }
+        panic!("press_field_key: the editor context binds no key to {cmd:?}");
+    }
+
     /// The context the keymap is looked up in now.
     pub fn test_context(&self) -> Context {
         self.context()

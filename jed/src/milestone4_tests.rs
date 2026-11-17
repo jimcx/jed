@@ -4,22 +4,15 @@
 use std::fs;
 use std::path::Path;
 
-use crossterm::event::{Event, KeyCode as K, KeyModifiers as M};
+use crossterm::event::Event;
 
 use crate::app::{App, InitialFile};
 use crate::buffer::Buffer;
 use crate::buffer::pos::ByteIdx;
+use crate::command::Command;
 use crate::selection::{Selection, Selections};
 use crate::workspace::trust::TrustStore;
 use crate::workspace::{self, Workspace};
-
-fn cmd() -> M {
-    if cfg!(target_os = "macos") {
-        M::SUPER
-    } else {
-        M::CONTROL
-    }
-}
 
 fn open_app(root: &Path, file: &str, contents: &str) -> App {
     fs::write(root.join(file), contents).unwrap();
@@ -57,7 +50,7 @@ async fn milestone_4_copy_cut_paste() {
 
     // Copy a selection; paste it elsewhere through the terminal.
     select(&mut app, 0, 3);
-    app.press(K::Char('c'), cmd());
+    app.test_execute(Command::Copy);
     assert_eq!(app.clipboard.read().unwrap(), "one");
     assert_eq!(text(&app), "one\ntwo\nthree\n", "copy doesn't edit");
     select(&mut app, 7, 7);
@@ -72,12 +65,12 @@ async fn milestone_4_copy_cut_paste() {
     select(&mut app, 0, 0);
     terminal_paste(&mut app);
     assert_eq!(text(&app), "from elsewhere\none\ntwoone\nthree\n");
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
 
     // Empty selection: Cmd+C copies the whole line; pasting puts it above the cursor's line,
     // and the cursor stays where it was in its text.
     select(&mut app, 5, 5); // "t|woone"
-    app.press(K::Char('c'), cmd());
+    app.test_execute(Command::Copy);
     assert_eq!(app.clipboard.read().unwrap(), "twoone\n");
     select(&mut app, 13, 13); // "th|ree"
     terminal_paste(&mut app);
@@ -85,36 +78,34 @@ async fn milestone_4_copy_cut_paste() {
     assert_eq!(head(&app), 20, "still between 'th' and 'ree'");
 
     // Empty selection: Cmd+X cuts the whole line in one undo step.
-    app.press(K::Char('x'), cmd());
+    app.test_execute(Command::Cut);
     assert_eq!(text(&app), "one\ntwoone\ntwoone\n");
     assert_eq!(app.clipboard.read().unwrap(), "three\n");
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), "one\ntwoone\ntwoone\nthree\n");
 
     // Cut then paste the line back above another: moves the line.
     select(&mut app, 0, 0);
-    app.press(K::Char('x'), cmd());
+    app.test_execute(Command::Cut);
     select(&mut app, 14, 14); // start of "three"
     terminal_paste(&mut app);
     assert_eq!(text(&app), "twoone\ntwoone\none\nthree\n");
 
     // A selection cut is one undo step and pastes inline.
     select(&mut app, 0, 3);
-    app.press(K::Char('x'), cmd());
+    app.test_execute(Command::Cut);
     assert_eq!(text(&app), "one\ntwoone\none\nthree\n");
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), "twoone\ntwoone\none\nthree\n");
 
-    // Linux keymap: Ctrl+V reads the clipboard itself.
-    if !cfg!(target_os = "macos") {
-        app.clipboard.write(crate::clipboard::Copied {
-            text: "V".into(),
-            ..Default::default()
-        });
-        select(&mut app, 0, 0);
-        app.press(K::Char('v'), M::CONTROL);
-        assert!(text(&app).starts_with("Vtwoone"));
-    }
+    // The Paste command reads the clipboard itself.
+    app.clipboard.write(crate::clipboard::Copied {
+        text: "V".into(),
+        ..Default::default()
+    });
+    select(&mut app, 0, 0);
+    app.test_execute(Command::Paste);
+    assert!(text(&app).starts_with("Vtwoone"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -124,7 +115,7 @@ async fn milestone_4_crlf_and_terminal_newlines() {
     let mut app = open_app(&root, "a.txt", "ab\r\ncd\r\n");
 
     // The clipboard gets `\n`; pasting back converts to the file's CRLF.
-    app.press(K::Char('c'), cmd());
+    app.test_execute(Command::Copy);
     assert_eq!(app.clipboard.read().unwrap(), "ab\n");
     // Some terminals send newlines as `\r` in a bracketed paste; still a whole-line paste.
     select(&mut app, 5, 5);
@@ -139,9 +130,9 @@ async fn milestone_4_read_only_buffer_copies_but_never_cuts_or_pastes() {
     let mut app = open_app(&root, "a.txt", "keep\n");
     app.active_mut().unwrap().0.read_only = Some("test".into());
 
-    app.press(K::Char('c'), cmd());
+    app.test_execute(Command::Copy);
     assert_eq!(app.clipboard.read().unwrap(), "keep\n");
-    app.press(K::Char('x'), cmd());
+    app.test_execute(Command::Cut);
     app.handle_test_event(Event::Paste("x".into()));
     assert_eq!(text(&app), "keep\n");
     assert_eq!(

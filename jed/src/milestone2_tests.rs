@@ -10,18 +10,9 @@ use ratatui::backend::TestBackend;
 
 use crate::app::{App, Focus, Prompt};
 use crate::buffer::Buffer;
-use crate::command::Command;
+use crate::command::{Command, ExplorerCommand};
 use crate::workspace::trust::{Trust, TrustStore};
 use crate::workspace::{self, Workspace};
-
-/// Cmd on macOS, Ctrl elsewhere — whatever the default keymap uses.
-fn cmd() -> M {
-    if cfg!(target_os = "macos") {
-        M::SUPER
-    } else {
-        M::CONTROL
-    }
-}
 
 fn open_app(root: &Path, state: &Path) -> App {
     open_app_inner(root, state, false)
@@ -171,15 +162,15 @@ async fn milestone_2_workspace_explorer_tabs() {
 
     // Edit, then close the tab: asked to save; saving closes it.
     app.type_text("//");
-    app.press(K::Char('w'), cmd());
+    app.test_execute(Command::CloseTab);
     assert!(matches!(app.prompt, Some(Prompt::SaveBeforeClose { .. })));
     app.press(K::Char('s'), M::NONE);
     assert!(app.settle(|a| a.group().tabs.is_empty()).await);
     assert_eq!(fs::read_to_string(root.join("src/main.c")).unwrap(), "//int main;\n");
 
     // New file from the explorer: created, listed, opened.
-    app.press(K::Char('e'), cmd() | M::SHIFT);
-    app.press(K::Char('n'), cmd() | M::ALT);
+    app.test_execute(Command::FocusExplorer);
+    app.test_execute(Command::Explorer(ExplorerCommand::NewFile));
     assert!(matches!(app.prompt, Some(Prompt::Input(_))));
     app.type_text("lib/util.c");
     app.press(K::Enter, M::NONE);
@@ -190,7 +181,7 @@ async fn milestone_2_workspace_explorer_tabs() {
     );
 
     // Rename the open file: the tab follows.
-    app.press(K::Char('e'), cmd() | M::SHIFT);
+    app.test_execute(Command::FocusExplorer);
     assert!(
         app.settle(|a| a.explorer.selected.as_deref() == Some(&root.join("src/lib/util.c")))
             .await
@@ -235,13 +226,13 @@ async fn milestone_2_workspace_explorer_tabs() {
     );
 
     // Quit with unsaved changes: asked; Cancel keeps running.
-    app.press(K::Char('1'), cmd());
+    app.test_execute(Command::FocusGroup(1));
     app.type_text("x");
-    app.press(K::Char('q'), M::CONTROL);
+    app.test_execute(Command::Quit);
     assert!(matches!(&app.prompt, Some(Prompt::SaveAllBeforeQuit { buffers }) if buffers.len() == 1));
     app.press(K::Char('c'), M::NONE);
     assert!(!app.quitting());
-    app.press(K::Char('q'), M::CONTROL);
+    app.test_execute(Command::Quit);
     app.press(K::Char('d'), M::NONE);
     assert!(app.quitting());
 }

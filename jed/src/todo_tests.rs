@@ -170,14 +170,6 @@ mod render_whitespace {
     use crate::config::settings;
     use crate::edit::RenderWhitespace;
 
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
-    }
-
     fn write(root: &Path, rel: &str, text: &str) -> PathBuf {
         let path = root.join(rel);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -267,7 +259,7 @@ mod render_whitespace {
     }
 
     fn run_command(app: &mut App, title: &str) {
-        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.test_execute(Command::ShowCommands);
         app.type_text(title);
         let p = app.palette.as_ref().unwrap();
         assert_eq!(p.rows[p.selected].label, title);
@@ -344,7 +336,7 @@ mod render_whitespace {
     async fn select_all_keeps_the_glyphs_under_the_selection_background() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _, _) = open_app(&dir, "", "", TEXT);
-        app.press(K::Char('a'), cmd());
+        app.test_execute(Command::SelectAll);
         let term = draw(&mut app);
         assert_eq!(row(&app, &term, 0, 12), "→   ab··c·d·");
         let selection = app.theme.get("editor.selection").bg.unwrap();
@@ -1021,13 +1013,12 @@ mod scroll_bars {
         }
     }
 
-    /// Cursor to the document start: Cmd+Up on macOS, Ctrl+Home elsewhere.
+    /// Cursor to the document start.
     fn doc_start(app: &mut App) {
-        if cfg!(target_os = "macos") {
-            app.press(K::Up, M::SUPER);
-        } else {
-            app.press(K::Home, M::CONTROL);
-        }
+        app.test_execute(Command::Move {
+            motion: crate::command::Motion::DocStart,
+            select: false,
+        });
     }
 
     /// The bar is the screen's last column, so the pointer easily overshoots it: a press the
@@ -1080,6 +1071,7 @@ pub(crate) mod side_scroll_bars {
     use crate::app::{App, Focus};
     use crate::buffer::Buffer;
     use crate::buffer::pos::{LspPos, PosEncoding};
+    use crate::command::Command;
     use crate::grouped;
     use crate::layout::{PanelTab, ScrollBarHit, ScrollTarget, SidePanel};
     use crate::locations::{Location, Locations};
@@ -1095,14 +1087,6 @@ pub(crate) mod side_scroll_bars {
     const NORMAL: &str = "scrollbarSlider.background";
     const HOVER: &str = "scrollbarSlider.hoverBackground";
     const ACTIVE: &str = "scrollbarSlider.activeBackground";
-
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
-    }
 
     /// A temp dir with `proj/` (the workspace) and `state/` (the trust store, outside the repo).
     fn dirs() -> (tempfile::TempDir, PathBuf, PathBuf) {
@@ -1318,7 +1302,7 @@ pub(crate) mod side_scroll_bars {
         let (_dir, root, state) = dirs();
         files(&root, 10, &"a needle here\n".repeat(5));
         let mut app = open_app(&root, &state).await;
-        app.press(K::Char('f'), cmd() | M::SHIFT);
+        app.test_execute(Command::FindInFiles);
         app.type_text("needle");
         app.search_tick(std::time::Instant::now() + crate::search_view::DEBOUNCE);
         assert!(
@@ -1370,7 +1354,7 @@ pub(crate) mod side_scroll_bars {
             app.settle(|a| !a.git.running() && a.git.status.as_ref().is_some_and(|s| s.entries.len() == n))
                 .await
         );
-        app.press(K::Char('g'), M::CONTROL | M::SHIFT);
+        app.test_execute(Command::FocusScm);
         (dir, app)
     }
 
@@ -1466,7 +1450,7 @@ pub(crate) mod side_scroll_bars {
         files(&root, 1, "x\n");
         let mut app = open_app(&root, &state).await;
         plant_problems(&mut app, &root, 6);
-        app.press(K::Char('m'), cmd() | M::SHIFT);
+        app.test_execute(Command::ToggleProblems);
         assert_eq!(app.ui.focus, Focus::Panel);
         let list = problems_list();
         assert!(app.problems.list.selected().is_some(), "the first row selected");
@@ -1492,7 +1476,7 @@ pub(crate) mod side_scroll_bars {
         let (_dir, root, state) = dirs();
         files(&root, 1, "x\n");
         let mut app = open_app(&root, &state).await;
-        app.press(K::Char('m'), cmd() | M::SHIFT);
+        app.test_execute(Command::ToggleProblems);
         let _ = draw(&mut app);
         assert!(app.hits.scrollbar(ScrollTarget::Panel(PanelTab::Problems)).is_none());
         // A list that fits: a bar without a thumb.
@@ -1563,25 +1547,25 @@ pub(crate) mod side_scroll_bars {
         let track = bar(&app, explorer_list().target).track;
         app.mouse(DOWN, track.x, track.y);
         // The Search view instead (nothing searched yet).
-        app.press(K::Char('f'), cmd() | M::SHIFT);
+        app.test_execute(Command::FindInFiles);
         app.mouse(DRAG, track.x, track.y + 5);
         assert_eq!(app.explorer.scroll, 0, "the hidden explorer stays");
         app.mouse(UP, track.x, track.y + 5);
 
         plant_problems(&mut app, &root, 6);
-        app.press(K::Char('m'), cmd() | M::SHIFT);
+        app.test_execute(Command::ToggleProblems);
         let _ = draw(&mut app);
         let list = problems_list();
         let track = bar(&app, list.target).track;
         app.mouse(DOWN, track.x, track.y);
-        app.press(K::Char('j'), cmd());
+        app.test_execute(Command::TogglePanel);
         assert!(!app.ui.panel_visible);
         app.mouse(DRAG, track.x, track.y + 3);
         assert_eq!((list.top)(&app), 0, "the hidden panel's list stays");
         app.mouse(UP, track.x, track.y + 3);
 
         // Another tab mid-drag (the Locations list shown instead).
-        app.press(K::Char('j'), cmd());
+        app.test_execute(Command::TogglePanel);
         let _ = draw(&mut app);
         app.mouse(DOWN, track.x, track.y);
         let at = LspPos { line: 0, character: 0 };
@@ -1713,14 +1697,6 @@ mod inline_blame {
         format!("{} {who}, {when} • {summary}", hash_of(root, summary))
     }
 
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
-    }
-
     pub(super) fn go_to_line(app: &mut App, line: usize) {
         app.press_file_start();
         for _ in 0..line {
@@ -1787,7 +1763,7 @@ mod inline_blame {
         assert_eq!(row(&app, &term, 0), format!("alpha   {ann}"));
 
         // Undone: Bob's again.
-        app.press(K::Char('z'), cmd());
+        app.test_execute(Command::Undo);
         assert!(settle_blame(&mut app).await);
         go_to_line(&mut app, 1);
         let term = draw(&mut app);
@@ -1839,7 +1815,7 @@ mod inline_blame {
     async fn a_new_commit_updates_it() {
         let (_d, root, mut app) = blamed_project().await;
         // From the palette.
-        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.test_execute(Command::ShowCommands);
         app.type_text("Git: Toggle Inline Blame");
         let p = app.palette.as_ref().unwrap();
         assert_eq!(p.rows[p.selected].label, "Git: Toggle Inline Blame");
@@ -1849,7 +1825,7 @@ mod inline_blame {
         go_to_line(&mut app, 1);
         app.press(K::End, M::NONE);
         app.type_text("!");
-        app.press(K::Char('s'), cmd());
+        app.test_execute(Command::Save);
         assert!(app.settle(|a| !a.active_buffer().unwrap().is_dirty()).await);
         assert!(settle_blame(&mut app).await);
         let term = draw(&mut app);
@@ -1972,20 +1948,13 @@ mod folder_filter {
 
     use crate::app::{App, Focus};
     use crate::buffer::Buffer;
+    use crate::command::Command;
     use crate::layout::SidePanel;
     use crate::search::Options;
     use crate::search_view::{DEBOUNCE, Input};
     use crate::workspace::trust::TrustStore;
     use crate::workspace::{self, Workspace};
     use crate::workspace_search::reference;
-
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
-    }
 
     fn write(root: &Path, rel: &str, text: &str) {
         let path = root.join(rel);
@@ -2058,7 +2027,7 @@ mod folder_filter {
     /// replaces its text by typing.
     fn set_field(app: &mut App, input: Input, text: &str) {
         if input != Input::Query && !app.search_view.details {
-            app.press(K::Char('j'), cmd() | M::SHIFT);
+            app.test_execute(Command::Search(crate::command::SearchCommand::ToggleDetails));
         }
         for _ in 0..4 {
             if !app.search_view.list_focused && app.search_view.input == input {
@@ -2076,7 +2045,7 @@ mod folder_filter {
 
     /// Runs a palette command by its title.
     fn run_command(app: &mut App, title: &str) {
-        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.test_execute(Command::ShowCommands);
         app.type_text(title);
         let p = app.palette.as_ref().unwrap();
         assert_eq!(p.rows[p.selected].label, title);
@@ -2097,7 +2066,7 @@ mod folder_filter {
 
     /// Searches for "needle" through the Search view's inputs, typed.
     async fn search(app: &mut App, include: &str, exclude: &str) -> Vec<String> {
-        app.press(K::Char('f'), cmd() | M::SHIFT);
+        app.test_execute(Command::FindInFiles);
         set_field(app, Input::Query, "needle");
         set_field(app, Input::Include, include);
         set_field(app, Input::Exclude, exclude);
@@ -2284,7 +2253,7 @@ mod folder_filter {
         let (off, lit) = (off.fg.unwrap(), lit.fg.unwrap());
         assert_eq!(style(&term, hit.details), lit, "shown");
 
-        app.press(K::Char('j'), cmd() | M::SHIFT);
+        app.test_execute(Command::Search(crate::command::SearchCommand::ToggleDetails));
         assert!(!app.search_view.details);
         assert_eq!(app.search_view.input, Input::Query, "the query gets the keys back");
         set_field(&mut app, Input::Query, "NEEDLE");
@@ -2304,7 +2273,7 @@ mod folder_filter {
             app.press(K::Backspace, M::NONE);
         }
         assert!(app.search_view.include.text.is_empty());
-        app.press(K::Char('j'), cmd() | M::SHIFT);
+        app.test_execute(Command::Search(crate::command::SearchCommand::ToggleDetails));
         let term = draw(&mut app);
         let hit = app.hits.search.clone().unwrap();
         assert_ne!(off, lit);
@@ -2320,10 +2289,10 @@ mod folder_filter {
     async fn the_details_inputs_take_keys_clicks_and_pastes() {
         let (_dir, root, state) = project();
         let mut app = open_app(&root, &state).await;
-        app.press(K::Char('f'), cmd() | M::SHIFT);
+        app.test_execute(Command::FindInFiles);
         app.type_text("needle");
         finish(&mut app).await;
-        app.press(K::Char('j'), cmd() | M::SHIFT);
+        app.test_execute(Command::Search(crate::command::SearchCommand::ToggleDetails));
         let mut term = draw(&mut app);
         let hit = app.hits.search.clone().unwrap();
         let [q, inc, exc] = hit.inputs;
@@ -2392,13 +2361,13 @@ mod folder_filter {
     async fn find_in_folder_from_the_explorer() {
         let (_dir, root, state) = project();
         let mut app = open_app(&root, &state).await;
-        app.press(K::Char('f'), cmd() | M::SHIFT);
+        app.test_execute(Command::FindInFiles);
         app.type_text("needle");
         finish(&mut app).await;
         assert!(!app.search_view.details);
 
         let explorer = |app: &mut App| {
-            app.press(K::Char('e'), cmd() | M::SHIFT);
+            app.test_execute(Command::FocusExplorer);
             draw(app);
         };
         let row_of = |app: &App, rel: &str| -> u16 {
@@ -2474,6 +2443,7 @@ mod rust_language_server {
     use crate::app::{App, Prompt};
     use crate::buffer::Buffer;
     use crate::buffer::pos::{self, ByteIdx, PosEncoding};
+    use crate::command::Command;
     use crate::diagnostics::Severity;
     use crate::lsp::fake::{FakeLauncher, FakeOptions};
     use crate::lsp::rpc::CONTENT_MODIFIED;
@@ -2483,14 +2453,6 @@ mod rust_language_server {
     use crate::syntax::Language;
     use crate::workspace::trust::{Trust, TrustStore};
     use crate::workspace::{self, Workspace};
-
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
-    }
 
     /// A workspace `<dir>/proj` with `files` (folders made as needed), its trust store in
     /// `<dir>/state`.
@@ -2546,15 +2508,11 @@ mod rust_language_server {
     }
 
     fn format_document(app: &mut App) {
-        if cfg!(target_os = "macos") {
-            app.press(K::Char('f'), M::SHIFT | M::ALT);
-        } else {
-            app.press(K::Char('i'), M::CONTROL | M::SHIFT);
-        }
+        app.test_execute(Command::FormatDocument);
     }
 
     fn show_hover(app: &mut App) {
-        app.press(K::Char('i'), cmd() | M::ALT);
+        app.test_execute(Command::ShowHover);
     }
 
     fn terminal() -> Terminal<TestBackend> {
@@ -2721,7 +2679,7 @@ mod rust_language_server {
         assert!(app.settle(|a| shows(a, Some(indexing))).await);
 
         // A message shows after the progress.
-        app.press(K::Char('s'), cmd());
+        app.test_execute(Command::Save);
         assert!(app.settle(|a| message(a).is_some_and(|m| m.starts_with("Saved"))).await);
         draw(&mut term, &mut app);
         let bar = status(&term);
@@ -2770,19 +2728,25 @@ mod rust_language_server {
             fake.fail(method, CONTENT_MODIFIED, "content modified");
         }
         put_cursor(&mut app, MAIN.rfind("helper").unwrap() + 1);
-        // Each request's key (`None`: format document's, by platform).
+        // Each request's trigger: a plain key, or its command.
+        enum Via {
+            Key(K),
+            ShiftKey(K),
+            Run(Command),
+        }
         let keys = [
-            ("textDocument/definition", Some((K::F(12), M::NONE))),
-            ("textDocument/references", Some((K::F(12), M::SHIFT))),
-            ("textDocument/hover", Some((K::Char('i'), cmd() | M::ALT))),
-            ("textDocument/completion", Some((K::Char(' '), M::CONTROL))),
-            ("textDocument/prepareRename", Some((K::F(2), M::NONE))),
-            ("textDocument/formatting", None),
+            ("textDocument/definition", Via::Key(K::F(12))),
+            ("textDocument/references", Via::ShiftKey(K::F(12))),
+            ("textDocument/hover", Via::Run(Command::ShowHover)),
+            ("textDocument/completion", Via::Run(Command::TriggerSuggest)),
+            ("textDocument/prepareRename", Via::Key(K::F(2))),
+            ("textDocument/formatting", Via::Run(Command::FormatDocument)),
         ];
-        for (method, key) in keys {
-            match key {
-                Some((key, mods)) => app.press(key, mods),
-                None => format_document(&mut app),
+        for (method, via) in keys {
+            match via {
+                Via::Key(key) => app.press(key, M::NONE),
+                Via::ShiftKey(key) => app.press(key, M::SHIFT),
+                Via::Run(cmd) => app.test_execute(cmd),
             }
             assert!(
                 app.settle(|a| fake.requests(method).len() == 1 && a.pending_requests().is_empty())
@@ -2901,13 +2865,13 @@ mod rust_language_server {
             if text(app) == want {
                 return;
             }
-            app.press(K::Char('z'), cmd());
+            app.test_execute(Command::Undo);
         }
         assert_eq!(text(app), want, "undone");
     }
 
     async fn save(app: &mut App) {
-        app.press(K::Char('s'), cmd());
+        app.test_execute(Command::Save);
         assert!(
             app.settle(|a| !a.active_buffer().unwrap().is_dirty()).await,
             "saved; {:?}",
@@ -3029,7 +2993,7 @@ mod rust_language_server {
         assert!(went(&app), "went to the definition; message {:?}", message(&app));
         assert_eq!(cursor_line(&app), 7);
         while active_path(&app).as_deref() != Some(main.as_path()) {
-            app.press(K::PageUp, M::CONTROL);
+            app.test_execute(Command::PrevTab);
         }
 
         // References: the call and the definition, in two files.
@@ -3039,7 +3003,7 @@ mod rust_language_server {
             put_cursor(&mut app, at);
             app.press(K::F(12), M::SHIFT);
             settle_for(&mut app, 3, both).await;
-            app.press(K::Char('1'), cmd());
+            app.test_execute(Command::FocusGroup(1));
         }
         assert!(
             both(&app),
@@ -3139,14 +3103,14 @@ mod rust_language_server {
             settle_for(&mut app, 5, |a| text(a) == want).await;
         }
         assert_eq!(text(&app), want, "formatted; message {:?}", message(&app));
-        app.press(K::Char('z'), cmd());
+        app.test_execute(Command::Undo);
         assert_eq!(text(&app), renamed_text, "one undo step");
 
         assert!(matches!(
             app.lsp.server_for(Language::Rust).unwrap().state,
             State::Running { .. }
         ));
-        app.press(K::Char('q'), cmd());
+        app.test_execute(Command::Quit);
         app.shutdown_servers().await;
         if let Some(n) = children_settled("rust-analyzer", 0) {
             assert_eq!(n, 0, "no rust-analyzer left");
@@ -3173,14 +3137,6 @@ mod revert_hunks {
     use crate::workspace::{self, Workspace};
 
     const DOWN: Mouse = Mouse::Down(MouseButton::Left);
-
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
-    }
 
     /// A temp dir with `proj/` (the workspace, a repository with `f.txt` = `original`
     /// committed, then `changed` on disk) and `state/` (the trust store, outside the repo).
@@ -3352,23 +3308,23 @@ mod revert_hunks {
         assert_eq!(buffer_text(&app), want.replace("line 34\n", "line 34\nline 35\n"));
 
         // One undo step each, in the file's text tab.
-        app.press(K::PageUp, M::CONTROL);
+        app.test_execute(Command::PrevTab);
         assert!(app.group().active_tab().is_some());
-        app.press(K::Char('z'), cmd());
+        app.test_execute(Command::Undo);
         assert_eq!(buffer_text(&app), want);
-        app.press(K::Char('z'), cmd());
+        app.test_execute(Command::Undo);
         assert_eq!(buffer_text(&app), changed);
         assert!(!app.buffers.iter().next().unwrap().1.is_dirty());
 
         // Edited since the diff was taken: refused until it reads the buffer again.
-        app.press(K::PageDown, M::CONTROL);
+        app.test_execute(Command::NextTab);
         assert!(settle_diffs(&mut app).await);
         app.press(K::F(7), M::NONE);
         assert!(app.group().active_diff().unwrap().hunk_at_cursor().is_some());
-        app.press(K::PageUp, M::CONTROL);
+        app.test_execute(Command::PrevTab);
         app.press_file_start();
         app.type_text("x");
-        app.press(K::PageDown, M::CONTROL);
+        app.test_execute(Command::NextTab);
         assert!(app.group().active_diff().is_some());
         app.test_execute(Command::RevertHunk);
         assert_eq!(
@@ -3477,9 +3433,9 @@ mod revert_hunks {
         assert_eq!(fs::read_to_string(root.join("new.txt")).unwrap(), "new\n");
 
         // In a text tab: where to do it.
-        app.press(K::PageUp, M::CONTROL);
+        app.test_execute(Command::PrevTab);
         while app.group().active_tab().is_none() {
-            app.press(K::PageUp, M::CONTROL);
+            app.test_execute(Command::PrevTab);
         }
         app.test_execute(Command::RevertHunk);
         assert!(message(&app).contains("Git: Open Changes"));
@@ -3562,31 +3518,19 @@ mod back_forward {
     use crate::app::{App, InitialFile};
     use crate::buffer::Buffer;
     use crate::buffer::pos;
+    use crate::command::Command;
     use crate::lsp::fake::{FakeLauncher, FakeOptions};
     use crate::navigation::MAX;
     use crate::syntax::Language;
     use crate::workspace::trust::TrustStore;
     use crate::workspace::{self, Workspace};
 
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
-    }
-
     fn back(app: &mut App) {
-        if cfg!(target_os = "macos") {
-            app.press(K::Char('-'), M::CONTROL);
-        } else {
-            app.press(K::Char('-'), M::CONTROL | M::ALT);
-        }
+        app.test_execute(Command::NavBack);
     }
 
-    /// As a kitty-protocol terminal with alternate keys reports Ctrl+Shift+-.
     fn forward(app: &mut App) {
-        app.press(K::Char('_'), M::CONTROL | M::SHIFT);
+        app.test_execute(Command::NavForward);
     }
 
     pub(super) fn numbered(name: &str, lines: usize) -> String {
@@ -3666,14 +3610,14 @@ mod back_forward {
 
     /// Ctrl+G, the 1-based line, Enter.
     pub(super) fn go_to_line(app: &mut App, line: usize) {
-        app.press(K::Char('g'), M::CONTROL);
+        app.test_execute(Command::GoToLine);
         app.type_text(&line.to_string());
         app.press(K::Enter, M::NONE);
     }
 
     /// Cmd+P, the file's name, Enter once it's listed; waits until it's the active tab.
     pub(super) async fn quick_open(app: &mut App, name: &str) {
-        app.press(K::Char('p'), cmd());
+        app.test_execute(Command::QuickOpen);
         app.type_text(name);
         let listed = app
             .settle(|a| {
@@ -3798,7 +3742,7 @@ mod back_forward {
         assert_eq!(index, before.len(), "live");
         app.handle_test_event(crossterm::event::Event::Paste("x\n".repeat(12)));
         assert_eq!(place(&app).1, 161);
-        app.press(K::Char('z'), cmd());
+        app.test_execute(Command::Undo);
         assert_eq!(place(&app).1, 149);
         assert_eq!((entries(&app), app.nav.history.index()), (before, index));
     }
@@ -3830,13 +3774,13 @@ mod back_forward {
         let root = project(dir.path(), &[("a.txt", numbered("a", 30))]);
         let mut app = open_app(&root, "a.txt");
         // `:3` in quick open: two lines down.
-        app.press(K::Char('p'), cmd());
+        app.test_execute(Command::QuickOpen);
         app.type_text(":3");
         app.press(K::Enter, M::NONE);
         assert_eq!(place(&app), at("a.txt", 2));
         assert_eq!(entries(&app), [e("a.txt", 0)]);
         // `a.txt:5`, the file already open and active.
-        app.press(K::Char('p'), cmd());
+        app.test_execute(Command::QuickOpen);
         app.type_text("a.txt:5");
         let listed = app
             .settle(|a| {
@@ -3917,7 +3861,7 @@ mod back_forward {
         let mut app = open_app(&root, "a.txt");
         quick_open(&mut app, "b.txt").await;
         go_to_line(&mut app, 7);
-        app.press(K::PageUp, M::CONTROL);
+        app.test_execute(Command::PrevTab);
         assert_eq!(place(&app), at("a.txt", 0));
         assert_eq!(entries(&app), [e("a.txt", 0), e("b.txt", 0), e("b.txt", 6)]);
         back(&mut app);
@@ -3946,7 +3890,7 @@ mod back_forward {
         // Three lines typed above line 50: two here, one in another view of the buffer (a
         // split, which records the place left in the first group, at line 2).
         app.type_text("new\n\n");
-        app.press(K::Char('\\'), cmd());
+        app.test_execute(Command::SplitRight);
         app.press(K::Enter, M::NONE);
         back(&mut app);
         assert_eq!(place(&app), at("a.txt", 2));
@@ -3969,7 +3913,7 @@ mod back_forward {
         go_to_line(&mut app, 70);
         draw(&mut app);
         let top_b = top(&app);
-        app.press(K::Char('w'), cmd());
+        app.test_execute(Command::CloseTab);
         assert_eq!(place(&app), at("a.txt", 0));
         assert!(!has_tab(&app, "b.txt") && app.buffers.find_path(&root.join("b.txt")).is_none());
 
@@ -4034,12 +3978,12 @@ mod back_forward {
         );
         let mut app = open_app(&root, "a.txt");
         // Switching between a file and its diff tab is no jump.
-        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.test_execute(Command::ShowCommands);
         app.type_text("File: Compare with Disk");
         app.press(K::Enter, M::NONE);
         assert!(app.group().active_diff().is_some());
-        app.press(K::PageUp, M::CONTROL);
-        app.press(K::PageDown, M::CONTROL);
+        app.test_execute(Command::PrevTab);
+        app.test_execute(Command::NextTab);
         assert!(app.group().active_diff().is_some());
         assert!(entries(&app).is_empty(), "{:?}", entries(&app));
         quick_open(&mut app, "b.txt").await;
@@ -4056,11 +4000,11 @@ mod back_forward {
         let dir = tempfile::tempdir().unwrap();
         let root = project(dir.path(), &[("a.txt", numbered("a", 100))]);
         let mut app = open_app(&root, "a.txt");
-        app.press(K::Char('\\'), cmd());
+        app.test_execute(Command::SplitRight);
         let second = app.groups.active;
         go_to_line(&mut app, 30);
         // Closing the second group's only tab closes the group.
-        app.press(K::Char('w'), cmd());
+        app.test_execute(Command::CloseTab);
         assert_eq!(app.groups.len(), 1);
         assert_ne!(app.groups.active, second);
         assert_eq!(place(&app), at("a.txt", 0));
@@ -4204,7 +4148,7 @@ mod back_forward {
         );
         // The Problems list (Cmd+Shift+M, its file row selected): Enter opens the first problem.
         app.press(K::Down, M::NONE);
-        app.press(K::Char('m'), cmd() | M::SHIFT);
+        app.test_execute(Command::ToggleProblems);
         assert_eq!(app.ui.focus, crate::app::Focus::Panel);
         app.press(K::Enter, M::NONE);
         assert_eq!(place(&app), ("a.cpp".to_string(), 2, 5));
@@ -4242,7 +4186,7 @@ mod back_forward {
         let root = project(dir.path(), &[("a.txt", numbered("a", 60)), ("b.txt", b_text)]);
         let mut app = open_app(&root, "a.txt");
         go_to_line(&mut app, 5);
-        app.press(K::Char('f'), cmd() | M::SHIFT);
+        app.test_execute(Command::FindInFiles);
         app.type_text("needle");
         assert!(
             app.settle(|a| a.search.as_ref().is_some_and(|r| r.done && r.total == 1))
@@ -4263,13 +4207,13 @@ mod diff_syntax {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    use crossterm::event::{KeyCode as K, KeyModifiers as M};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
 
     use crate::app::{App, InitialFile};
     use crate::buffer::Buffer;
+    use crate::command::Command;
     use crate::diff_view::Pair;
     use crate::git::test_repo::{commit_all, init};
     use crate::workspace::trust::TrustStore;
@@ -4484,13 +4428,13 @@ mod diff_syntax {
         let term = draw(&mut app, 150, 24);
         assert_eq!(fg(&term, at(&term, "fn two")), key_fg(&app, "keyword"));
         // Comment out the changed line in the buffer, unsaved.
-        app.press(K::PageUp, M::CONTROL);
+        app.test_execute(Command::PrevTab);
         assert_eq!(app.active_buffer().unwrap().path, root.join("a.rs"));
         app.type_text("// ");
         app.pump();
         assert!(app.diffs.deadline().is_some());
         assert!(settle_diffs(&mut app).await);
-        app.press(K::PageDown, M::CONTROL);
+        app.test_execute(Command::NextTab);
         assert!(app.group().active_diff().is_some());
         let term = draw(&mut app, 150, 24);
         let new = at(&term, "// fn two");
@@ -4570,6 +4514,7 @@ mod indent_lines {
     use crate::app::App;
     use crate::buffer::Buffer;
     use crate::buffer::pos::ByteIdx;
+    use crate::command::Command;
     use crate::milestone_tests::test_app;
     use crate::pairs::tests::show;
     use crate::selection::{Selection, Selections};
@@ -4579,14 +4524,6 @@ mod indent_lines {
     const BUDGET: Duration = Duration::from_millis(80);
     /// The same in debug builds: only catches going quadratic.
     const DEBUG_BOUND: Duration = Duration::from_secs(5);
-
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
-    }
 
     /// The app on `marked`'s text (`|` cursors, `«…»` selections, as `pairs::tests::setup`).
     fn open(dir: &tempfile::TempDir, marked: &str) -> App {
@@ -4619,15 +4556,15 @@ mod indent_lines {
     }
 
     fn indent(app: &mut App) {
-        app.press(K::Char(']'), cmd());
+        app.test_execute(Command::IndentLines);
     }
 
     fn outdent(app: &mut App) {
-        app.press(K::Char('['), cmd());
+        app.test_execute(Command::OutdentLines);
     }
 
     fn undo(app: &mut App) {
-        app.press(K::Char('z'), cmd());
+        app.test_execute(Command::Undo);
     }
 
     #[test]
@@ -4790,7 +4727,7 @@ mod indent_lines {
         undo(&mut app);
         assert_eq!(shown(&mut app), "«a\n  b»\nc|\n");
         assert!(!app.active_buffer().unwrap().is_dirty());
-        app.press(K::Char('z'), cmd() | M::SHIFT);
+        app.test_execute(Command::Redo);
         assert_eq!(shown(&mut app), "«    a\n    b»\n    c|\n");
     }
 
@@ -4837,7 +4774,7 @@ mod indent_lines {
             term.draw(|f| crate::ui::render(f, app)).unwrap();
         };
         draw(&mut term, &mut app);
-        app.press(K::Char('l'), cmd() | M::SHIFT);
+        app.test_execute(Command::SelectAllMatches);
         let count = app.group().active_tab().unwrap().view.selections.len();
         assert_eq!(count, 2 * i);
         let text = |app: &App| app.active_buffer().unwrap().rope.to_string();
@@ -5108,6 +5045,7 @@ mod first_reveal {
 
     use crate::app::{App, Focus};
     use crate::buffer::Buffer;
+    use crate::command::Command;
     use crate::git::test_repo::{commit_all, init};
     use crate::layout::SidePanel;
     use crate::lsp::fake::FakeLauncher;
@@ -5115,14 +5053,6 @@ mod first_reveal {
     use crate::milestone10_tests::{dirs, open_file_app, settle_git};
     use crate::workspace::Workspace;
     use crate::workspace::trust::TrustStore;
-
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
-    }
 
     fn draw(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
         let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -5175,7 +5105,7 @@ mod first_reveal {
         many_changes(&root, 30);
         let mut app = open_app(&root, &state);
         assert!(settle_git(&mut app, |s| s.entries.len() == 30).await);
-        app.press(K::Char('g'), M::CONTROL | M::SHIFT);
+        app.test_execute(Command::FocusScm);
         let term = draw(&mut app, 100, 20);
         let hit = app.hits.scm.clone().expect("the Source Control view drawn");
         assert!(hit.list.height < 31, "the list doesn't fit");
@@ -5192,7 +5122,7 @@ mod first_reveal {
         many_changes(&root, 30);
         let mut app = open_app(&root, &state);
         assert!(settle_git(&mut app, |s| s.entries.len() == 30).await);
-        app.press(K::Char('g'), M::CONTROL | M::SHIFT);
+        app.test_execute(Command::FocusScm);
         app.press(K::End, M::NONE);
         draw(&mut app, 100, 20);
         let hit = app.hits.scm.clone().expect("the Source Control view drawn");
@@ -5238,7 +5168,7 @@ mod first_reveal {
         fs::write(root.join("a.txt"), "needle\n".repeat(40)).unwrap();
         let mut app = crate::milestone_tests::test_app(&root, Buffer::open(&root.join("a.txt")).unwrap());
         app.test_start();
-        app.press(K::Char('f'), cmd() | M::SHIFT);
+        app.test_execute(Command::FindInFiles);
         app.type_text("needle");
         app.search_tick(Instant::now() + crate::search_view::DEBOUNCE);
         let want = app.search_view.query();
@@ -5266,7 +5196,7 @@ mod first_reveal {
         let (mut app, _fake, _root) = problems_project(dir.path()).await;
         // Four list rows for the fixture's six.
         app.ui.panel_height = 6;
-        app.press(K::Char('m'), cmd() | M::SHIFT);
+        app.test_execute(Command::ToggleProblems);
         assert_eq!(app.ui.focus, Focus::Panel);
         app.press(K::Down, M::NONE);
         let term = draw(&mut app, 130, 30);
@@ -5285,7 +5215,7 @@ mod first_reveal {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _fake, _root) = problems_project(dir.path()).await;
         app.ui.panel_height = 6;
-        app.press(K::Char('m'), cmd() | M::SHIFT);
+        app.test_execute(Command::ToggleProblems);
         app.press(K::End, M::NONE);
         draw(&mut app, 130, 30);
         let files = crate::problems::files(&app.lsp.diagnostics, &app.buffers);
@@ -5335,7 +5265,7 @@ mod first_reveal {
         for _ in 0..6 {
             crate::tools_tests::run_ended(&mut app, "ok").await;
         }
-        app.press(K::Char('u'), cmd() | M::SHIFT);
+        app.test_execute(Command::ShowTools);
         app.press(K::Down, M::NONE);
         let term = draw(&mut app, 100, 8);
         let hit = app.hits.tools.clone().expect("the Tools view drawn");
@@ -5359,7 +5289,7 @@ mod first_reveal {
         for _ in 0..6 {
             crate::tools_tests::run_ended(&mut app, "ok").await;
         }
-        app.press(K::Char('u'), cmd() | M::SHIFT);
+        app.test_execute(Command::ShowTools);
         app.press(K::End, M::NONE);
         draw(&mut app, 100, 8);
         let hit = app.hits.tools.clone().expect("the Tools view drawn");
@@ -5588,34 +5518,18 @@ mod move_tabs {
 
     use crate::app::{App, Focus, InitialFile};
     use crate::buffer::Buffer;
+    use crate::command::Command;
     use crate::diff_view::Pair;
     use crate::group::Tab;
     use crate::workspace::trust::TrustStore;
     use crate::workspace::{self, Workspace};
 
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
-    }
-
-    /// Ctrl+Cmd on macOS, Ctrl+Alt on Linux.
-    fn group_mods() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER | M::CONTROL
-        } else {
-            M::CONTROL | M::ALT
-        }
-    }
-
     fn to_next(app: &mut App) {
-        app.press(K::Right, group_mods());
+        app.test_execute(Command::MoveTabToNextGroup);
     }
 
     fn to_previous(app: &mut App) {
-        app.press(K::Left, group_mods());
+        app.test_execute(Command::MoveTabToPreviousGroup);
     }
 
     /// A workspace with `names` (40 numbered lines each), the first open, the others opened
@@ -5707,7 +5621,7 @@ mod move_tabs {
         assert_eq!(layout(&app), [vec!["a.txt", "b.txt"]]);
         // Undo still works on the moved tab's buffer.
         app.type_text("x");
-        app.press(K::Char('z'), cmd());
+        app.test_execute(Command::Undo);
         assert!(!app.active_buffer().unwrap().is_dirty());
     }
 
@@ -5716,19 +5630,19 @@ mod move_tabs {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _) = open_app(&dir, &["a", "b", "c", "d", "e"]);
         // From the explorer: the tab moves and the editor gets the focus.
-        app.press(K::Char('e'), cmd() | M::SHIFT);
+        app.test_execute(Command::FocusExplorer);
         assert_eq!(app.ui.focus, Focus::SidePanel);
         to_next(&mut app);
         assert_eq!(app.ui.focus, Focus::Editor);
         assert_eq!(layout(&app), [vec!["a", "b", "c", "d"], vec!["e"]]);
-        app.press(K::Char('1'), cmd());
+        app.test_execute(Command::FocusGroup(1));
         to_next(&mut app);
         assert_eq!(layout(&app), [vec!["a", "b", "c"], vec!["e", "d"]]);
 
         // Into the second group with its first tab active: right of it, not at the end.
-        app.press(K::PageUp, M::CONTROL);
+        app.test_execute(Command::PrevTab);
         assert_eq!(active_name(&app), "e");
-        app.press(K::Char('1'), cmd());
+        app.test_execute(Command::FocusGroup(1));
         to_next(&mut app);
         assert_eq!(layout(&app), [vec!["a", "b"], vec!["e", "c", "d"]]);
         assert_eq!(active_name(&app), "c");
@@ -5760,9 +5674,9 @@ mod move_tabs {
         let (mut app, _) = open_app(&dir, &["a.txt", "b.txt"]);
         // Split: the second group shows b.txt too; back in the first, b.txt's cursor moves
         // elsewhere and it moves right.
-        app.press(K::Char('\\'), cmd());
+        app.test_execute(Command::SplitRight);
         let second = app.groups.active;
-        app.press(K::Char('1'), cmd());
+        app.test_execute(Command::FocusGroup(1));
         let first = app.groups.active;
         app.press(K::Down, M::NONE);
         app.press(K::Down, M::NONE);
@@ -5775,7 +5689,7 @@ mod move_tabs {
         assert_eq!(app.groups.tabs_showing(app.group().active_tab().unwrap().buffer), 1);
 
         // a.txt, the first group's last tab: its group closes.
-        app.press(K::Char('1'), cmd());
+        app.test_execute(Command::FocusGroup(1));
         assert_eq!(app.groups.active, first);
         to_next(&mut app);
         assert_eq!(layout(&app), [vec!["b.txt", "a.txt"]]);
@@ -5805,11 +5719,11 @@ mod move_tabs {
     }
 
     fn move_left(app: &mut App) {
-        app.press(K::PageUp, cmd() | M::SHIFT);
+        app.test_execute(Command::MoveTabLeft);
     }
 
     fn move_right(app: &mut App) {
-        app.press(K::PageDown, cmd() | M::SHIFT);
+        app.test_execute(Command::MoveTabRight);
     }
 
     /// The tab bar's row as drawn.
@@ -5863,18 +5777,8 @@ mod text_field_keys {
 
     use crate::app::App;
     use crate::buffer::Buffer;
+    use crate::command::{Command, Motion};
     use crate::config::keymap::{self, Keymap, Platform};
-
-    const MAC: bool = cfg!(target_os = "macos");
-
-    fn cmd() -> M {
-        if MAC { M::SUPER } else { M::CONTROL }
-    }
-
-    /// Word moves and deletes: Alt on macOS, Ctrl on Linux.
-    fn word() -> M {
-        if MAC { M::ALT } else { M::CONTROL }
-    }
 
     /// An app on `<dir>/ws` with `a.txt` (`text`) open, the cursor at its start.
     fn open_app(dir: &tempfile::TempDir, text: &str) -> (App, PathBuf) {
@@ -5902,34 +5806,31 @@ mod text_field_keys {
         app.find.matches().len()
     }
 
-    /// Each key that moves a field's cursor to its start / end on this platform, as the editor's
-    /// line start / end (Home / End everywhere; Cmd+Left / Right and Ctrl+A / E on macOS,
-    /// Ctrl+Home / End on Linux).
-    fn start_keys() -> Vec<(K, M)> {
-        let mut keys = vec![(K::Home, M::NONE)];
-        if MAC {
-            keys.extend([(K::Left, M::SUPER), (K::Char('a'), M::CONTROL)]);
-        } else {
-            keys.push((K::Home, M::CONTROL));
-        }
-        keys
+    /// The commands that move a field's cursor to its start (the editor's line start and file
+    /// start), then to its end, each with its selecting twin.
+    fn start_cmds() -> [(Command, Command); 2] {
+        [
+            (motion(Motion::LineStart, false), motion(Motion::LineStart, true)),
+            (motion(Motion::DocStart, false), motion(Motion::DocStart, true)),
+        ]
     }
 
-    fn end_keys() -> Vec<(K, M)> {
-        let mut keys = vec![(K::End, M::NONE)];
-        if MAC {
-            keys.extend([(K::Right, M::SUPER), (K::Char('e'), M::CONTROL)]);
-        } else {
-            keys.push((K::End, M::CONTROL));
-        }
-        keys
+    fn end_cmds() -> [(Command, Command); 2] {
+        [
+            (motion(Motion::LineEnd, false), motion(Motion::LineEnd, true)),
+            (motion(Motion::DocEnd, false), motion(Motion::DocEnd, true)),
+        ]
+    }
+
+    fn motion(motion: Motion, select: bool) -> Command {
+        Command::Move { motion, select }
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn text_field_keys_shift_home_then_typing_replaces_the_find_query() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _) = open_app(&dir, "foo bar foo baz\n");
-        app.press(K::Char('f'), cmd());
+        app.test_execute(Command::OpenFind);
         assert_eq!(
             (query(&app), match_count(&app)),
             (("foo", 3), 2),
@@ -5956,25 +5857,25 @@ mod text_field_keys {
     async fn text_field_keys_line_start_and_end_keys_in_the_find_widget() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _) = open_app(&dir, "x\n");
-        app.press(K::Char('f'), cmd());
+        app.test_execute(Command::OpenFind);
         app.type_text("ab");
-        for (code, mods) in start_keys() {
+        for (go, select) in start_cmds() {
             app.press(K::End, M::NONE);
-            app.press(code, mods);
-            assert_eq!(query(&app), ("ab", 0), "{code:?} {mods:?}");
-            app.press(code, mods | M::SHIFT);
-            assert_eq!(app.find.query.selection(), None, "{code:?} {mods:?}: already there");
+            app.press_field_key(go);
+            assert_eq!(query(&app), ("ab", 0), "{go:?}");
+            app.press_field_key(select);
+            assert_eq!(app.find.query.selection(), None, "{go:?}: already there");
         }
-        for (code, mods) in end_keys() {
+        for (go, select) in end_cmds() {
             app.press(K::Home, M::NONE);
-            app.press(code, mods | M::SHIFT);
+            app.press_field_key(select);
             assert_eq!(
                 (query(&app), app.find.query.selection()),
                 (("ab", 2), Some(0..2)),
-                "{code:?}"
+                "{go:?}"
             );
-            app.press(code, mods);
-            assert_eq!((query(&app), app.find.query.selection()), (("ab", 2), None), "{code:?}");
+            app.press_field_key(go);
+            assert_eq!((query(&app), app.find.query.selection()), (("ab", 2), None), "{go:?}");
         }
         assert_eq!(
             app.active_buffer().unwrap().rope.to_string(),
@@ -5987,19 +5888,19 @@ mod text_field_keys {
     async fn text_field_keys_home_end_and_word_delete_in_the_search_query() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _) = open_app(&dir, "x\n");
-        app.press(K::Char('f'), cmd() | M::SHIFT);
+        app.test_execute(Command::FindInFiles);
         app.type_text("foo.bar baz");
-        app.press(K::Backspace, word());
+        app.press_field_key(Command::DeleteWordLeft);
         assert_eq!(app.search_view.query.text, "foo.bar ");
-        app.press(K::Backspace, word());
+        app.press_field_key(Command::DeleteWordLeft);
         assert_eq!(app.search_view.query.text, "foo.");
         app.press(K::Home, M::NONE);
         app.type_text("<");
         app.press(K::End, M::NONE);
         app.type_text(">");
         assert_eq!(app.search_view.query.text, "<foo.>");
-        app.press(K::Left, word());
-        app.press(K::Delete, word());
+        app.press_field_key(motion(Motion::WordLeft, false));
+        app.press_field_key(Command::DeleteWordRight);
         assert_eq!(
             app.search_view.query.text, "<foo",
             "the punctuation run `.>` after the cursor"
@@ -6012,25 +5913,25 @@ mod text_field_keys {
     async fn text_field_keys_select_all_copy_cut_in_the_find_widget() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _) = open_app(&dir, "needle hay\n");
-        app.press(K::Char('f'), cmd());
+        app.test_execute(Command::OpenFind);
         app.press(K::End, M::NONE);
         // Nothing selected: Cmd+C copies nothing (not the editor's whole line).
-        app.press(K::Char('c'), cmd());
+        app.press_field_key(Command::Copy);
         assert_eq!(app.clipboard.read().unwrap(), "");
-        app.press(K::Char('a'), cmd());
-        app.press(K::Char('c'), cmd());
+        app.press_field_key(Command::SelectAll);
+        app.press_field_key(Command::Copy);
         assert_eq!(app.clipboard.read().unwrap(), "needle");
         assert_eq!(query(&app), ("needle", 6));
-        app.press(K::Left, word());
+        app.press_field_key(motion(Motion::WordLeft, false));
         app.press(K::Right, M::SHIFT);
-        app.press(K::Char('x'), cmd());
+        app.press_field_key(Command::Cut);
         assert_eq!(app.clipboard.read().unwrap(), "n");
         assert_eq!(query(&app), ("eedle", 0));
         assert_eq!(match_count(&app), 1);
-        if !MAC {
-            // Linux Ctrl+V pastes the clipboard into the field (macOS's Cmd+V is the terminal's).
+        if let Some(paste) = app.keymap.binding_for(Command::Paste) {
+            // Where the editor binds Paste (Ctrl+V; macOS leaves Cmd+V to the terminal) the field takes it.
             app.press(K::End, M::NONE);
-            app.press(K::Char('v'), M::CONTROL);
+            app.press(paste.code, paste.mods);
             assert_eq!(query(&app), ("eedlen", 6));
         }
         assert_eq!(app.active_buffer().unwrap().rope.to_string(), "needle hay\n");
@@ -6057,7 +5958,7 @@ mod text_field_keys {
         for _ in 0..3 {
             app.press(K::Right, M::NONE);
         }
-        app.press(K::Char('f'), cmd());
+        app.test_execute(Command::OpenFind);
         let head = app.group().active_tab().unwrap().view.selections.primary().head;
         assert_eq!(head.0, 3);
         app.type_text("ab");
@@ -6075,9 +5976,9 @@ mod text_field_keys {
     async fn text_field_keys_in_the_palette_and_a_prompt() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _) = open_app(&dir, "x\n");
-        app.press(K::Char('p'), cmd());
+        app.test_execute(Command::QuickOpen);
         app.type_text("src main");
-        app.press(K::Backspace, word());
+        app.press_field_key(Command::DeleteWordLeft);
         assert_eq!(app.palette.as_ref().unwrap().field.text, "src ");
         app.press(K::Home, M::SHIFT);
         app.type_text("lib");
@@ -6085,7 +5986,7 @@ mod text_field_keys {
         app.press(K::Esc, M::NONE);
 
         // A prompt's field: the explorer's Rename (F2 on the open file's row), its name prefilled.
-        app.press(K::Char('e'), cmd() | M::SHIFT);
+        app.test_execute(Command::FocusExplorer);
         assert!(app.settle(|a| !a.explorer.rows().is_empty()).await);
         app.press(K::Home, M::NONE);
         app.press(K::F(2), M::NONE);
@@ -6096,12 +5997,12 @@ mod text_field_keys {
         app.press(K::Home, M::NONE);
         app.press(K::Right, M::SHIFT);
         app.type_text("b");
-        app.press(K::Right, word());
-        app.press(K::Right, word());
+        app.press_field_key(motion(Motion::WordRight, false));
+        app.press_field_key(motion(Motion::WordRight, false));
         app.press(K::End, M::SHIFT);
         let field = || app.inline_rename.as_ref().unwrap().field.clone();
         assert!(field().text == "b.txt" && field().selection().is_none());
-        app.press(K::Left, word());
+        app.press_field_key(motion(Motion::WordLeft, false));
         app.press(K::End, M::SHIFT);
         app.press(K::Backspace, M::NONE);
         assert_eq!(app.inline_rename.as_ref().unwrap().field.text, "b.");
@@ -6111,7 +6012,7 @@ mod text_field_keys {
     async fn text_field_keys_the_selected_range_is_drawn_selected() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _) = open_app(&dir, "x\n");
-        app.press(K::Char('f'), cmd());
+        app.test_execute(Command::OpenFind);
         app.type_text("qwerty");
         app.press(K::Left, M::NONE);
         app.press(K::Left, M::SHIFT);
@@ -6143,7 +6044,7 @@ mod text_field_keys {
     async fn text_field_keys_a_long_query_scrolls_to_the_cursor() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _) = open_app(&dir, "x\n");
-        app.press(K::Char('f'), cmd());
+        app.test_execute(Command::OpenFind);
         let long: String = ('a'..='z').chain('A'..='Z').collect();
         app.type_text(&long);
         let mut term = Terminal::new(TestBackend::new(80, 12)).unwrap();
@@ -6160,7 +6061,7 @@ mod text_field_keys {
         assert!(top.contains("abcdef") && !top.contains("XYZ"), "from the start: {top}");
         let first = top.find("abcdef").unwrap();
         // A short query fits: all of it from the input's first column, whatever the cursor.
-        app.press(K::Char('a'), cmd());
+        app.press_field_key(Command::SelectAll);
         app.type_text("short");
         app.press(K::Left, M::NONE);
         term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
@@ -6174,12 +6075,12 @@ mod text_field_keys {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _) = open_app(&dir, "xyz\n");
         app.press(K::End, M::NONE);
-        app.press(K::Char('f'), cmd());
+        app.test_execute(Command::OpenFind);
         app.type_text("ab");
         app.press(K::Left, M::NONE);
         let before = app.group().active_tab().unwrap().view.selections.clone();
         // Select all, and Shift+End, are the field's: the editor's selections stay.
-        app.press(K::Char('a'), cmd());
+        app.press_field_key(Command::SelectAll);
         assert_eq!(app.find.query.selection(), Some(0..2));
         app.press(K::Left, M::NONE);
         app.press(K::End, M::SHIFT);
@@ -6191,11 +6092,11 @@ mod text_field_keys {
         );
         // A global binding without a field meaning still runs (Cmd+B: the sidebar).
         let side = app.ui.side_visible;
-        app.press(K::Char('b'), cmd());
+        app.test_execute(Command::ToggleSidebar);
         assert_ne!(app.ui.side_visible, side, "Cmd+B ran");
         assert_eq!(app.ui.focus, crate::app::Focus::Find, "the field keeps the keys");
         // Cmd+Shift+P opens the palette over it; its field then has the keys.
-        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.test_execute(Command::ShowCommands);
         assert!(app.palette.is_some());
         app.type_text("zz");
         app.press(K::Left, M::SHIFT);
@@ -6212,7 +6113,7 @@ mod text_field_keys {
     async fn text_field_keys_a_prompts_selection_is_drawn_selected() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _) = open_app(&dir, "x\n");
-        app.press(K::Char('e'), cmd() | M::SHIFT);
+        app.test_execute(Command::FocusExplorer);
         assert!(app.settle(|a| !a.explorer.rows().is_empty()).await);
         app.press(K::Home, M::NONE);
         app.press(K::F(2), M::NONE);
@@ -6250,13 +6151,8 @@ mod text_field_mouse {
 
     use crate::app::{App, Focus};
     use crate::buffer::Buffer;
+    use crate::command::Command;
     use crate::search_view::Input;
-
-    const MAC: bool = cfg!(target_os = "macos");
-
-    fn cmd() -> M {
-        if MAC { M::SUPER } else { M::CONTROL }
-    }
 
     /// An app on `<dir>/ws` with `a.txt` (`text`) open, the cursor at its start.
     fn open_app(dir: &tempfile::TempDir, text: &str) -> (App, PathBuf) {
@@ -6304,7 +6200,7 @@ mod text_field_mouse {
     async fn text_field_mouse_find_widget_clicks_drags_and_multi_clicks() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _) = open_app(&dir, "foo bar\n");
-        app.press(K::Char('f'), cmd());
+        app.test_execute(Command::OpenFind);
         app.type_text("foo bar");
         draw(&mut app);
         let q = app.hits.find.expect("the find widget drawn").query;
@@ -6339,7 +6235,7 @@ mod text_field_mouse {
     async fn text_field_mouse_find_widget_scrolled_query_maps_through_the_scroll() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _) = open_app(&dir, "x\n");
-        app.press(K::Char('f'), cmd());
+        app.test_execute(Command::OpenFind);
         let query: String = ('a'..='z').chain('0'..='9').chain('A'..='Z').collect();
         assert_eq!(query.len(), 62);
         app.type_text(&query);
@@ -6374,7 +6270,7 @@ mod text_field_mouse {
     async fn text_field_mouse_find_widget_drag_past_the_right_end_scrolls() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _) = open_app(&dir, "x\n");
-        app.press(K::Char('f'), cmd());
+        app.test_execute(Command::OpenFind);
         let query: String = ('a'..='z').chain('0'..='9').chain('A'..='Z').collect();
         app.type_text(&query);
         app.press(K::Home, M::NONE);
@@ -6401,7 +6297,7 @@ mod text_field_mouse {
     async fn text_field_mouse_search_query_clicks_drags_and_multi_clicks() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _) = open_app(&dir, "needle hay\n");
-        app.press(K::Char('f'), cmd() | M::SHIFT);
+        app.test_execute(Command::FindInFiles);
         app.type_text("foo bar");
         draw(&mut app);
         let q = app.hits.search.as_ref().expect("the Search view drawn").inputs[0];
@@ -6428,7 +6324,7 @@ mod text_field_mouse {
     async fn text_field_mouse_palette_input_clicks_drags_and_double_clicks() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _) = open_app(&dir, "x\n");
-        app.press(K::Char('p'), cmd());
+        app.test_execute(Command::QuickOpen);
         app.type_text("abcdef gh");
         draw(&mut app);
         let input = app.hits.palette.expect("the palette drawn").input;
@@ -6547,14 +6443,7 @@ mod cheat_sheet {
         shift_f1(&mut app);
         app.type_text("x");
         app.press(K::Enter, M::NONE);
-        app.press(
-            K::Char('p'),
-            if cfg!(target_os = "macos") {
-                M::SUPER
-            } else {
-                M::CONTROL
-            },
-        );
+        app.press_bound(Command::QuickOpen);
         app.handle_test_event(crossterm::event::Event::Paste("pasted".into()));
         assert_eq!(app.active_buffer().unwrap().rope.to_string(), "abc\n");
         assert!(app.palette.is_none());
@@ -6720,14 +6609,6 @@ mod single_file {
     const NOTICE: &str = "Not available in single file mode";
     const WORKSPACE: &str = "[settings]\ntab_width = 3\n\n[tasks.build]\ncommand = \"echo build\"\n";
 
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
-    }
-
     /// A repo-like root with a `.workspace` (settings, a task: trust undecided) and `a.cpp`; the
     /// state dir beside it.
     fn dirs(dir: &tempfile::TempDir) -> (PathBuf, PathBuf) {
@@ -6837,7 +6718,7 @@ mod single_file {
             "a recent entry"
         );
         app.message = None;
-        app.press(K::Char('b'), cmd());
+        app.test_execute(Command::ToggleSidebar);
         assert!(
             !app.ui.side_visible && app.message.is_none(),
             "Cmd+B works: side {} message {:?}",
@@ -6846,7 +6727,7 @@ mod single_file {
         );
 
         // Closing the last tab leaves jed open.
-        app.press(K::Char('w'), cmd());
+        app.test_execute(Command::CloseTab);
         assert!(
             app.group().tabs.is_empty(),
             "tabs {} prompt {} message {:?}",
@@ -6873,23 +6754,23 @@ mod single_file {
         let dir = tempfile::tempdir().unwrap();
         let (root, state) = dirs(&dir);
         let (mut app, _fake) = open_single(&root.join("src/a.cpp"), &state);
-        let keys = [
-            (K::Char('b'), cmd()),
-            (K::Char('e'), cmd() | M::SHIFT),
-            (K::Char('f'), cmd() | M::SHIFT),
-            (K::Char('g'), M::CONTROL | M::SHIFT),
-            (K::Char('j'), cmd()),
-            (K::Char('p'), cmd()),
+        let commands = [
+            Command::ToggleSidebar,
+            Command::FocusExplorer,
+            Command::FindInFiles,
+            Command::FocusScm,
+            Command::TogglePanel,
+            Command::QuickOpen,
         ];
-        for (code, mods) in keys {
+        for command in commands {
             app.message = None;
-            app.press(code, mods);
-            assert!(!app.ui.side_visible && !app.ui.panel_visible, "{code:?} {mods:?}");
-            assert!(app.palette.is_none(), "{code:?} {mods:?}: no quick open");
+            app.test_execute(command);
+            assert!(!app.ui.side_visible && !app.ui.panel_visible, "{command:?}");
+            assert!(app.palette.is_none(), "{command:?}: no quick open");
             assert_eq!(
                 app.message.as_ref().map(|m| m.text.as_str()),
                 Some(NOTICE),
-                "{code:?} {mods:?}"
+                "{command:?}"
             );
         }
 
@@ -6956,10 +6837,10 @@ mod single_file {
         let (mut app, _fake) = open_single(&path, &state);
         assert_eq!(app.active_buffer().unwrap().rope.to_string(), "");
         app.type_text("x = 1");
-        app.press(K::Char('s'), cmd());
+        app.test_execute(Command::Save);
         assert!(app.settle(|a| !a.active_buffer().unwrap().is_dirty()).await);
         assert_eq!(fs::read_to_string(&path).unwrap(), "x = 1");
-        app.press(K::Char('w'), cmd());
+        app.test_execute(Command::CloseTab);
         assert!(app.quitting(), "closing the last tab quits");
     }
 
@@ -6972,7 +6853,7 @@ mod single_file {
         app.type_text("// ");
         app.test_execute(Command::CompareWithSaved);
         assert!(app.settle(|a| a.active_buffer().is_none()).await, "a diff tab active");
-        app.press(K::Char('w'), cmd());
+        app.test_execute(Command::CloseTab);
         assert!(!app.quitting() && app.prompt.is_none());
         assert!(app.active_buffer().is_some(), "back on the file");
     }
@@ -6984,7 +6865,7 @@ mod single_file {
         let path = root.join("src/a.cpp");
         let (mut app, _fake) = open_single(&path, &state);
         app.type_text("// ");
-        app.press(K::Char('w'), cmd());
+        app.test_execute(Command::CloseTab);
         assert!(app.prompt.is_some() && !app.quitting(), "the save prompt first");
         app.press(K::Char('s'), M::NONE);
         assert!(app.settle(|a| a.quitting()).await, "saved, then closed and quit");
@@ -7031,14 +6912,6 @@ mod mru {
     use crate::workspace::trust::TrustStore;
     use crate::workspace::{self, Workspace};
 
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
-    }
-
     /// A workspace `<dir>/proj` with `files`, its trust store in `<dir>/state`.
     fn project(dir: &Path, files: &[&str]) -> PathBuf {
         let root = workspace::normalize(dir).join("proj");
@@ -7065,7 +6938,7 @@ mod mru {
 
     /// Runs the palette command titled `title` (Cmd+Shift+P).
     fn palette_command(app: &mut App, title: &str) {
-        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.test_execute(Command::ShowCommands);
         app.type_text(title);
         let p = app.palette.as_ref().unwrap();
         assert_eq!(p.rows[p.selected].label, title);
@@ -7075,7 +6948,7 @@ mod mru {
 
     /// Cmd+P, the file's name, Enter once it's listed; waits until it's the active tab.
     async fn quick_open(app: &mut App, name: &str) {
-        app.press(K::Char('p'), cmd());
+        app.test_execute(Command::QuickOpen);
         app.type_text(name);
         let listed = app
             .settle(|a| {
@@ -7112,7 +6985,7 @@ mod mru {
 
     /// Cmd+Shift+P on an empty query: the rows' labels, then Esc.
     fn command_rows(app: &mut App) -> Vec<String> {
-        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.test_execute(Command::ShowCommands);
         let labels = app
             .palette
             .as_ref()
@@ -7128,7 +7001,7 @@ mod mru {
 
     /// Cmd+P on an empty query once the walk has filled the list: (label, detail) rows, then Esc.
     async fn file_rows(app: &mut App, n: usize) -> Vec<(String, String)> {
-        app.press(K::Char('p'), cmd());
+        app.test_execute(Command::QuickOpen);
         let filled = app
             .settle(|a| a.palette.as_ref().is_some_and(|p| p.rows.len() >= n))
             .await;
@@ -7182,7 +7055,7 @@ mod mru {
             &rest[..rest.len().min(4)]
         );
         // A typed query keeps the fuzzy score: "Move Left" ranks the match, recently used or not.
-        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.test_execute(Command::ShowCommands);
         app.type_text("Save");
         let p = app.palette.as_ref().unwrap();
         assert_eq!(p.rows[p.selected].label, "File: Save");
@@ -7236,7 +7109,7 @@ mod mru {
         let dir = tempfile::tempdir().unwrap();
         let root = project(dir.path(), &["a.txt"]);
         let mut app = open_app(&root, "a.txt");
-        app.press(K::Char('b'), cmd());
+        app.test_execute(Command::ToggleSidebar);
         assert_eq!(app.last_command, Some(Command::ToggleSidebar));
         assert!(app.mru.commands.is_empty(), "a key's command isn't recently used");
         palette_command(&mut app, "Cursor: Move Right");
@@ -7510,6 +7383,7 @@ mod term_mouse {
     use vt100::{MouseProtocolEncoding, MouseProtocolMode};
 
     use crate::app::App;
+    use crate::command::{Command, ShellCommand};
     use crate::layout;
     use crate::shell_tests::{COUNT_TO_200, dirs, draw, screen_text, scrollback, shell_app};
     use crate::tasks::RunId;
@@ -7603,7 +7477,7 @@ mod term_mouse {
         click(&mut app, x, y);
         app.mouse(MouseEventKind::ScrollUp, x, y);
         assert_eq!(scrollback(&app), back + 3, "the wheel scrolled the scrollback");
-        app.press(KeyCode::End, KeyModifiers::CONTROL);
+        app.press_bound(Command::Shell(ShellCommand::Bottom));
         assert_eq!(
             screen_text(&app),
             live,
@@ -7869,20 +7743,13 @@ mod copy_paths {
 
     use crate::app::{App, InitialFile};
     use crate::buffer::Buffer;
+    use crate::command::Command;
     use crate::workspace::trust::TrustStore;
     use crate::workspace::{self, Workspace};
 
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
-    }
-
     /// Runs the palette command titled `title` (Cmd+Shift+P).
     fn palette_command(app: &mut App, title: &str) {
-        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.test_execute(Command::ShowCommands);
         app.type_text(title);
         let p = app.palette.as_ref().unwrap();
         assert_eq!(p.rows[p.selected].label, title);
@@ -8264,6 +8131,7 @@ mod term_scroll_bar {
     use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 
     use crate::app::App;
+    use crate::command::{Command, ShellCommand};
     use crate::layout::{self, PanelTab, ScrollTarget};
     use crate::scrollbar::Scrollable;
     use crate::shell_tests::{COUNT_TO_200, dirs, draw, screen_text, scrollback, shell_app};
@@ -8319,7 +8187,7 @@ mod term_scroll_bar {
         );
 
         // Ctrl+Home scrolls to the oldest output: the thumb moves to the top.
-        app.press(KeyCode::Home, KeyModifiers::CONTROL);
+        app.press_bound(Command::Shell(ShellCommand::Top));
         assert!(scrollback(&app) > 0);
         let term = draw(&mut app, 100, 30);
         let bar = app.hits.group(app.groups.active).unwrap().scrollbar.unwrap();
@@ -8352,7 +8220,7 @@ mod term_scroll_bar {
         assert!(scrollback(&app) > 0, "dragged back to the oldest output");
 
         // The wheel over the bar scrolls the scrollback, as over the shell.
-        app.press(KeyCode::End, KeyModifiers::CONTROL);
+        app.press_bound(Command::Shell(ShellCommand::Bottom));
         assert_eq!(scrollback(&app), 0);
         app.mouse(MouseEventKind::ScrollUp, track.x, track.y + 2);
         assert_eq!(scrollback(&app), 3, "the wheel over the bar scrolls back");
@@ -9398,18 +9266,11 @@ mod search_ignored_files {
 
     use crate::app::App;
     use crate::buffer::Buffer;
+    use crate::command::Command;
     use crate::search_view::DEBOUNCE;
     use crate::workspace::trust::TrustStore;
     use crate::workspace::{self, Workspace};
     use crate::workspace_search::reference;
-
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
-    }
 
     fn write(root: &Path, rel: &str, text: &str) {
         let path = root.join(rel);
@@ -9605,7 +9466,7 @@ mod search_ignored_files {
     async fn search_walks_ignored_files_only_when_asked() {
         let (_dir, root, state) = project();
         let mut app = open_app(&root, &state).await;
-        app.press(K::Char('f'), cmd() | M::SHIFT);
+        app.test_execute(Command::FindInFiles);
         app.type_text("needle");
         let hits = next_search(&mut app, 0).await;
         assert_eq!(paths(&hits), vec!["README.md", "src/main.rs"]);
@@ -9628,7 +9489,7 @@ mod search_ignored_files {
 
         // The palette command turns it off again.
         let old = app.search.as_ref().unwrap().generation;
-        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.test_execute(Command::ShowCommands);
         app.type_text("Search: Toggle Include Ignored Files");
         app.press(K::Enter, M::NONE);
         assert!(!app.search_view.include_ignored);
@@ -9645,20 +9506,13 @@ mod explorer_path_commands {
 
     use crate::app::{App, Focus, InitialFile, Level};
     use crate::buffer::Buffer;
+    use crate::command::Command;
     use crate::layout::SidePanel;
     use crate::workspace::trust::TrustStore;
     use crate::workspace::{self, Workspace};
 
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
-    }
-
     fn palette_command(app: &mut App, title: &str) {
-        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.test_execute(Command::ShowCommands);
         app.type_text(title);
         let p = app.palette.as_ref().unwrap();
         assert_eq!(p.rows[p.selected].label, title);
@@ -9844,20 +9698,13 @@ mod file_info {
     use crate::app::tab_tip::DELAY;
     use crate::app::{App, InitialFile};
     use crate::buffer::Buffer;
+    use crate::command::Command;
     use crate::diff_view::Pair;
     use crate::workspace::trust::TrustStore;
     use crate::workspace::{self, Workspace};
 
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
-    }
-
     fn palette_command(app: &mut App, title: &str) {
-        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.test_execute(Command::ShowCommands);
         app.type_text(title);
         app.press(K::Enter, M::NONE);
         assert!(app.palette.is_none());
@@ -10181,7 +10028,7 @@ mod file_info_menu {
         assert_eq!(app.context_menu.as_ref().unwrap().selected, 0, "wraps");
         // Typing and other bound keys do nothing to the editor or the menu.
         app.type_text("zz");
-        app.press(K::Char('p'), M::CONTROL | M::SHIFT);
+        app.press_bound(Command::ShowCommands);
         assert!(app.palette.is_none() && app.context_menu.is_some());
         assert!(!app.ui.panel_visible);
         let before = app.ui.panel_visible;
@@ -10994,11 +10841,6 @@ mod file_info_editor_menu {
         app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
         app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
         assert_eq!(app.active_buffer().unwrap().path, root.join("src/a.rs"));
-        let cmd = if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        };
         for (title, want) in [
             ("File: Copy Relative Path of Active File", "src/a.rs".to_string()),
             (
@@ -11010,7 +10852,7 @@ mod file_info_editor_menu {
                 text: "stale".into(),
                 ..Default::default()
             });
-            app.press(K::Char('p'), cmd | M::SHIFT);
+            app.test_execute(Command::ShowCommands);
             app.type_text(title);
             let p = app.palette.as_ref().unwrap();
             assert_eq!(p.rows[p.selected].label, title);
@@ -11094,19 +10936,12 @@ mod conf_files {
     use crate::app::App;
     use crate::buffer::Buffer;
     use crate::buffer::pos::ByteIdx;
+    use crate::command::Command;
     use crate::milestone_tests::test_app;
     use crate::selection::{Selection, Selections};
     use crate::syntax::Language;
 
     const SAMPLE: &str = "# top\n[core]\nname = jed\n; semi\nport: 80\n";
-
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
-    }
 
     fn open(name: &str, text: &str) -> (tempfile::TempDir, App) {
         let dir = tempfile::tempdir().unwrap();
@@ -11165,29 +11000,29 @@ mod conf_files {
     async fn comment_line_toggles_hash_and_uncomments_semicolon() {
         let (_d, mut app) = open("x.ini", SAMPLE);
         select(&mut app, &[(6, 6)]);
-        app.press(K::Char('/'), cmd());
+        app.test_execute(Command::CommentLine);
         assert_eq!(text(&app), "# top\n# [core]\nname = jed\n; semi\nport: 80\n");
-        app.press(K::Char('/'), cmd());
+        app.test_execute(Command::CommentLine);
         assert_eq!(text(&app), SAMPLE);
         // A `;` line uncomments by itself.
         let semi = SAMPLE.find("; semi").unwrap();
         select(&mut app, &[(semi, semi)]);
-        app.press(K::Char('/'), cmd());
+        app.test_execute(Command::CommentLine);
         assert_eq!(text(&app), "# top\n[core]\nname = jed\nsemi\nport: 80\n");
-        app.press(K::Char('z'), cmd());
+        app.test_execute(Command::Undo);
         // A `#` line and a `;` line, two selections: each uncomments.
         select(&mut app, &[(0, 2), (semi, semi + 1)]);
-        app.press(K::Char('/'), cmd());
+        app.test_execute(Command::CommentLine);
         assert_eq!(text(&app), "top\n[core]\nname = jed\nsemi\nport: 80\n");
-        app.press(K::Char('z'), cmd());
+        app.test_execute(Command::Undo);
         // `#` and `;` lines in one selection all count as commented.
-        app.press(K::Char('a'), cmd());
+        app.test_execute(Command::SelectAll);
         app.type_text("# a\n; b\n");
         select(&mut app, &[(0, 8)]);
-        app.press(K::Char('/'), cmd());
+        app.test_execute(Command::CommentLine);
         assert_eq!(text(&app), "a\nb\n");
         // Now plain: commented with `#`.
-        app.press(K::Char('/'), cmd());
+        app.test_execute(Command::CommentLine);
         assert_eq!(text(&app), "# a\n# b\n");
     }
 
@@ -11197,21 +11032,21 @@ mod conf_files {
         // line stays blank.
         let (_d, mut app) = open("x.ini", "; a\n\nb = 1\n");
         select(&mut app, &[(0, 9)]);
-        app.press(K::Char('/'), cmd());
+        app.test_execute(Command::CommentLine);
         assert_eq!(text(&app), "# ; a\n\n# b = 1\n");
         // Now all commented: only the `#` comes off, the `;` stays.
-        app.press(K::Char('/'), cmd());
+        app.test_execute(Command::CommentLine);
         assert_eq!(text(&app), "; a\n\nb = 1\n");
         // Indented `;` lines (no space after one) with a blank line: all uncomment.
-        app.press(K::Char('a'), cmd());
+        app.test_execute(Command::SelectAll);
         app.type_text("  ;x\n\n  ; y\n");
         select(&mut app, &[(0, 12)]);
-        app.press(K::Char('/'), cmd());
+        app.test_execute(Command::CommentLine);
         assert_eq!(text(&app), "  x\n\n  y\n");
         // A `;` mid-line isn't a comment: the line is commented.
-        app.press(K::Char('a'), cmd());
+        app.test_execute(Command::SelectAll);
         app.type_text("k = v ; c");
-        app.press(K::Char('/'), cmd());
+        app.test_execute(Command::CommentLine);
         assert_eq!(text(&app), "# k = v ; c");
     }
 
@@ -11219,7 +11054,7 @@ mod conf_files {
     async fn semicolon_is_only_a_comment_in_ini() {
         // Python's token is `#` too, but a `;` line is code there: commented, not uncommented.
         let (_d, mut app) = open("x.py", ";x\n");
-        app.press(K::Char('/'), cmd());
+        app.test_execute(Command::CommentLine);
         assert_eq!(text(&app), "# ;x\n");
     }
 
@@ -11228,21 +11063,21 @@ mod conf_files {
         let (_d, mut app) = open("x.ini", "");
         app.type_text("[");
         assert_eq!(text(&app), "[]");
-        app.press(K::Char('a'), cmd());
+        app.test_execute(Command::SelectAll);
         app.press(K::Backspace, M::NONE);
         app.type_text("k = \"");
         assert_eq!(text(&app), "k = \"\"");
-        app.press(K::Char('a'), cmd());
+        app.test_execute(Command::SelectAll);
         app.press(K::Backspace, M::NONE);
         app.type_text("k = '");
         assert_eq!(text(&app), "k = ''");
-        app.press(K::Char('a'), cmd());
+        app.test_execute(Command::SelectAll);
         app.press(K::Backspace, M::NONE);
         app.type_text("({");
         assert_eq!(text(&app), "({");
         // No auto-indent after a line: Enter after a section starts at column 0 (its `]`
         // overtyped).
-        app.press(K::Char('a'), cmd());
+        app.test_execute(Command::SelectAll);
         app.press(K::Backspace, M::NONE);
         app.type_text("[core]\nk = 1\n");
         assert_eq!(text(&app), "[core]\nk = 1\n");
@@ -11268,21 +11103,13 @@ mod open_workspace_settings {
         move |a| a.active_buffer().is_some_and(|b| b.path == path)
     }
 
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
-    }
-
     #[tokio::test(flavor = "multi_thread")]
     async fn creates_the_workspace_file_from_the_template_and_opens_it() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, path) = open_app(&dir);
         assert!(!path.exists());
         // Through the palette, by its title.
-        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.test_execute(Command::ShowCommands);
         app.type_text("Open Workspace Settings");
         app.press(K::Enter, M::NONE);
         assert!(app.settle(opened(path.clone())).await);
@@ -11296,7 +11123,7 @@ mod open_workspace_settings {
     async fn cmd_alt_comma_opens_it() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, path) = open_app(&dir);
-        app.press(K::Char(','), cmd() | M::ALT);
+        app.test_execute(Command::OpenWorkspaceSettings);
         assert!(app.settle(opened(path.clone())).await);
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
@@ -11312,7 +11139,7 @@ mod open_workspace_settings {
         let config_dir = dir.path().join("cfg");
         app.config_dir = config_dir.clone();
         let path = config_dir.join(crate::config::settings::FILE_NAME);
-        app.press(K::Char(','), cmd());
+        app.test_execute(Command::OpenUserSettings);
         assert!(app.settle(opened(path.clone())).await);
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
@@ -11336,19 +11163,15 @@ mod open_workspace_settings {
         let screen: Vec<String> = (0..60)
             .map(|y| (0..200).map(|x| buf[(x, y)].symbol()).collect::<String>())
             .collect();
-        let (user, ws) = if cfg!(target_os = "macos") {
-            ("Cmd+,", "Cmd+Alt+,")
-        } else {
-            ("Ctrl+,", "Ctrl+Alt+,")
-        };
-        for (cmd, key) in [(Command::OpenUserSettings, user), (Command::OpenWorkspaceSettings, ws)] {
+        for cmd in [Command::OpenUserSettings, Command::OpenWorkspaceSettings] {
+            let key = app.keymap.binding_for(cmd).unwrap().label();
             let title = crate::cheatsheet::short_title(cmd);
             let line = screen
                 .iter()
                 .find(|l| l.contains(&title))
                 .unwrap_or_else(|| panic!("{title}: {screen:#?}"));
             let at = line.find(&title).unwrap();
-            assert!(line[..at].trim_end().ends_with(key), "{line}");
+            assert!(line[..at].trim_end().ends_with(&key), "{line}");
         }
     }
 
@@ -11393,16 +11216,9 @@ mod open_workspace_settings {
 mod settings_schema {
     use crate::app::App;
     use crate::buffer::Buffer;
+    use crate::command::Command;
     use crate::config::schema::ConfigFile;
     use crossterm::event::{KeyCode as K, KeyModifiers as M};
-
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
-    }
 
     fn make_app(dir: &tempfile::TempDir) -> (App, std::path::PathBuf, std::path::PathBuf) {
         let root = crate::workspace::normalize(dir.path());
@@ -11449,14 +11265,14 @@ mod settings_schema {
     async fn the_open_commands_flag_their_buffers_and_save_as_clears_it() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, root, cfg) = make_app(&dir);
-        app.press(K::Char(','), cmd() | M::ALT);
+        app.test_execute(Command::OpenWorkspaceSettings);
         let want = root.join(".workspace");
         assert!(
             app.settle(move |a| a.active_buffer().is_some_and(|b| b.path == want))
                 .await
         );
         assert_eq!(app.active_buffer().unwrap().config_file, Some(ConfigFile::Workspace));
-        app.press(K::Char(','), cmd());
+        app.test_execute(Command::OpenUserSettings);
         let want = cfg.join("settings.toml");
         assert!(
             app.settle(move |a| a.active_buffer().is_some_and(|b| b.path == want))
@@ -11465,7 +11281,7 @@ mod settings_schema {
         assert_eq!(app.active_buffer().unwrap().config_file, Some(ConfigFile::Settings));
         // Save As to another name clears the flag.
         app.test_execute(crate::command::Command::SaveAs);
-        app.press(K::Char('a'), cmd());
+        app.test_execute(Command::SelectAll);
         app.type_text("copy.toml");
         app.press(K::Enter, M::NONE);
         let want = root.join("copy.toml");
@@ -11485,7 +11301,7 @@ mod settings_schema {
         assert!(app.active_buffer().is_some_and(|b| b.is_untitled()));
         assert_eq!(app.active_buffer().unwrap().config_file, None, "untitled");
         app.test_execute(crate::command::Command::SaveAs);
-        app.press(K::Char('a'), cmd());
+        app.test_execute(Command::SelectAll);
         let want = cfg.join("keybindings.toml");
         app.type_text(want.to_str().unwrap());
         app.press(K::Enter, M::NONE);
@@ -11502,7 +11318,7 @@ mod settings_schema {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, root, _cfg) = make_app(&dir);
         assert_eq!(app.active_buffer().unwrap().config_file, None);
-        app.press(K::Char('e'), cmd() | M::SHIFT);
+        app.test_execute(Command::FocusExplorer);
         let from = root.join("Cargo.toml");
         assert!(app.settle(|a| a.explorer.find(&from).is_some()).await, "root listed");
         app.explorer.selected = Some(from.clone());
@@ -11526,6 +11342,7 @@ mod settings_schema {
 mod settings_highlight {
     use crate::app::App;
     use crate::buffer::Buffer;
+    use crate::command::Command;
     use crossterm::event::{KeyCode as K, KeyModifiers as M};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -11597,14 +11414,7 @@ mod settings_highlight {
         assert!(app.settle(|a| a.active_buffer().unwrap().syntax.tree().is_some()).await);
         assert_ne!(fgs(&mut app, 0, 1)[0], invalid);
         app.test_execute(crate::command::Command::SaveAs);
-        app.press(
-            K::Char('a'),
-            if cfg!(target_os = "macos") {
-                M::SUPER
-            } else {
-                M::CONTROL
-            },
-        );
+        app.press_bound(Command::SelectAll);
         app.type_text(".workspace");
         app.press(K::Enter, M::NONE);
         let want = root.join(".workspace");
@@ -11680,7 +11490,7 @@ mod settings_completion {
     }
 
     fn ctrl_space(app: &mut App) {
-        app.press(K::Char(' '), M::CONTROL);
+        app.test_execute(Command::TriggerSuggest);
     }
 
     fn quick(app: &mut App) {
@@ -11835,14 +11645,7 @@ mod settings_completion {
         assert!(e.app.completion.quick.is_none());
         // Save As a config file turns it on.
         e.app.test_execute(Command::SaveAs);
-        e.app.press(
-            K::Char('a'),
-            if cfg!(target_os = "macos") {
-                M::SUPER
-            } else {
-                M::CONTROL
-            },
-        );
+        e.app.press_bound(Command::SelectAll);
         e.app.type_text(".workspace");
         e.app.press(K::Enter, M::NONE);
         let want = e.root.join(".workspace");
@@ -11870,14 +11673,7 @@ mod settings_completion {
         assert_eq!(text(&e.app), "[settings]\nrender_whitespace = \"all\"\n");
         // Saved as another name: a plain TOML file, no completion.
         e.app.test_execute(Command::SaveAs);
-        e.app.press(
-            K::Char('a'),
-            if cfg!(target_os = "macos") {
-                M::SUPER
-            } else {
-                M::CONTROL
-            },
-        );
+        e.app.press_bound(Command::SelectAll);
         e.app.type_text("other.toml");
         e.app.press(K::Enter, M::NONE);
         let want = e.root.join("other.toml");
@@ -12294,14 +12090,6 @@ mod reopen_closed_tab {
         app.message.as_ref().map(|m| m.text.clone()).unwrap_or_default()
     }
 
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
-    }
-
     #[tokio::test(flavor = "multi_thread")]
     async fn close_then_reopen_restores_file_cursor_and_scroll() {
         let dir = tempfile::tempdir().unwrap();
@@ -12318,7 +12106,7 @@ mod reopen_closed_tab {
         app.test_execute(Command::CloseTab);
         assert_eq!(open_names(&app), ["a.txt", "b.txt"]);
         // Cmd+Shift+T (Ctrl+Shift+T on Linux).
-        app.press(K::Char('t'), cmd() | M::SHIFT);
+        app.test_execute(Command::ReopenClosedTab);
         assert!(app.settle(|a| open_names(a).len() == 3).await);
         assert_eq!(active_name(&app), "c.txt");
         let t = app.group().active_tab().unwrap();
@@ -12409,7 +12197,7 @@ mod reopen_closed_tab {
         let root = crate::workspace::normalize(dir.path());
         let mut app = app3(&root).await;
         app.test_execute(Command::CloseTab);
-        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.test_execute(Command::ShowCommands);
         app.type_text("Reopen Closed Editor");
         let p = app.palette.as_ref().unwrap();
         assert_eq!(p.rows[p.selected].label, "View: Reopen Closed Editor");
@@ -12497,14 +12285,6 @@ mod more_line_commands {
     use crate::pairs::tests::show;
     use crate::selection::{Selection, Selections};
 
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
-    }
-
     /// The app on `marked`'s text (`|` cursors, `«…»` selections).
     fn open(dir: &tempfile::TempDir, marked: &str) -> App {
         let (mut text, mut list, mut anchor) = (String::new(), Vec::new(), None);
@@ -12531,11 +12311,11 @@ mod more_line_commands {
     }
 
     fn undo(app: &mut App) {
-        app.press(K::Char('z'), cmd());
+        app.test_execute(Command::Undo);
     }
 
     fn delete_line(app: &mut App) {
-        app.press(K::Char('k'), cmd() | M::SHIFT);
+        app.test_execute(Command::DeleteLine);
     }
 
     #[test]
@@ -12577,8 +12357,8 @@ mod more_line_commands {
         app.active_mut().unwrap().0.read_only = Some("test".into());
         delete_line(&mut app);
         app.test_execute(Command::JoinLines);
-        app.press(K::Enter, cmd());
-        app.press(K::Enter, cmd() | M::SHIFT);
+        app.test_execute(Command::InsertLineBelow);
+        app.test_execute(Command::InsertLineAbove);
         assert_eq!(shown(&mut app), "a|\nb\n");
         assert!(!app.active_buffer().unwrap().is_dirty());
     }
@@ -12587,16 +12367,16 @@ mod more_line_commands {
     fn select_line_grows_by_a_line_each_time() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = open(&dir, "one\nt|wo\nthree\nfour");
-        app.press(K::Char('l'), cmd());
+        app.test_execute(Command::SelectLine);
         assert_eq!(shown(&mut app), "one\n«two\n»three\nfour");
-        app.press(K::Char('l'), cmd());
+        app.test_execute(Command::SelectLine);
         assert_eq!(shown(&mut app), "one\n«two\nthree\n»four");
-        app.press(K::Char('l'), cmd());
+        app.test_execute(Command::SelectLine);
         assert_eq!(shown(&mut app), "one\n«two\nthree\nfour»");
         assert!(!app.active_buffer().unwrap().is_dirty());
         // Two cursors on one line and one further down.
         let mut app = open(&dir, "a|b|c\nd\ne|f\n");
-        app.press(K::Char('l'), cmd());
+        app.test_execute(Command::SelectLine);
         assert_eq!(shown(&mut app), "«abc\n»d\n«ef\n»");
     }
 
@@ -12643,13 +12423,13 @@ mod more_line_commands {
     fn insert_line_below_keeps_indentation_from_any_column() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = open(&dir, "fn f() {\n    le|t x;\n}\n");
-        app.press(K::Enter, cmd());
+        app.test_execute(Command::InsertLineBelow);
         assert_eq!(shown(&mut app), "fn f() {\n    let x;\n    |\n}\n");
         undo(&mut app);
         assert_eq!(text(&app), "fn f() {\n    let x;\n}\n");
         // Two cursors on one line make one new line; a selection takes the line it ends on.
         let mut app = open(&dir, "a|b|c\n«d\ne»\nf");
-        app.press(K::Enter, cmd());
+        app.test_execute(Command::InsertLineBelow);
         assert_eq!(shown(&mut app), "abc\n|\nd\ne\n|\nf");
     }
 
@@ -12658,14 +12438,14 @@ mod more_line_commands {
         let dir = tempfile::tempdir().unwrap();
         let mut app = open(&dir, "fn f() {\n    le|t x;\n}\n");
         app.settings.auto_indent = false;
-        app.press(K::Enter, cmd());
+        app.test_execute(Command::InsertLineBelow);
         assert_eq!(shown(&mut app), "fn f() {\n    let x;\n    |\n}\n");
         undo(&mut app);
         assert_eq!(text(&app), "fn f() {\n    let x;\n}\n");
         // After a bracket, auto-indent would add a level; off, only the copy.
         let mut app = open(&dir, "a {|\n\tb|\n");
         app.settings.auto_indent = false;
-        app.press(K::Enter, cmd());
+        app.test_execute(Command::InsertLineBelow);
         assert_eq!(shown(&mut app), "a {\n|\n\tb\n\t|\n");
     }
 
@@ -12674,10 +12454,10 @@ mod more_line_commands {
         let dir = tempfile::tempdir().unwrap();
         // Starting mid-line and ending at a line start doesn't take that last line.
         let mut app = open(&dir, "a«bc\n»def\n");
-        app.press(K::Char('l'), cmd());
+        app.test_execute(Command::SelectLine);
         assert_eq!(shown(&mut app), "«abc\n»def\n");
         // A selection of a whole line plus its break grows by the next.
-        app.press(K::Char('l'), cmd());
+        app.test_execute(Command::SelectLine);
         assert_eq!(shown(&mut app), "«abc\ndef\n»");
     }
 
@@ -12693,7 +12473,7 @@ mod more_line_commands {
     fn insert_line_below_a_selection_ending_at_line_start_skips_that_line() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = open(&dir, "«a\nb\n»c\n");
-        app.press(K::Enter, cmd());
+        app.test_execute(Command::InsertLineBelow);
         assert_eq!(shown(&mut app), "a\nb\n|\nc\n");
     }
 
@@ -12701,15 +12481,15 @@ mod more_line_commands {
     fn insert_line_above_keeps_indentation_and_is_one_step() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = open(&dir, "fn f() {\n\tle|t x;\n}\n");
-        app.press(K::Enter, cmd() | M::SHIFT);
+        app.test_execute(Command::InsertLineAbove);
         assert_eq!(shown(&mut app), "fn f() {\n\t|\n\tlet x;\n}\n");
         undo(&mut app);
         assert_eq!(shown(&mut app), "fn f() {\n\tle|t x;\n}\n");
         let mut app = open(&dir, "a|\nb\nc|c|\n");
-        app.press(K::Enter, cmd() | M::SHIFT);
+        app.test_execute(Command::InsertLineAbove);
         assert_eq!(shown(&mut app), "|\na\nb\n|\ncc\n");
         let mut app = open(&dir, "  x|");
-        app.press(K::Enter, cmd() | M::SHIFT);
+        app.test_execute(Command::InsertLineAbove);
         assert_eq!(shown(&mut app), "  |\n  x");
     }
 
@@ -12734,24 +12514,11 @@ mod more_line_commands {
         let mut app = open(&dir, "|");
         app.type_text("a");
         app.press(K::Enter, M::NONE);
-        app.press(K::Char('l'), cmd());
+        app.test_execute(Command::SelectLine);
         app.type_text("b");
         assert_eq!(text(&app), "a\nb");
         undo(&mut app);
         assert_eq!(text(&app), "a\n");
-    }
-
-    #[test]
-    fn join_lines_key_is_ctrl_j_on_mac_only() {
-        for (platform, joins) in [(Platform::MacOs, true), (Platform::Linux, false)] {
-            let dir = tempfile::tempdir().unwrap();
-            let mut app = open(&dir, "a|\nb\n");
-            app.keymap = Keymap::default_for(platform);
-            app.press(K::Char('j'), M::CONTROL | M::SHIFT);
-            assert_eq!(text(&app), "a\nb\n", "{platform:?} Ctrl+Shift+J");
-            app.press(K::Char('j'), M::CONTROL);
-            assert_eq!(text(&app) == "a b\n", joins, "{platform:?} Ctrl+J");
-        }
     }
 
     #[test]
@@ -12819,7 +12586,7 @@ mod more_line_commands {
 mod blame_hash {
     use std::path::Path;
 
-    use crossterm::event::{KeyCode as K, KeyModifiers as M, MouseButton, MouseEventKind};
+    use crossterm::event::{KeyModifiers as M, MouseButton, MouseEventKind};
 
     use super::inline_blame::{blamed_project, draw, go_to_line, hash_of, row, settle_blame};
     use crate::app::App;
@@ -12875,14 +12642,7 @@ mod blame_hash {
             assert!(id.starts_with(&hash) && id.len() == 40);
         }
         app.type_text("!");
-        app.press(
-            K::Char('s'),
-            if cfg!(target_os = "macos") {
-                M::SUPER
-            } else {
-                M::CONTROL
-            },
-        );
+        app.test_execute(Command::Save);
         assert!(app.settle(|a| !a.active_buffer().unwrap().is_dirty()).await);
         assert!(settle_blame(&mut app).await);
         let term = draw(&mut app);
@@ -13098,6 +12858,7 @@ mod about {
 
 mod explorer_drag_drop {
     use crate::app::App;
+    use crate::command::Command;
     use crate::workspace::Workspace;
     use crate::workspace::trust::TrustStore;
     use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
@@ -13168,7 +12929,7 @@ mod explorer_drag_drop {
         app.test_start();
         assert!(app.settle(|a| a.explorer.row_count() >= 2).await);
         draw(&mut app);
-        app.press(KeyCode::Char('e'), KeyModifiers::SUPER | KeyModifiers::SHIFT);
+        app.test_execute(Command::FocusExplorer);
         app.explorer.selected = Some(dir.path().join("a.txt"));
         // Esc cancels.
         app.press(KeyCode::F(2), KeyModifiers::NONE);
@@ -13849,6 +13610,7 @@ mod word_completion {
     use crate::app::App;
     use crate::buffer::Buffer;
     use crate::buffer::pos::ByteIdx;
+    use crate::command::Command;
     use crate::selection::{Selection, Selections};
     use crossterm::event::{KeyCode as K, KeyModifiers as M};
 
@@ -13887,7 +13649,7 @@ mod word_completion {
     }
 
     fn ctrl_space(app: &mut App) {
-        app.press(K::Char(' '), M::CONTROL);
+        app.test_execute(Command::TriggerSuggest);
     }
 
     fn message(app: &App) -> Option<String> {

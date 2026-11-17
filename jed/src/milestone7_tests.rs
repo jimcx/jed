@@ -39,6 +39,7 @@ use crossterm::event::{KeyCode as K, KeyModifiers as M};
 
 use crate::app::App;
 use crate::buffer::Buffer;
+use crate::command::Command;
 use crate::milestone_tests::test_app;
 use crate::search::Options;
 use crate::workspace_search::{Query, Results};
@@ -172,7 +173,7 @@ async fn milestone_7_unsaved_edit_shows_up_in_the_results() {
     );
 
     // Saved, it's searched from the disk again: the same results.
-    app.press(K::Char('s'), cmd());
+    app.test_execute(Command::Save);
     assert!(app.settle(|a| !a.active_buffer().unwrap().is_dirty()).await);
     let r = search(&mut app, query("haystack", false, false)).await;
     assert_eq!(lines(r), vec!["a.txt:1:11-19 first line haystack"]);
@@ -194,14 +195,6 @@ async fn milestone_7_a_new_search_replaces_the_running_one() {
     assert!(r.files.iter().all(|f| !f.path.starts_with("many")));
 }
 
-fn cmd() -> M {
-    if cfg!(target_os = "macos") {
-        M::SUPER
-    } else {
-        M::CONTROL
-    }
-}
-
 // 7b: the Search view.
 
 mod view {
@@ -212,10 +205,11 @@ mod view {
     use ratatui::backend::TestBackend;
     use ratatui::style::Style;
 
-    use super::{cmd, open_app, write};
+    use super::{open_app, write};
     use crate::app::{App, Focus};
     use crate::buffer::Buffer;
     use crate::buffer::pos::ByteIdx;
+    use crate::command::{Command, SearchCommand};
     use crate::layout::SidePanel;
     use crate::search_view::DEBOUNCE;
     use crate::selection::{Selection, Selections};
@@ -224,15 +218,6 @@ mod view {
     pub(super) const KEYSTROKE_BUDGET: Duration = Duration::from_millis(16);
     /// The same in debug builds: only catches drawing or input doing work per result.
     pub(super) const KEYSTROKE_DEBUG_BOUND: Duration = Duration::from_millis(500);
-
-    /// The toggle keys: Cmd+Alt on macOS, Alt on Linux.
-    pub(super) fn toggle() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER | M::ALT
-        } else {
-            M::ALT
-        }
-    }
 
     pub(super) fn term() -> Terminal<TestBackend> {
         Terminal::new(TestBackend::new(100, 30)).unwrap()
@@ -281,7 +266,7 @@ mod view {
     }
 
     pub(super) fn find_in_files(app: &mut App) {
-        app.press(K::Char('f'), cmd() | M::SHIFT);
+        app.test_execute(Command::FindInFiles);
     }
 
     pub(super) async fn settled(app: &mut App) {
@@ -341,7 +326,7 @@ mod view {
         assert_eq!(term.get_cursor_position().unwrap().y, 1);
 
         // With regex on, the seed is escaped so it finds itself.
-        app.press(K::Char('r'), toggle());
+        app.test_execute(Command::Search(SearchCommand::ToggleRegex));
         assert!(app.search_view.options.regex);
         app.test_open(Buffer::open(&root.join("src/b.rs")).unwrap());
         app.ui.focus = Focus::Editor;
@@ -437,7 +422,7 @@ mod view {
         let case_at = find(&term, "Aa").unwrap();
         assert_ne!(bg(&term, case_at), theme_bg(&app, "find.option.active"));
 
-        app.press(K::Char('c'), toggle());
+        app.test_execute(Command::Search(SearchCommand::ToggleCase));
         assert!(app.search_view.options.case_sensitive);
         assert!(
             !app.find_options.case_sensitive,
@@ -455,7 +440,7 @@ mod view {
         app.type_text("..LE");
         settled(&mut app).await;
         assert_eq!(total(&app), 0);
-        app.press(K::Char('r'), toggle());
+        app.test_execute(Command::Search(SearchCommand::ToggleRegex));
         settled(&mut app).await;
         assert_eq!(total(&app), 1);
         draw(&mut term, &mut app);
@@ -472,7 +457,7 @@ mod view {
         assert_eq!(total(&app), 3);
         assert_eq!(app.ui.focus, Focus::SidePanel);
         // Whole word is the Search view's own too (the Search and replace milestone).
-        app.press(K::Char('w'), toggle());
+        app.test_execute(Command::Search(SearchCommand::ToggleWholeWord));
         assert!(app.search_view.options.whole_word && !app.find_options.whole_word);
         assert_eq!(app.search_view.query.text, "NE..LE");
     }
@@ -508,7 +493,7 @@ mod view {
         write(&root, "wide.txt", format!("{}needle end\n", "日本語".repeat(20)));
         let mut term = term();
         find_in_files(&mut app);
-        app.press(K::Char('r'), toggle());
+        app.test_execute(Command::Search(SearchCommand::ToggleRegex));
         // `^` matches (empty) at every line start, before "needle" on the same line.
         app.type_text("^|needle");
         settled(&mut app).await;
@@ -539,7 +524,7 @@ mod view {
         let (mut app, _root) = open_app(&dir);
         let mut term = term();
         find_in_files(&mut app);
-        app.press(K::Char('r'), toggle());
+        app.test_execute(Command::Search(SearchCommand::ToggleRegex));
         app.type_text("(needle");
         app.search_tick(Instant::now() + DEBOUNCE);
         assert!(app.search.is_none());
@@ -636,10 +621,10 @@ mod view {
         assert_eq!(panel(&term)[0].trim(), "EXPLORER");
         find_in_files(&mut app);
         assert_eq!(app.search_view.query.text, "needle");
-        app.press(K::Char('e'), cmd() | M::SHIFT);
+        app.test_execute(Command::FocusExplorer);
         assert_eq!(app.ui.side_panel, SidePanel::Explorer);
         // With no editor open, Esc leaves the focus in the query.
-        app.press(K::Char('w'), cmd());
+        app.test_execute(Command::CloseTab);
         assert!(app.group().active_tab().is_none());
         find_in_files(&mut app);
         app.press(K::Esc, M::NONE);
@@ -680,6 +665,9 @@ mod view {
             "[[binding]]\nkey = \"ctrl+t\"\ncommand = \"search.toggleCase\"\ncontext = \"search\"\n",
         )
         .unwrap();
+        let default_toggle = Keymap::default_for(Platform::current())
+            .binding_for(Command::Search(SearchCommand::ToggleCase))
+            .unwrap();
         let (km, errors) = Keymap::load(&config, Platform::current());
         assert!(errors.is_empty(), "{errors:?}");
         app.set_keymap(km, errors);
@@ -689,7 +677,7 @@ mod view {
         app.press(K::Char('t'), M::CONTROL);
         assert!(app.search_view.options.case_sensitive);
         // The default key lost the command.
-        app.press(K::Char('c'), toggle());
+        app.press(default_toggle.code, default_toggle.mods);
         assert!(app.search_view.options.case_sensitive);
         assert_eq!(app.search_view.query.text, "");
     }
@@ -766,8 +754,9 @@ mod navigate {
     use crossterm::event::{KeyCode as K, KeyModifiers as M, MouseButton, MouseEventKind};
 
     use super::view::{draw, find, find_in_files, panel, settled, term, theme_bg};
-    use super::{cmd, open_app, write};
+    use super::{open_app, write};
     use crate::app::{App, Focus};
+    use crate::command::Command;
     use crate::search_view::DEBOUNCE;
     use crate::workspace_search::{Batch, FileMatches, LineMatch};
 
@@ -1010,10 +999,10 @@ mod navigate {
     async fn milestone_7_results_open_in_the_focused_group() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _root) = open_app(&dir);
-        app.press(K::Char('\\'), cmd());
+        app.test_execute(Command::SplitRight);
         let ids = app.groups.ids();
         assert_eq!(ids.len(), 2);
-        app.press(K::Char('1'), cmd());
+        app.test_execute(Command::FocusGroup(1));
         needle(&mut app).await;
         assert_eq!(app.groups.active, ids[0], "the last focused group stays the target");
         app.press(K::Down, M::NONE);
@@ -1028,12 +1017,12 @@ mod navigate {
         assert_eq!((tabs(&app, ids[0]), tabs(&app, ids[1])), (2, 1));
 
         // Group 2 focused: the next result opens there, in a tab of its own.
-        app.press(K::Char('2'), cmd());
+        app.test_execute(Command::FocusGroup(2));
         app.press(K::F(4), M::NONE);
         assert_eq!(app.groups.active, ids[1]);
         assert_eq!(at(&mut app), ("src/b.rs".into(), (19, 25)));
         assert_eq!((tabs(&app, ids[0]), tabs(&app, ids[1])), (2, 2));
-        app.press(K::Char('1'), cmd());
+        app.test_execute(Command::FocusGroup(1));
         assert_eq!(at(&mut app), ("src/b.rs".into(), (3, 9)), "group 1's view untouched");
     }
 
@@ -1154,7 +1143,7 @@ mod navigate {
         );
 
         // An open buffer edited since: the same clamping, from the buffer's text.
-        app.press(K::Char('a'), cmd());
+        app.test_execute(Command::SelectAll);
         app.type_text("x");
         app.press(K::F(4), M::NONE);
         app.press(K::F(4), M::SHIFT);
@@ -1219,10 +1208,11 @@ mod done_when {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    use super::view::{KEYSTROKE_BUDGET, KEYSTROKE_DEBUG_BOUND, big_workspace, draw, find_in_files, settled, toggle};
+    use super::view::{KEYSTROKE_BUDGET, KEYSTROKE_DEBUG_BOUND, big_workspace, draw, find_in_files, settled};
     use super::{open_app, write};
     use crate::app::{App, Focus};
     use crate::buffer::Buffer;
+    use crate::command::{Command, SearchCommand};
     use crate::milestone_tests::test_app;
     use crate::search::Options;
     use crate::workspace_search::reference::{hits, reference};
@@ -1245,10 +1235,10 @@ mod done_when {
     async fn search(app: &mut App, pattern: &str, o: Options) {
         find_in_files(app);
         if app.search_view.options.case_sensitive != o.case_sensitive {
-            app.press(K::Char('c'), toggle());
+            app.test_execute(Command::Search(SearchCommand::ToggleCase));
         }
         if app.search_view.options.regex != o.regex {
-            app.press(K::Char('r'), toggle());
+            app.test_execute(Command::Search(SearchCommand::ToggleRegex));
         }
         app.type_text(pattern);
         settled(app).await;

@@ -41,14 +41,6 @@ use crate::syntax::Language;
 use crate::workspace::trust::TrustStore;
 use crate::workspace::{self, Workspace};
 
-fn cmd() -> M {
-    if cfg!(target_os = "macos") {
-        M::SUPER
-    } else {
-        M::CONTROL
-    }
-}
-
 /// An app with `a.c` open in `<dir>/ws`.
 fn open_app(
     dir: &tempfile::TempDir,
@@ -90,7 +82,7 @@ fn open_app_inner(
 }
 
 fn new_untitled(app: &mut App) {
-    app.press(KeyCode::Char('n'), cmd());
+    app.test_execute(Command::NewUntitledFile);
 }
 
 fn draw(app: &mut App) -> Vec<String> {
@@ -103,7 +95,7 @@ fn draw(app: &mut App) -> Vec<String> {
 }
 
 fn run_command(app: &mut App, title: &str) {
-    app.press(KeyCode::Char('p'), cmd() | M::SHIFT);
+    app.test_execute(Command::ShowCommands);
     app.type_text(title);
     let p = app.palette.as_ref().unwrap();
     assert_eq!(p.rows[p.selected].label, title);
@@ -309,7 +301,7 @@ async fn untitled_save_asks_for_a_path_and_the_tab_becomes_the_file() {
     app.test_execute(Command::SplitRight);
     app.type_text("fn main() {}\n");
     assert!(!keyword_drawn(&mut app), "plain text while untitled");
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     assert_eq!(save_as_text(&app).as_deref(), Some("Untitled-1"));
     assert!(draw(&mut app).iter().any(|r| r.contains("Save Untitled-1 as")));
     // Errors stay in the prompt.
@@ -319,11 +311,11 @@ async fn untitled_save_asks_for_a_path_and_the_tab_becomes_the_file() {
     app.type_text("d/");
     app.press(KeyCode::Enter, M::NONE);
     assert_eq!(save_as_error(&app), Some("That is a folder: add a file name"));
-    app.press(KeyCode::Char('a'), cmd());
+    app.press_field_key(Command::SelectAll);
     app.type_text("a.c");
     app.press(KeyCode::Enter, M::NONE);
     assert_eq!(save_as_error(&app), Some("That file is open in another tab"));
-    app.press(KeyCode::Char('a'), cmd());
+    app.press_field_key(Command::SelectAll);
     app.type_text("sub/.././a.c");
     app.press(KeyCode::Enter, M::NONE);
     assert_eq!(
@@ -331,7 +323,7 @@ async fn untitled_save_asks_for_a_path_and_the_tab_becomes_the_file() {
         Some("That file is open in another tab"),
         "`.` and `..` are resolved"
     );
-    app.press(KeyCode::Char('a'), cmd());
+    app.press_field_key(Command::SelectAll);
     app.type_text("sub/x.rs");
     app.press(KeyCode::Enter, M::NONE);
     wait_saved(&mut app).await;
@@ -381,7 +373,7 @@ async fn untitled_save_as_errors_keep_the_prompt_and_esc_cancels() {
     fs::create_dir(root.join("sub")).unwrap();
     new_untitled(&mut app);
     app.type_text("keep me");
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     for (bad, why) in [("sub", "a folder"), ("nope/y.txt", "a missing folder")] {
         app.type_text(bad);
         app.press(KeyCode::Enter, M::NONE);
@@ -407,7 +399,7 @@ async fn untitled_save_as_leaves_the_old_file_and_moves_the_buffer() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, root) = open_app_watched(&dir, None);
     app.type_text("z");
-    app.press(KeyCode::Char('s'), cmd() | M::SHIFT);
+    app.test_execute(Command::SaveAs);
     assert_eq!(save_as_text(&app).as_deref(), Some("a.c"));
     app.type_text("b.c");
     app.press(KeyCode::Enter, M::NONE);
@@ -447,7 +439,7 @@ async fn untitled_save_as_keeps_edits_made_during_the_write_dirty() {
     let (mut app, root) = open_app(&dir, None);
     new_untitled(&mut app);
     app.type_text("one");
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     app.type_text("x.txt");
     app.press(KeyCode::Enter, M::NONE);
     assert!(app.buffers.any_saving(), "the write runs off the UI thread");
@@ -459,7 +451,7 @@ async fn untitled_save_as_keeps_edits_made_during_the_write_dirty() {
     assert_eq!(buf.path, root.join("x.txt"));
     assert!(buf.rope == "one!" && buf.is_dirty() && !buf.is_untitled());
 
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     assert!(save_as_text(&app).is_none(), "a plain save now");
     wait_saved(&mut app).await;
     assert_eq!(fs::read_to_string(root.join("x.txt")).unwrap(), "one!");
@@ -474,7 +466,7 @@ async fn untitled_save_as_onto_an_existing_file_asks_to_overwrite() {
     fs::write(root.join("b.c"), "other\n").unwrap();
     new_untitled(&mut app);
     app.type_text("mine");
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     app.type_text("b.c");
     app.press(KeyCode::Enter, M::NONE);
     assert!(
@@ -488,7 +480,7 @@ async fn untitled_save_as_onto_an_existing_file_asks_to_overwrite() {
     assert_eq!(fs::read_to_string(root.join("b.c")).unwrap(), "other\n");
     assert!(app.active_buffer().unwrap().is_untitled());
 
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     app.type_text("b.c");
     app.press(KeyCode::Enter, M::NONE);
     assert!(
@@ -507,7 +499,7 @@ async fn untitled_save_as_redetects_the_language_unless_one_was_picked() {
     let (mut app, root) = open_app(&dir, None);
     new_untitled(&mut app);
     app.type_text("x");
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     app.type_text("one.rs");
     app.press(KeyCode::Enter, M::NONE);
     wait_saved(&mut app).await;
@@ -518,7 +510,7 @@ async fn untitled_save_as_redetects_the_language_unless_one_was_picked() {
     pick_language(&mut app, "Python");
     let picked = active_language(&app);
     assert_ne!(picked, Language::PlainText);
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     app.type_text("two.rs");
     app.press(KeyCode::Enter, M::NONE);
     wait_saved(&mut app).await;
@@ -535,7 +527,7 @@ async fn untitled_save_all_saves_files_and_prompts_for_each_untitled_buffer() {
     app.type_text("one");
     new_untitled(&mut app);
     app.type_text("two");
-    app.press(KeyCode::Char('s'), cmd() | M::ALT);
+    app.test_execute(Command::SaveAll);
     assert!(app.settle(|a| !a.buffers.any_saving()).await);
     assert_eq!(fs::read_to_string(root.join("a.c")).unwrap(), "yint x;\n");
     assert_eq!(save_as_text(&app).as_deref(), Some("Untitled-1"));
@@ -595,7 +587,7 @@ async fn untitled_quit_save_stops_when_the_path_prompt_is_cancelled() {
     // The quit and the rest of its queue are forgotten: a later Save As neither quits nor asks
     // for Untitled-2.
     app.test_activate_tab(1);
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     assert_eq!(save_as_text(&app).as_deref(), Some("Untitled-1"));
     app.type_text("one.txt");
     app.press(KeyCode::Enter, M::NONE);
@@ -679,7 +671,7 @@ async fn untitled_gets_a_crash_backup_until_empty_saved_or_closed() {
     assert_eq!(b.untitled.as_deref(), app.active_buffer().unwrap().untitled_id());
 
     // Emptied again: its backup goes.
-    app.press(KeyCode::Char('a'), cmd());
+    app.test_execute(Command::SelectAll);
     app.press(KeyCode::Backspace, M::NONE);
     assert!(app.settle(|_| !file.exists()).await, "an emptied buffer needs none");
 
@@ -687,7 +679,7 @@ async fn untitled_gets_a_crash_backup_until_empty_saved_or_closed() {
     app.type_text("saved text");
     back_up(&mut app).await;
     assert!(file.exists());
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     app.type_text("s.txt");
     app.press(KeyCode::Enter, M::NONE);
     wait_saved(&mut app).await;
@@ -806,7 +798,7 @@ async fn untitled_tabs_with_text_come_back_with_the_session_without_a_prompt() {
     back_up(&mut app).await;
     let file = untitled_file(&state, &root, &app);
     assert_eq!(backup_files(&state, &root), std::slice::from_ref(&file));
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     app.type_text("n.txt");
     app.press(KeyCode::Enter, M::NONE);
     wait_saved(&mut app).await;
@@ -910,11 +902,11 @@ async fn untitled_status_bar_language_click_and_save_while_writing() {
     assert!(p.rows.iter().any(|row| row.label == "Rust"), "languages listed");
     app.press(KeyCode::Esc, M::NONE);
 
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     app.type_text("w.txt");
     app.press(KeyCode::Enter, M::NONE);
     assert!(app.active_buffer().unwrap().save_in_flight(), "writing");
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     assert!(app.prompt.is_none(), "no second prompt while it writes");
     wait_saved(&mut app).await;
     assert_eq!(fs::read_to_string(root.join("w.txt")).unwrap(), "x");
@@ -1191,7 +1183,7 @@ async fn untitled_save_as_moves_the_language_server_document() {
 
     // File to file: close a.c, open b.c, never a message about b.c before its open.
     app.type_text("z");
-    app.press(KeyCode::Char('s'), cmd() | M::SHIFT);
+    app.test_execute(Command::SaveAs);
     app.type_text("b.c");
     app.press(KeyCode::Enter, M::NONE);
     wait_saved(&mut app).await;
@@ -1234,7 +1226,7 @@ async fn untitled_save_as_moves_the_language_server_document() {
     new_untitled(&mut app);
     app.type_text("int y;\n");
     let before = doc_messages(&fake).len();
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     app.type_text("x.c");
     app.press(KeyCode::Enter, M::NONE);
     wait_saved(&mut app).await;
@@ -1266,7 +1258,7 @@ async fn untitled_save_as_in_a_repo_follows_git_history_and_the_explorer() {
         app.settle(|a| !a.active_buffer().unwrap().quick_diff.marks().is_empty())
             .await
     );
-    app.press(KeyCode::Char('s'), cmd() | M::SHIFT);
+    app.test_execute(Command::SaveAs);
     assert_eq!(save_as_text(&app).as_deref(), Some("f.txt"));
     app.type_text("g.txt");
     app.press(KeyCode::Enter, M::NONE);
@@ -1357,8 +1349,8 @@ async fn untitled_save_as_onto_a_tracked_file_takes_its_markers_and_blame() {
         blame(&app)
     );
 
-    app.press(KeyCode::Char('s'), cmd() | M::SHIFT);
-    app.press(KeyCode::Char('a'), cmd());
+    app.test_execute(Command::SaveAs);
+    app.press_field_key(Command::SelectAll);
     app.type_text("h.txt");
     app.press(KeyCode::Enter, M::NONE);
     assert!(
@@ -1418,8 +1410,8 @@ async fn untitled_save_as_drops_the_old_paths_diagnostics() {
     );
     assert!(app.settle(|a| messages(a) == ["on a"]).await, "a.c's squiggle");
 
-    app.press(KeyCode::Char('s'), cmd() | M::SHIFT);
-    app.press(KeyCode::Char('a'), cmd());
+    app.test_execute(Command::SaveAs);
+    app.press_field_key(Command::SelectAll);
     app.type_text("b.c");
     app.press(KeyCode::Enter, M::NONE);
     wait_saved(&mut app).await;
@@ -1471,7 +1463,7 @@ async fn untitled_explorer_rename_drops_the_old_paths_markers() {
         "f.txt's markers"
     );
 
-    app.press(KeyCode::Char('e'), cmd() | M::SHIFT);
+    app.test_execute(Command::FocusExplorer);
     let f = root.join("f.txt");
     assert!(app.settle(|a| a.explorer.find(&f).is_some()).await, "root listed");
     app.explorer.selected = Some(f.clone());
