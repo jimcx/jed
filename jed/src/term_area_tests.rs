@@ -761,10 +761,7 @@ async fn shell_answers(app: &mut App, group: GroupId, n: u32) {
         .any(|s| {
             let text = s.run.screen().screen().contents();
             // Typed before the prompt, the tty echoes the command first and the answer lands after the prompt.
-            text.lines().any(|l| {
-                let l = l.trim();
-                jterm::testing::after_prompt(l).unwrap_or(l) == want
-            })
+            text.lines().any(|l| jterm::testing::line_is(l, &want))
         })
     };
     assert!(app.settle(seen).await, "no answer from the shell");

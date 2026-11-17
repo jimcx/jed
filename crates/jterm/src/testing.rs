@@ -21,6 +21,13 @@ pub fn after_prompt(row: &str) -> Option<&str> {
     row.split_once(PROMPT_END).map(|(_, rest)| rest.trim_start())
 }
 
+/// Whether `row` is the line `want`: alone, or after a prompt (a command typed before the shell
+/// drew its prompt has the tty echo it first, and its output lands after the prompt).
+pub fn line_is(row: &str, want: &str) -> bool {
+    let row = row.trim();
+    row == want || after_prompt(row) == Some(want)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -35,5 +42,10 @@ mod tests {
         assert!(!has_prompt("199\n200"));
         assert!(!ends_with_prompt("$ echo"));
         assert_eq!(after_prompt("25"), None);
+        for row in ["mine", "  mine  ", "$ mine", "# mine", "sh-5.3# mine"] {
+            assert!(line_is(row, "mine"), "{row:?}");
+        }
+        assert!(!line_is("$ echo mine", "mine"));
+        assert!(!line_is("mine2", "mine"));
     }
 }

@@ -668,14 +668,16 @@ async fn jmux_server_a_second_attach_takes_over_and_the_first_client_says_so() {
     first.wait_text("detach").await;
     first.type_text("echo mine\r");
     first
-        .wait_rows("the echo", |r| r.iter().any(|l| l.trim() == "mine"))
+        .wait_rows("the echo", |r| r.iter().any(|l| jterm::testing::line_is(l, "mine")))
         .await;
     let second = Attached::start(&server.socket, 20, 60).await;
     let outcome = first.outcome().await;
     assert_eq!(outcome, Outcome::Bye(ByeReason::TakenOver));
     assert_eq!(outcome.message("work"), "[work taken over by another client]");
     second
-        .wait_rows("the same screen", |r| r.iter().any(|l| l.trim() == "mine"))
+        .wait_rows("the same screen", |r| {
+            r.iter().any(|l| jterm::testing::line_is(l, "mine"))
+        })
         .await;
     second.type_text("exit\r");
     assert_eq!(second.outcome().await, Outcome::Bye(ByeReason::SessionEnded));
@@ -988,7 +990,6 @@ impl Drop for StartedServer {
     }
 }
 
-// FLAKE: 2026-11-14, timed out waiting for the shell's directory; the typed pwd landed in the sh prompt under load
 // FLAKE: 2026-11-14, failed once under a parallel release build (which step is unknown)
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_live_name() {
@@ -1016,7 +1017,7 @@ async fn jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_liv
     c.type_text("pwd\r");
     let want = cwd.display().to_string();
     let (begun, deadline) = (Instant::now(), Instant::now() + WAIT);
-    while !c.rows().iter().any(|l| l.trim() == want) {
+    while !c.rows().iter().any(|l| jterm::testing::line_is(l, &want)) {
         if Instant::now() >= deadline {
             eprintln!(
                 "FLAKE jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_live_name: \
