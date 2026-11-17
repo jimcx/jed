@@ -21,11 +21,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Gitea job containers are thrown away after each run, so cache the pinned
+      # toolchain (the image's stable one is baked in, so leave it out). GitHub's
+      # downloads are fast enough not to spend cache space on it.
+      - name: Cache toolchain
+        if: ${{ env.GITEA_ACTIONS }}
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup/toolchains/*
+            !~/.rustup/toolchains/stable-*
+            ~/.rustup/update-hashes
+          key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
+
       # rust-toolchain.toml pins the version and components; install it explicitly
       # (rustup no longer installs a missing toolchain on first use everywhere).
-      # The Gitea runner image has no rustup, so bootstrap it there; the runner
-      # keeps ~/.rustup and ~/.cargo in persistent volumes, so the bootstrap and
-      # toolchain download only happen once.
+      # Runner images normally ship rustup, as GitHub's do; bootstrap it on one
+      # that doesn't.
       - name: Install toolchain
         shell: bash
         run: |
@@ -38,7 +50,6 @@ jobs:
           rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
-        if: ${{ !env.GITEA_ACTIONS }}
 
       - name: Format
         run: cargo fmt --all --check
