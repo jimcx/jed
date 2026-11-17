@@ -38,7 +38,8 @@ fn remember_identity(app: Option<String>) -> Option<String> {
 }
 
 /// What the terminal is told about the app's window: its title (`<app> <workspace root>`, or
-/// `<app> <file>` in single file mode, `~` for home; a title override replaces the root),
+/// `<app> <file>` in single file mode, `~` for home; a title override replaces the root; the
+/// git branch, when the app sets one, follows in parentheses),
 /// the user vars `<app>` (always) and `<app>_workspace` (the root, workspace mode only; kitty's
 /// `--when-focus-on var:<app>` scopes mappings to the app, `kitten @ ls` finds the window by
 /// `<app>_workspace`) and OSC 7's current directory (the root, workspace mode only: kitty starts
@@ -51,6 +52,8 @@ pub struct Identity {
     title: String,
     /// A title override, when set: `<app> <title>` instead.
     title_override: Option<String>,
+    /// The current git branch (or detached commit), shown after the title: `<app> <root> (<branch>)`.
+    branch: Option<String>,
     workspace: Option<PathBuf>,
     host: String,
 }
@@ -63,6 +66,7 @@ impl Identity {
             app: app.to_owned(),
             title: format!("{app} {}", crate::paths::display(single.unwrap_or(root), home)),
             title_override: None,
+            branch: None,
             workspace: single.is_none().then(|| root.to_path_buf()),
             host: hostname(),
         }
@@ -83,12 +87,27 @@ impl Identity {
         self.title_override.as_deref()
     }
 
-    /// The window's title, `<app> <root>` or `<app> <override>` (also the title bar's text).
+    /// Sets the git branch shown after the title; returns whether it changed (the app re-sends
+    /// the title then).
+    pub fn set_branch(&mut self, branch: Option<&str>) -> bool {
+        if self.branch.as_deref() == branch {
+            return false;
+        }
+        self.branch = branch.map(str::to_owned);
+        true
+    }
+
+    /// The window's title, `<app> <root>` or `<app> <override>`, then ` (<branch>)` when one is
+    /// set (also the title bar's text).
     pub fn title_text(&self) -> String {
-        match &self.title_override {
+        let mut text = match &self.title_override {
             Some(title) => format!("{} {title}", self.app),
             None => self.title.clone(),
+        };
+        if let Some(branch) = &self.branch {
+            text.push_str(&format!(" ({branch})"));
         }
+        text
     }
 
     /// OSC 2: the window's title, control characters dropped; not wrapped (tmux takes titles
@@ -474,6 +493,24 @@ mod tests {
         );
         id.set_title(None);
         assert_eq!(id.title_sequence(), "\x1b]2;jed ~/proj\x1b\\", "the root's title again");
+    }
+
+    #[test]
+    fn the_branch_follows_the_title() {
+        let mut id = identity("/Users/me/proj", None);
+        assert!(id.set_branch(Some("main")));
+        assert!(!id.set_branch(Some("main")), "unchanged");
+        assert_eq!(id.title_text(), "jed ~/proj (main)");
+        id.set_title(Some("api"));
+        assert_eq!(id.title_text(), "jed api (main)", "after an override too");
+        assert!(id.set_branch(Some("x\x1b]2;evil\x07")));
+        assert_eq!(
+            id.title_sequence(),
+            "\x1b]2;jed api (x]2;evil)\x1b\\",
+            "control characters dropped"
+        );
+        assert!(id.set_branch(None));
+        assert_eq!(id.title_text(), "jed api");
     }
 
     #[test]

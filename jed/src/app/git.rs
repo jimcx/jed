@@ -191,6 +191,7 @@ impl App {
             self.branch_history_head_changed();
             self.quick_diff_head_changed();
         }
+        self.sync_title_branch();
         if let Some(changed) = self.git.queued.take() {
             self.refresh_git(changed);
         }
@@ -214,6 +215,16 @@ impl App {
         if self.git_head() != head_before {
             self.git_history_head_changed();
             self.branch_history_head_changed();
+        }
+        self.sync_title_branch();
+    }
+
+    /// The window title's branch (`Identity::set_branch`): HEAD's branch or detached commit, none
+    /// without a repository; the next `run` turn re-sends the OSC 2 title when it changed.
+    fn sync_title_branch(&mut self) {
+        let branch = self.git.status.as_ref().map(|s| s.head.name());
+        if self.identity.set_branch(branch) {
+            self.title_dirty = true;
         }
     }
 
@@ -367,6 +378,29 @@ mod tests {
         assert!(status.loaded);
         assert_eq!(status.entries.len(), 1);
         assert!(status.entry(Path::new("a")).is_some());
+    }
+
+    /// The window title shows the branch once HEAD is read, and follows a switch.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_window_title_shows_the_branch() {
+        let (_d, root, mut app) = setup();
+        assert!(!app.identity.title_text().contains('('), "no branch before a read");
+        app.refresh_git_head();
+        assert!(app.settle(|a| a.git.status.is_some()).await);
+        assert!(
+            app.identity.title_text().ends_with("/proj (main)"),
+            "{}",
+            app.identity.title_text()
+        );
+        let mut out = Vec::new();
+        app.sync_window_title(&mut out).unwrap();
+        assert!(
+            String::from_utf8(out).unwrap().ends_with(" (main)\x1b\\"),
+            "re-sent as OSC 2"
+        );
+        crate::git::test_repo::git(&root, &["checkout", "-q", "-b", "topic"]);
+        app.refresh_git(None);
+        assert!(app.settle(|a| a.identity.title_text().ends_with(" (topic)")).await);
     }
 
     #[tokio::test(flavor = "multi_thread")]

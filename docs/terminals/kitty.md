@@ -14,7 +14,7 @@ Config: `~/.config/kitty/kitty.conf`. Kitty keyboard protocol: always available,
 
 Each line is scoped with `--when-focus-on "var:jed or var:jmux"` (quoted: it is one search expression): jed sets the user var `jed` (OSC 1337 `SetUserVar`) while it runs and jmux sets `jmux` the same way (but no `jmux_workspace`), each cleared on exit (and when it crashes), so the keys are released only while a jed or jmux window has focus; every other kitty window keeps kitty's own shortcuts. `--when-focus-on` takes a kitty search expression (spaces and parentheses are operators, so match on the var, not a title regex; `cmdline:` only sees the window's launch command, not jed started from its shell). A `kill -9`'d jed can't clear the var: run `printf '\e]1337;SetUserVar=jed\a'` in that window.
 
-jed also sets the window title to `jed <workspace>` (`jed <file>` in single file mode; kitty's title stack restores the shell's on exit), the user var `jed_workspace` (the workspace root, for `kitten @ ls`) and OSC 7 (the root as the window's directory, so new windows / tabs opened from jed's start there). Inside tmux the user vars need `set -g allow-passthrough on`.
+jed also sets the window title to `jed <workspace> (<branch>)` (the git branch when there is one; `jed <file>` in single file mode; kitty's title stack restores the shell's on exit), the user var `jed_workspace` (the workspace root, for `kitten @ ls`) and OSC 7 (the root as the window's directory, so new windows / tabs opened from jed's start there). Inside tmux the user vars need `set -g allow-passthrough on`.
 
 ## Snippet
 
