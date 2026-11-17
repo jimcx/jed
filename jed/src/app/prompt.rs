@@ -68,11 +68,11 @@ pub enum Prompt {
     },
     /// Deleting the user's own review comment (sent to the forge, can't be undone): Delete / Cancel.
     ConfirmDeleteComment {
-        comment_id: String,
+        /// The write that deletes it: `Job::Delete` (a thread's comment) or
+        /// `Job::DeleteConversation` (a merge request comment; another endpoint on GitHub).
+        job: crate::review_write::Job,
         /// `path:line`, as the question names it.
         place: String,
-        /// A comment of the merge request's conversation (another endpoint on GitHub).
-        conversation: bool,
     },
     /// "Terminal: Install Shell Integration": the snippet to source, the shell's init file and the
     /// line that sources it; C copies the line, A appends it, Esc closes.
@@ -290,23 +290,13 @@ impl App {
                 _ if esc || ch == Some('c') => self.close_prompt(),
                 _ => self.prompt = Some(Prompt::ConfirmStageConflict { path }),
             },
-            Prompt::ConfirmDeleteComment {
-                comment_id,
-                place,
-                conversation,
-            } => match ch {
+            Prompt::ConfirmDeleteComment { job, place } => match ch {
                 _ if enter || ch == Some('d') => {
                     self.close_prompt();
-                    self.review_delete_confirmed(comment_id, conversation);
+                    self.review_write(job);
                 }
                 _ if esc || ch == Some('c') => self.close_prompt(),
-                _ => {
-                    self.prompt = Some(Prompt::ConfirmDeleteComment {
-                        comment_id,
-                        place,
-                        conversation,
-                    })
-                }
+                _ => self.prompt = Some(Prompt::ConfirmDeleteComment { job, place }),
             },
             Prompt::InstallShellIntegration { snippet, init, line } => match ch {
                 Some('c') => {

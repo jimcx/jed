@@ -57,7 +57,7 @@ impl App {
     }
 
     /// Starts a write (one at a time).
-    fn review_write(&mut self, job: Job) -> bool {
+    pub(super) fn review_write(&mut self, job: Job) -> bool {
         if self.review.writing {
             self.notify(Level::Info, "Another change is still on its way".into());
             return false;
@@ -343,20 +343,10 @@ impl App {
         if let Some(c) = self.own_comment(&row) {
             let a = &row.thread.anchor;
             self.prompt = Some(Prompt::ConfirmDeleteComment {
-                comment_id: c.id,
+                job: Job::Delete { comment_id: c.id },
                 place: format!("{}:{}", a.path, a.end_line),
-                conversation: false,
             });
         }
-    }
-
-    /// The user confirmed the delete prompt.
-    pub(super) fn review_delete_confirmed(&mut self, comment_id: String, conversation: bool) {
-        self.review_write(if conversation {
-            Job::DeleteConversation { comment_id }
-        } else {
-            Job::Delete { comment_id }
-        });
     }
 
     /// "Code Review: Comment on Merge Request": the conversation tab with an empty box at its end.
@@ -417,9 +407,8 @@ impl App {
             }
             ThreadButton::Delete => {
                 self.prompt = Some(Prompt::ConfirmDeleteComment {
-                    comment_id: c.id,
+                    job: Job::DeleteConversation { comment_id: c.id },
                     place: "the merge request".into(),
-                    conversation: true,
                 });
             }
             _ => {}

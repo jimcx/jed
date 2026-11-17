@@ -457,7 +457,10 @@ async fn review_conversation_own_comments_have_edit_and_delete_buttons() {
     app.mouse(MouseEventKind::Down(MouseButton::Left), x + 2, y);
     assert!(matches!(
         app.prompt,
-        Some(crate::app::Prompt::ConfirmDeleteComment { conversation: true, .. })
+        Some(crate::app::Prompt::ConfirmDeleteComment {
+            job: crate::review_write::Job::DeleteConversation { .. },
+            ..
+        })
     ));
     assert!(sent(&server, "DELETE").is_empty());
     app.press(KeyCode::Enter, KeyModifiers::NONE);
