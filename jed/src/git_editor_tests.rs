@@ -609,6 +609,47 @@ mod socket {
         assert_eq!(answered(&mut app, waiting).await, client::Outcome::Done(0));
     }
 
+    /// A file open in another group only: the socket focuses that group's tab instead of
+    /// opening a second tab of it in the active group.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn git_editor_socket_focuses_a_file_open_in_another_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let sockets = tempfile::tempdir().unwrap();
+        let (root, state) = dirs(&dir);
+        let (a, b) = (root.join("a.txt"), root.join("b.txt"));
+        fs::write(&a, "a\n").unwrap();
+        fs::write(&b, "b\n").unwrap();
+        let (mut app, socket) = listening(&root, &state, &sockets, None).await;
+        let first = app.groups.active;
+
+        let quick = client(&socket, &a, false);
+        assert_eq!(answered(&mut app, quick).await, client::Outcome::Done(0));
+        assert!(app.settle(|x| active_name(x).as_deref() == Some("a.txt")).await);
+        // A second group showing b.txt only.
+        app.test_execute(Command::SplitRight);
+        let second = app.groups.active;
+        assert_ne!(first, second);
+        let quick = client(&socket, &b, false);
+        assert_eq!(answered(&mut app, quick).await, client::Outcome::Done(0));
+        assert!(app.settle(|x| active_name(x).as_deref() == Some("b.txt")).await);
+        let quick = client(&socket, &a, false);
+        assert_eq!(answered(&mut app, quick).await, client::Outcome::Done(0));
+        assert!(app.settle(|x| active_name(x).as_deref() == Some("a.txt")).await);
+        assert_eq!(app.groups.active, second, "open in the active group: its tab there");
+        app.press(K::Char('w'), cmd());
+        assert_eq!(app.groups.active, second);
+        assert_eq!(active_name(&app).as_deref(), Some("b.txt"));
+        app.ui.focus = crate::app::Focus::Terminal;
+
+        let quick = client(&socket, &a, false);
+        assert_eq!(answered(&mut app, quick).await, client::Outcome::Done(0));
+        assert!(app.settle(|x| x.groups.active == first).await, "a.txt's group focused");
+        assert_eq!(active_name(&app).as_deref(), Some("a.txt"));
+        assert_eq!(app.ui.focus, crate::app::Focus::Editor);
+        let id = app.buffers.find_path(&a).unwrap();
+        assert_eq!(app.groups.tabs_showing(id), 1, "no second tab of it");
+    }
+
     /// A file already open in a tab: the wait ends only when that tab closes; renaming the file
     /// in the explorer meanwhile doesn't end it (the waiter follows the buffer, not its path).
     #[tokio::test(flavor = "multi_thread")]

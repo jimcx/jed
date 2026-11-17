@@ -146,8 +146,25 @@ impl App {
 
     fn ipc_open(&mut self, path: PathBuf, line: Option<usize>, col: Option<usize>) {
         let goto = Goto::Cursor(line.unwrap_or(1), col.unwrap_or(1));
+        // Already open in another group only: that group's tab is focused, not a new one here.
+        if let Some(group) = self.group_showing(&path) {
+            self.focus_group(group);
+        }
         self.open_file(path, true, Some(goto));
         self.ui.focus = Focus::Editor;
+    }
+
+    /// The editor group showing `path` (a text or hex tab of it): the active one if it does,
+    /// else the first in reading order; `None` when no group does.
+    fn group_showing(&self, path: &Path) -> Option<crate::layout::GroupId> {
+        let buffer = self.buffers.find_path(path);
+        let shows = |g: &crate::group::Group| {
+            buffer.is_some_and(|id| g.find(id).is_some()) || g.find_hex(path).is_some()
+        };
+        let active = self.groups.active;
+        std::iter::once(active)
+            .chain(self.groups.ids())
+            .find(|&id| self.groups.get(id).is_some_and(shows))
     }
 
     /// Answers the clients whose file has no tab left, and drops those whose load failed.
