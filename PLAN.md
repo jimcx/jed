@@ -714,6 +714,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Open File by path** (`open_file_path`): open a file by typing a path with completion — [tasks/open_file_path.md](tasks/open_file_path.md)
 - **Performance pass** (`performance_pass`): startup time, memory, and 1 MB file performance; check slow-frame warnings — [tasks/performance_pass.md](tasks/performance_pass.md)
 - **PTY smoke tests** (`pty`): end-to-end tests running the real binary in a pseudo-terminal — [tasks/pty.md](tasks/pty.md)
+- **Review drafts on the forge** (`review_forge_drafts`): a saved review comment goes into the user's pending review on the forge (visible there as a draft) instead of only jed's local store; Submit Review submits that pending review, and drafts made on the website show in PENDING — [tasks/review_forge_drafts.md](tasks/review_forge_drafts.md)
 - **SCons: a real SCons for `site_scons` in the docs** (`scons_docs`): document a real SCons install for ty's `site_scons` helpers — [tasks/scons_docs.md](tasks/scons_docs.md)
 - **Self-update from GitHub releases** (`update`): check for and install a newer release from GitHub — [tasks/update.md](tasks/update.md)
 - **Separate untracked files in Source Control** (`scm_untracked_section`): a `[settings] untracked_changes` option splitting the Source Control view's Changes into tracked changes and an Untracked section — [tasks/scm_untracked_section.md](tasks/scm_untracked_section.md)
