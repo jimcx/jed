@@ -512,6 +512,10 @@ pub struct App {
     /// Every path `flush_fs_changes` handled, for tests.
     #[cfg(test)]
     pub fs_flushed: Vec<PathBuf>,
+    /// While `Some`, the key dispatch's keymap branch pushes the command it found here instead of
+    /// running it (`command_driven_tests`: the routing suite). For tests.
+    #[cfg(test)]
+    pub test_dispatch_log: Option<Vec<Command>>,
     /// Hooks on the history walk jobs, for tests.
     #[cfg(test)]
     pub stream_probe: std::sync::Arc<git_history::StreamProbe>,
@@ -701,6 +705,8 @@ impl App {
             last_command: None,
             #[cfg(test)]
             fs_flushed: Vec::new(),
+            #[cfg(test)]
+            test_dispatch_log: None,
             #[cfg(test)]
             stream_probe: Default::default(),
         };
@@ -1097,6 +1103,16 @@ impl App {
         self.buffers.get(self.group().active_tab()?.buffer)
     }
 
+    /// Runs the command a key resolved to (under `cfg(test)` with `test_dispatch_log` set: records it).
+    fn dispatch_key_command(&mut self, cmd: Command) {
+        #[cfg(test)]
+        if let Some(log) = self.test_dispatch_log.as_mut() {
+            log.push(cmd);
+            return;
+        }
+        self.execute(cmd);
+    }
+
     pub(super) fn context(&self) -> Context {
         if self.palette.is_some() {
             return Context::Palette;
@@ -1205,7 +1221,7 @@ impl App {
                 } else if let Some(cmd) = self.keymap.lookup(&key, self.context())
                     && !(self.field_focused() && field::has_field_meaning(cmd))
                 {
-                    self.execute(cmd);
+                    self.dispatch_key_command(cmd);
                 } else if self.terminal_copy_key(&key) {
                     // macOS's Cmd+C over a terminal with a mouse selection: it copies. With none the
                     // key falls through to the program. Linux's Ctrl+C is always the program's.
@@ -1846,6 +1862,43 @@ impl App {
 
     pub fn press(&mut self, code: KeyCode, mods: KeyModifiers) {
         self.handle_event(Event::Key(crossterm::event::KeyEvent::new(code, mods)));
+    }
+
+    /// Presses the key this platform's keymap binds to `cmd` in the current context: of all its
+    /// bindings (sorted by label, the palette's key first) the first that `keymap.lookup` resolves
+    /// to `cmd` here. For tests of key handling (a focused field, a shell tab, an overlay), never
+    /// to start a feature: that is `test_execute`. A field's own `has_field_meaning` give-away is
+    /// not considered: the key is pressed and the app routes it as it would. Panics naming the
+    /// command, the context and the keys tried when none resolves.
+    pub fn press_bound(&mut self, cmd: Command) {
+        let context = self.context();
+        let mut combos: Vec<_> = self
+            .keymap
+            .bindings()
+            .filter(|(_, _, c)| *c == cmd)
+            .map(|(combo, _, _)| combo)
+            .collect();
+        combos.sort_by_key(|c| (self.keymap.binding_for(cmd) != Some(*c), c.label()));
+        combos.dedup();
+        for combo in &combos {
+            let ev = crossterm::event::KeyEvent::new(combo.code, combo.mods);
+            if self.keymap.lookup(&ev, context) == Some(cmd) {
+                self.handle_event(Event::Key(ev));
+                return;
+            }
+        }
+        let tried: Vec<String> = combos.iter().map(|c| c.label()).collect();
+        panic!("press_bound: no key resolves to {cmd:?} in context {context:?}; bindings tried: {tried:?}");
+    }
+
+    /// The context the keymap is looked up in now.
+    pub fn test_context(&self) -> Context {
+        self.context()
+    }
+
+    /// Whether a focused text field takes `cmd`'s key itself instead of the keymap running it.
+    pub fn test_field_takes(&self, cmd: Command) -> bool {
+        self.field_focused() && field::has_field_meaning(cmd)
     }
 
     /// True while a tab drag is in flight (its press happened and no release or Esc has ended it).

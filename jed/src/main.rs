@@ -22,6 +22,8 @@ mod clipboard;
 mod code_action;
 mod column;
 mod command;
+#[cfg(test)]
+mod command_driven_tests;
 mod comment;
 mod commit_view;
 #[cfg(test)]

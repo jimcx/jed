@@ -2,7 +2,7 @@
 id: command_driven_tests
 name: Command-driven tests
 summary: jed's and jmux's tests run features through their `Command` instead of pressing platform keys; one light suite per app checks that every default key reaches its command, on each platform
-status: open
+status: in-progress
 priority: 0
 dependencies: []
 ---
@@ -45,7 +45,11 @@ Tests keep breaking on one platform because they press keys that only one platfo
     - removing a context binding that `press_bound` relies on fails with a message naming the command and context
     - each routing test's log matches exactly; the special-case tests show each interception
   - Subtasks (one agent and one commit each):
-    - command_driven_tests-a: the helpers (`press_bound`, the record switch), the routing suite (keymap level on both platforms, app level per context, the special cases), the guard with an allowlist of every file not yet migrated, and the docs (the root and `app/` `CLAUDE.md`s, `testing.md`, both `task.md` commands), so tests written from now on follow the rule. Migrates no feature tests
+    - ✅ command_driven_tests-a: the helpers (`press_bound`, the record switch), the routing suite (keymap level on both platforms, app level per context, the special cases), the guard with an allowlist of every file not yet migrated, and the docs (the root and `app/` `CLAUDE.md`s, `testing.md`, both `task.md` commands), so tests written from now on follow the rule. Migrates no feature tests
+        - Done: `App::press_bound(cmd)` (app/mod.rs; palette key first, then by label; panics naming the command, context and keys tried) and the `#[cfg(test)] test_dispatch_log` record switch (`dispatch_key_command` in `handle_event`'s keymap branch), plus `test_context()` / `test_field_takes(cmd)`. `keymap::default_list(platform)` (test-only) exposes the raw list. `press_file_start` / `press_file_end` are still there for d.
+        - `jed/src/command_driven_tests.rs`: keymap level (no shadowed entries, every binding resolves, `press_bound` commands bound on both platforms, and a snapshot of both platforms' default keys in `jed/src/command_driven_keys.txt`, refreshed with `JED_BLESS_KEYS=1 scripts/check test default_keys`, so a changed default key fails only there); app level `check_route` per context (19 of 25; Suggest, CodeActions, ContextMenu, Commit, Task, Composer listed in `NOT_SET_UP`); special cases (prompt, context menu, cheat sheet, shortcuts view, inline rename, gutter peek, field edit keys incl. field-bound Cut / Paste, shell Ctrl+letters, terminal copy key).
+        - Guard: `ALLOWED_FILES` (path + "not migrated yet: subtask b/c/d") and `ALLOWED_LINES` (path + line text + reason); an entry with nothing left to allow fails, so b–d must delete their files' entries. It flags any `.press(` whose modifiers aren't plainly NONE / SHIFT / `empty()` (so `cmd()` helpers and variables too).
+        - A field has no Undo meaning (`has_field_meaning`): the plan's "keeps Z" isn't what the code does; not tested.
     - command_driven_tests-b: migrate `todo_tests`, `milestone2`–`milestone8_tests`, `fixes_tests`, `untitled_tests`, `indentation_tests`, `replace_tests`, `soft_wrap_tests`, `keys_tests`; remove them from the allowlist
     - command_driven_tests-c: migrate `milestone9`–`milestone13_tests`, `hex_tests`, `hex_more_tests`, `compare_files_tests`, `conflicts_tests`, `git_*_tests`, `history_view_tests`, `markdown_preview_tests`, `spell_check_tests`, the language tests (`typescript`, `apple_langs`, `syntax_plugins`); remove them from the allowlist
     - command_driven_tests-d: migrate the terminal, tools and review tests (`term_area`, `term_select`, `shell`, `clear_scrollback`, `kitty_recent`, `tools`, `mr_review_tests` and its modules, `review_*_tests`) and the tests inside `app/` modules; the allowlist keeps only the routing suite and listed exceptions; remove `press_file_start` / `press_file_end` if unused; check both platforms on CI

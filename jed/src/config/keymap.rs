@@ -363,6 +363,13 @@ pub fn append_stub(path: &Path, bindings: &[(String, String, Option<String>)]) -
     file.write_all(text.as_bytes()).map_err(fail)
 }
 
+/// The raw default list for `platform`, before `from_list` lets a later entry for one (key,
+/// context) replace an earlier one (`command_driven_tests` checks there are none).
+#[cfg(test)]
+pub(crate) fn default_list(platform: Platform) -> Vec<Binding> {
+    defaults(platform)
+}
+
 /// VS Code's default bindings, in priority order for what the palette shows.
 fn defaults(platform: Platform) -> Vec<Binding> {
     let none = KeyModifiers::NONE;
