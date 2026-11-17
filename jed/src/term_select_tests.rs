@@ -156,7 +156,12 @@ async fn term_select_shell_drag_highlights_and_copy() {
     // Linux's Ctrl+C (its editor copy) stays the shell's SIGINT with a selection too: nothing
     // copied, and the shell gets the interrupt: the line discipline echoes `^C`, or (macOS's
     // /bin/sh is bash, whose readline handles it) the shell draws a fresh prompt.
-    let prompts = |a: &App| screen_text(a).lines().filter(|l| l.trim_end().ends_with('$')).count();
+    let prompts = |a: &App| {
+        screen_text(a)
+            .lines()
+            .filter(|l| l.trim_end().ends_with(['$', '#']))
+            .count()
+    };
     let before = prompts(&app);
     app.keymap = Keymap::default_for(Platform::Linux);
     keep_clipboard(&mut app);
@@ -1051,10 +1056,11 @@ fn send(app: &App, id: Option<RunId>, bytes: &[u8]) {
     assert!(run_of(app, id).write(bytes));
 }
 
-/// Waits for the shell's prompt on the last row (the output before it is all in).
+/// Waits for the shell's prompt (`$`, or `#` as root) on the last row (the output before it
+/// is all in).
 async fn at_prompt(app: &mut App, id: Option<RunId>) {
     assert!(
-        app.settle(|a| text_of(a, id).lines().last().is_some_and(|l| l.contains('$')))
+        app.settle(|a| text_of(a, id).lines().last().is_some_and(|l| l.contains(['$', '#'])))
             .await,
         "{}",
         text_of(app, id)

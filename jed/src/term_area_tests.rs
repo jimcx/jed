@@ -760,8 +760,10 @@ async fn shell_answers(app: &mut App, group: GroupId, n: u32) {
         .filter_map(|t| t.shell())
         .any(|s| {
             let text = s.run.screen().screen().contents();
-            // Typed before the prompt, the tty echoes the command first and the answer lands after the prompt.
-            text.lines().any(|l| l.trim().trim_start_matches("$ ") == want)
+            // Typed before the prompt, the tty echoes the command first and the answer lands after
+            // the prompt (`$ `, or `# ` when the tests run as root, as in CI containers).
+            text.lines()
+                .any(|l| l.trim().trim_start_matches(['$', '#']).trim_start() == want)
         })
     };
     assert!(app.settle(seen).await, "no answer from the shell");

@@ -7230,14 +7230,14 @@ mod mru {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_failed_open_is_not_recently_used() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let root = project(dir.path(), &["a.txt"]);
-        // A genuinely unopenable path (mode 000), outside the workspace so the walk can't list it.
-        // (A missing file opens as an empty buffer in jed, so it is a successful open.)
-        let unreadable = dir.path().join("unreadable.txt");
-        fs::write(&unreadable, "x\n").unwrap();
-        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+        // A genuinely unopenable path, outside the workspace so the walk can't list it: one under
+        // a regular file (ENOTDIR), which even root can't read, unlike a mode 000 file. (A missing
+        // file opens as an empty buffer in jed, so it is a successful open.)
+        let not_a_dir = dir.path().join("not-a-dir");
+        fs::write(&not_a_dir, "x\n").unwrap();
+        let unreadable = not_a_dir.join("unreadable.txt");
         let mut app = open_app(&root, "a.txt");
         app.test_open_file(unreadable.clone());
         let failed = app
