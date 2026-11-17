@@ -1749,6 +1749,24 @@ pub(crate) mod threads {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_a_refetch_keeps_the_diff_scrolled_where_it_was() {
+        let (mut app, _server, _dir) = tall().await;
+        lines_sized(&mut app, 40, 14);
+        // The caret on the first row, scrolled out of view by the wheel.
+        app.group_mut().active_diff_mut().unwrap().cursor = 0;
+        app.group_mut().active_diff_mut().unwrap().scroll_by(5);
+        lines_sized(&mut app, 40, 14);
+        let (top, cursor) = (diff(&app).top, diff(&app).cursor);
+        assert!(top > 0);
+        app.test_execute(Command::ReviewRefresh);
+        idle(&mut app).await;
+        assert!(app.settle(|a| a.diffs_settled()).await);
+        let after = lines_sized(&mut app, 40, 14);
+        assert_eq!((diff(&app).top, diff(&app).cursor), (top, cursor), "{after:#?}");
+        assert_eq!(after.iter().filter(|s| s.contains("m1")).count(), 0, "{after:#?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn mr_review_odd_comment_text_stays_inside_the_block() {
         let dir = tempfile::tempdir().unwrap();
         let (root, main) = make_repo(dir.path());

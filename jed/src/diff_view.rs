@@ -1186,7 +1186,8 @@ impl DiffTab {
     }
 
     /// A load ended (`generation` from `begin`; another one's result is dropped). The cursor
-    /// stays on the line it was on, as near as the new diff allows.
+    /// stays on the line it was on, as near as the new diff allows; the scroll follows it only
+    /// when it was on screen.
     pub fn finish(&mut self, generation: u64, result: Result<Doc, String>) -> bool {
         if self.running != Some(generation) {
             return false;
@@ -1196,6 +1197,10 @@ impl DiffTab {
             Ok(doc) => {
                 let at = self.rows().get(self.cursor).map(Row::line);
                 let first = self.doc.is_none();
+                // A reload (a refetched review, a file changed) leaves a view scrolled away from
+                // the cursor where it is; one showing the cursor keeps showing it.
+                let v = self.visual_of_cursor();
+                let shown = v >= self.top && v < self.top + self.height.max(1);
                 self.doc = Some(Arc::new(doc));
                 self.error = None;
                 if !std::mem::take(&mut self.keep_width) {
@@ -1214,7 +1219,7 @@ impl DiffTab {
                     }
                 }
                 self.clamp();
-                self.reveal = true;
+                self.reveal |= first || shown;
                 self.take_edited();
             }
             Err(e) => {
