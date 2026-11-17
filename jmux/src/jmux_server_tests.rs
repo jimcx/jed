@@ -112,6 +112,7 @@ fn hello(rows: u16, cols: u16) -> ClientMsg {
         cols,
         truecolor: true,
         term: "xterm-256color".into(),
+        touch: false,
     }
 }
 
@@ -331,6 +332,7 @@ async fn jmux_server_refuses_another_protocol_version() {
         cols: 60,
         truecolor: false,
         term: "xterm".into(),
+        touch: false,
     })
     .await;
     assert_eq!(
@@ -507,6 +509,7 @@ impl Attached {
             cols,
             truecolor: true,
             term: "xterm-256color".into(),
+            touch: false,
         };
         let task = tokio::spawn(async move {
             let signal = async move {
@@ -762,10 +765,19 @@ async fn jmux_server_jmux_inside_a_jmux_shell_is_refused() {
         let new = Cmd::New {
             name: Some("nested".into()),
             dir: None,
+            touch: false,
         };
         let new = crate::run_cli(new, &dir, Some(&inside), true);
-        let attach = crate::run_cli(Cmd::Attach { target: None }, &dir, Some(&inside), true);
-        let bare = crate::run_cli(Cmd::Default, &dir, Some(&inside), true);
+        let attach = crate::run_cli(
+            Cmd::Attach {
+                target: None,
+                touch: false,
+            },
+            &dir,
+            Some(&inside),
+            true,
+        );
+        let bare = crate::run_cli(Cmd::Default { touch: false }, &dir, Some(&inside), true);
         (new, attach, bare, session::list(&dir).len())
     })
     .await
@@ -775,21 +787,35 @@ async fn jmux_server_jmux_inside_a_jmux_shell_is_refused() {
     let want = "jmux: already inside session work (unset JMUX to nest anyway)";
     let env = Some(server.socket.to_str().unwrap());
     for cmd in [
-        Cmd::New { name: None, dir: None },
-        Cmd::Attach { target: None },
-        Cmd::Default,
+        Cmd::New {
+            name: None,
+            dir: None,
+            touch: false,
+        },
+        Cmd::Attach {
+            target: None,
+            touch: false,
+        },
+        Cmd::Default { touch: false },
     ] {
         assert_eq!(crate::refusal(&cmd, env, true).as_deref(), Some(want), "{cmd:?}");
     }
     for cmd in [Cmd::Ls, Cmd::Kill { target: "x".into() }, Cmd::Help] {
         assert_eq!(crate::refusal(&cmd, env, true), None, "{cmd:?}");
     }
-    assert_eq!(crate::refusal(&Cmd::Default, None, true), None);
+    assert_eq!(crate::refusal(&Cmd::Default { touch: false }, None, true), None);
     // No terminal: refused with its own message, after the nesting one.
     for cmd in [
-        Cmd::New { name: None, dir: None },
-        Cmd::Attach { target: None },
-        Cmd::Default,
+        Cmd::New {
+            name: None,
+            dir: None,
+            touch: false,
+        },
+        Cmd::Attach {
+            target: None,
+            touch: false,
+        },
+        Cmd::Default { touch: false },
     ] {
         assert_eq!(
             crate::refusal(&cmd, None, false).as_deref(),

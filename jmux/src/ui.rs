@@ -6,6 +6,7 @@ use jtui::borders::Segment;
 use jtui::scrollbar::Scrollable;
 use jtui::scrollbar_draw::{self, Look, ScrollBarHit};
 use jtui::split::SplitDir;
+use jtui::tabs::TabMetrics;
 use jtui::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -19,8 +20,6 @@ use crate::ui_side;
 
 /// Rows the status bar takes.
 pub const STATUS_ROWS: u16 = 1;
-/// Rows a group's tab bar takes.
-pub const TAB_ROWS: u16 = 1;
 
 /// The area of the groups in a `rows` × `cols` screen: all but the status bar and the side bar
 /// (with its border column) when it shows.
@@ -35,10 +34,11 @@ pub fn side_area(rows: u16, cols: u16, side: &SideBar) -> Option<Rect> {
         .then(|| Rect::new(0, 0, side.width_in(cols), rows.saturating_sub(STATUS_ROWS)))
 }
 
-/// A group's tab bar and terminal: the bar on the group's first row, or its last with
-/// `tabs_at_bottom`; the terminal is the rest. The height is the same either way.
-pub fn bar_and_term(group: Rect, tabs_at_bottom: bool) -> (Rect, Rect) {
-    let bar = TAB_ROWS.min(group.height);
+/// A group's tab bar and terminal: the bar (`metrics.rows` tall, fewer in a shorter group) on the
+/// group's first rows, or its last with `tabs_at_bottom`; the terminal is the rest. The height is
+/// the same either way.
+pub fn bar_and_term(group: Rect, tabs_at_bottom: bool, metrics: &TabMetrics) -> (Rect, Rect) {
+    let bar = metrics.rows.min(group.height);
     let rest = group.height - bar;
     if tabs_at_bottom {
         (
@@ -54,8 +54,8 @@ pub fn bar_and_term(group: Rect, tabs_at_bottom: bool) -> (Rect, Rect) {
 }
 
 /// A group's terminal: its area beside the tab bar.
-pub fn term_area(group: Rect, tabs_at_bottom: bool) -> Rect {
-    bar_and_term(group, tabs_at_bottom).1
+pub fn term_area(group: Rect, tabs_at_bottom: bool, metrics: &TabMetrics) -> Rect {
+    bar_and_term(group, tabs_at_bottom, metrics).1
 }
 
 /// A group's terminal split into the shell's cells and the one-column track of its scroll bar
@@ -78,8 +78,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
         Some(Drag::ScrollBar { group, .. }) => Some(*group),
         _ => None,
     };
+    let metrics = app.tab_metrics();
     for (id, rect) in cells {
-        let (bar, term) = bar_and_term(rect, app.config.settings.tabs_at_bottom);
+        let (bar, term) = bar_and_term(rect, app.config.settings.tabs_at_bottom, &metrics);
         let focused = id == app.groups.active;
         let Some(group) = app.groups.get_mut(id) else {
             continue;
@@ -88,7 +89,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             Some(TabDrop::TabBar { group, index }) if group == id => Some(index),
             _ => None,
         };
-        let (tabs, arrows) = tabbar::render(f, bar, group, &app.theme, focused, drop);
+        let (tabs, arrows) = tabbar::render(f, bar, group, &app.theme, &metrics, focused, drop);
         let (text, track) = shell_area(term);
         let mut scroll = ScrollBarHit::default();
         if let Some(shell) = group.active_tab() {

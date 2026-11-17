@@ -3,21 +3,24 @@
 use jtui::scrollbar_draw::ScrollBarHit;
 use jtui::split::{Divider, GroupId};
 use ratatui::layout::Rect;
+use std::ops::Range;
 
-/// A tab's x range in its bar and the x of its `×`.
+/// A tab's x range in its bar and the x range of its `×`'s target (half-open, inside the tab's).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TabHit {
     pub index: usize,
     pub x0: u16,
     pub x1: u16,
-    pub close_x: u16,
+    pub close_x0: u16,
+    pub close_x1: u16,
 }
 
-/// The x of a bar's `‹` (scrolls towards the first tab) and `›` (towards the last).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The x ranges (half-open) of a bar's `‹` (scrolls towards the first tab) and `›` (towards the
+/// last).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TabArrows {
-    pub back: u16,
-    pub forward: u16,
+    pub back: Range<u16>,
+    pub forward: Range<u16>,
 }
 
 /// One group's bar and terminal area.
@@ -141,16 +144,16 @@ impl HitMap {
             if !contains(g.bar, x, y) {
                 continue;
             }
-            if let Some(a) = g.arrows {
-                if x == a.back {
+            if let Some(a) = &g.arrows {
+                if a.back.contains(&x) {
                     return Some(Hit::Arrow { group, forward: false });
                 }
-                if x == a.forward {
+                if a.forward.contains(&x) {
                     return Some(Hit::Arrow { group, forward: true });
                 }
             }
             return Some(match g.tabs.iter().find(|t| x >= t.x0 && x < t.x1) {
-                Some(t) if x == t.close_x => Hit::Close { group, index: t.index },
+                Some(t) if (t.close_x0..t.close_x1).contains(&x) => Hit::Close { group, index: t.index },
                 Some(t) => Hit::Tab { group, index: t.index },
                 None => Hit::Bar { group },
             });
@@ -184,16 +187,21 @@ mod tests {
                         index: 0,
                         x0: 1,
                         x1: 9,
-                        close_x: 7,
+                        close_x0: 7,
+                        close_x1: 8,
                     },
                     TabHit {
                         index: 1,
                         x0: 9,
                         x1: 17,
-                        close_x: 15,
+                        close_x0: 15,
+                        close_x1: 16,
                     },
                 ],
-                arrows: Some(TabArrows { back: 0, forward: 29 }),
+                arrows: Some(TabArrows {
+                    back: 0..1,
+                    forward: 29..30,
+                }),
             }],
             dividers: Vec::new(),
             side: None,

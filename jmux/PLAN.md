@@ -45,7 +45,7 @@ One cargo workspace at the repository root; jed is the `jed/` package, the root 
 - Socket dir: `$XDG_RUNTIME_DIR/jmux`, else `$TMPDIR/jmux-<uid>`; mode `0700`, refused when owned by someone else (jed's `ipc::prepare_dir` rules, moved to `jtui`)
 - Socket file: `<session name>.sock`. Names are `[A-Za-z0-9_.-]+`; an unnamed session gets the lowest free number
 - Frames: a 4-byte length, then a JSON message, except output, whose payload is raw bytes
-- Client to server: `Hello { version, rows, cols, truecolor, term }`, `Input(event)` (crossterm's event type through its `serde` feature), `Resize { rows, cols }`, `Detach`
+- Client to server: `Hello { version, rows, cols, truecolor, term, touch }` (`touch` is `#[serde(default)]`: protocol version 1 either way, an old server draws the normal layout), `Input(event)` (crossterm's event type through its `serde` feature), `Resize { rows, cols }`, `Detach`
 - Server to client: `Welcome { session }`, `Output(bytes)`, `Bye { reason }` (detached, session ended, taken over, version mismatch)
 - A stale socket (nothing listening) is removed by `ls` and by `new`
 
@@ -80,7 +80,7 @@ One cargo workspace at the repository root; jed is the `jed/` package, the root 
 
 ### Sessions
 - `jmux` — attach to the most recently used session, or start one when there are none
-- `jmux new [-s name] [-c dir]`, `jmux attach [-t name]`, `jmux ls`, `jmux kill-session -t name`, `jmux rename-session [-t name] new`
+- `jmux new [-s name] [-c dir] [--touch]`, `jmux attach [-t name] [--touch]` (`--touch`: the touch layout, three-row padded tab bars, for as long as that client stays attached; bare `jmux --touch` too), `jmux ls`, `jmux kill-session -t name`, `jmux rename-session [-t name] new`
 - `jmux ls` shows name, terminal count, running commands, created time, attached or not
 - Starting `jmux` inside a jmux terminal (`$JMUX` set) is refused with a message
 

@@ -133,6 +133,7 @@ impl Harness {
             cols: self.cols,
             truecolor: true,
             term: "xterm".into(),
+            touch: false,
         };
         self.app.handle(AppEvent::Client { conn, msg });
         self.screen = screen(self.rows, self.cols);
@@ -452,7 +453,7 @@ async fn jmux_layout_a_clicks_on_the_bar_pick_close_and_middle_click_closes() {
     // The release ends the tab drag the press started.
     h.mouse(MouseEventKind::Up(MouseButton::Left), tabs[0].x0 + 1, 0);
     // The × of the second closes it (the shell is idle: no question).
-    h.click(MouseButton::Left, tabs[1].close_x, 0);
+    h.click(MouseButton::Left, tabs[1].close_x0, 0);
     assert_eq!(h.titles(), ["sh ○", "sh (3) ○"]);
     h.settle("a redrawn bar", |h| !h.row(0).contains("sh (2)")).await;
     // A middle click on a title closes that tab too.
@@ -474,13 +475,13 @@ async fn jmux_layout_a_a_tab_bar_wider_than_the_screen_scrolls_with_arrows() {
         h.row(0).starts_with('‹') && h.row(0).trim_end().ends_with('›')
     })
     .await;
-    let arrows = h.app.hit.groups[0].arrows.expect("arrows");
+    let arrows = h.app.hit.groups[0].arrows.clone().expect("arrows");
     assert!(
         h.app.groups.active_group().scroll > 0,
         "the active tab (last) was revealed"
     );
     let before = h.app.groups.active_group().scroll;
-    h.click(MouseButton::Left, arrows.back, 0);
+    h.click(MouseButton::Left, arrows.back.start, 0);
     assert_eq!(h.app.groups.active_group().scroll, before - 1);
     h.mouse(MouseEventKind::ScrollDown, 10, 0);
     assert_eq!(h.app.groups.active_group().scroll, before);
@@ -669,7 +670,7 @@ async fn jmux_layout_a_a_running_command_in_a_hidden_tab_asks_when_its_x_is_clic
         h.tab_count() == 2 && h.row(0).contains("sh (2)")
     })
     .await;
-    let close_x = h.app.hit.groups[0].tabs[0].close_x;
+    let close_x = h.app.hit.groups[0].tabs[0].close_x0;
     h.click(MouseButton::Left, close_x, 0);
     assert!(h.app.confirm.is_some(), "the running tab asks, shown or not");
     assert_eq!(h.tab_count(), 2);

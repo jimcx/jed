@@ -32,6 +32,8 @@ mod jmux_layout_tests;
 mod jmux_server_tests;
 #[cfg(test)]
 mod jmux_tabs_at_bottom_tests;
+#[cfg(test)]
+mod jmux_touch_tests;
 
 use std::path::PathBuf;
 
@@ -115,7 +117,7 @@ fn run_server(args: ServerArgs) -> i32 {
 fn refusal(cmd: &cli::Cmd, jmux_env: Option<&str>, tty: bool) -> Option<String> {
     use cli::Cmd;
     match cmd {
-        Cmd::New { .. } | Cmd::Attach { .. } | Cmd::Default => {
+        Cmd::New { .. } | Cmd::Attach { .. } | Cmd::Default { .. } => {
             cli::nested(jmux_env).or_else(|| (!tty).then(|| "jmux: not a terminal".to_string()))
         }
         _ => None,
@@ -129,7 +131,7 @@ fn run_cli(cmd: cli::Cmd, dir: &std::path::Path, jmux_env: Option<&str>, tty: bo
         eprintln!("{why}");
         1
     };
-    let attach = |(name, socket): (String, PathBuf)| client::run_attached(&socket, &name);
+    let attach = |touch: bool, (name, socket): (String, PathBuf)| client::run_attached(&socket, &name, touch);
     if let Some(why) = refusal(&cmd, jmux_env, tty) {
         return refuse(why);
     }
@@ -168,20 +170,29 @@ fn run_cli(cmd: cli::Cmd, dir: &std::path::Path, jmux_env: Option<&str>, tty: bo
             }
             Err(e) => refuse(e),
         },
-        Cmd::Attach { target } => match cli::find(dir, target.as_deref()) {
-            Ok(found) => attach(found),
+        Cmd::Attach { target, touch } => match cli::find(dir, target.as_deref()) {
+            Ok(found) => attach(touch, found),
             Err(e) => refuse(e),
         },
-        Cmd::New { name, dir: cwd } => {
+        Cmd::New { name, dir: cwd, touch } => {
             let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("jmux"));
             match cli::start(&exe, dir, name.as_deref(), cwd.as_deref()) {
-                Ok(started) => attach(started),
+                Ok(started) => attach(touch, started),
                 Err(e) => refuse(e),
             }
         }
-        Cmd::Default => match cli::find(dir, None) {
-            Ok(found) => attach(found),
-            Err(_) => run_cli(Cmd::New { name: None, dir: None }, dir, jmux_env, tty),
+        Cmd::Default { touch } => match cli::find(dir, None) {
+            Ok(found) => attach(touch, found),
+            Err(_) => run_cli(
+                Cmd::New {
+                    name: None,
+                    dir: None,
+                    touch,
+                },
+                dir,
+                jmux_env,
+                tty,
+            ),
         },
     }
 }

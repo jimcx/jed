@@ -23,6 +23,7 @@ use jtui::clipboard::osc52_sequence;
 use jtui::scrollbar::Scrollable;
 use jtui::split::{Divider, GroupId, SplitDir};
 use jtui::stream_backend::StreamBackend;
+use jtui::tabs::TabMetrics;
 use jtui::terminal::{Pointer, set_pointer};
 use jtui::theme::Theme;
 use ratatui::Terminal;
@@ -198,6 +199,8 @@ pub struct App {
     /// Writers of connections told `Bye`: `shutdown` waits for them so the message is delivered.
     closing: Vec<JoinHandle<()>>,
     attached: Option<u64>,
+    /// The attached client asked for the touch layout (`--touch`); false while none is attached.
+    pub touch: bool,
     /// The attached client's screen: rows, columns.
     size: (u16, u16),
     /// The next draw starts from a cleared screen at `size` (an attach or a resize).
@@ -294,6 +297,7 @@ impl App {
             conns: HashMap::new(),
             closing: Vec::new(),
             attached: None,
+            touch: false,
             size: INITIAL_SIZE,
             resync: false,
             created: std::time::SystemTime::now()
@@ -339,6 +343,15 @@ impl App {
         format!("{} detach", self.key_label(Command::Detach))
     }
 
+    /// The tab bar's layout for the attached client: touch if it attached with `--touch`.
+    pub fn tab_metrics(&self) -> TabMetrics {
+        if self.touch {
+            TabMetrics::TOUCH
+        } else {
+            TabMetrics::NORMAL
+        }
+    }
+
     /// The size a new shell in `group` starts at (the next frame resizes it to its area).
     fn term_size(&self, group: GroupId) -> (u16, u16) {
         let (rows, cols) = if self.attached.is_some() {
@@ -349,7 +362,11 @@ impl App {
         let body = ui::body(rows, cols, &self.side);
         let (cells, _) = self.groups.layout(body);
         let area = cells.iter().find(|(id, _)| *id == group).map_or(body, |c| c.1);
-        let (text, _) = ui::shell_area(ui::term_area(area, self.config.settings.tabs_at_bottom));
+        let (text, _) = ui::shell_area(ui::term_area(
+            area,
+            self.config.settings.tabs_at_bottom,
+            &self.tab_metrics(),
+        ));
         (text.height, text.width)
     }
 
@@ -569,7 +586,8 @@ impl App {
                     cols,
                     truecolor,
                     term,
-                } => self.hello(conn, version, rows, cols, truecolor, &term),
+                    touch,
+                } => self.hello(conn, version, rows, cols, truecolor, &term, touch),
                 ClientMsg::Query => {
                     let info = self.info();
                     self.answer(conn, info);
@@ -608,7 +626,8 @@ impl App {
 
     /// A client says hello: it replaces the attached one (told `TakenOver`), gets `Welcome`, and a
     /// redraw from scratch at its size.
-    fn hello(&mut self, conn: u64, version: u32, rows: u16, cols: u16, truecolor: bool, term: &str) {
+    #[allow(clippy::too_many_arguments)]
+    fn hello(&mut self, conn: u64, version: u32, rows: u16, cols: u16, truecolor: bool, term: &str, touch: bool) {
         if version != PROTOCOL_VERSION {
             tracing::warn!(conn, version, "client speaks another protocol");
             self.bye(
@@ -638,6 +657,7 @@ impl App {
         }
         crate::session::touch(&self.config.socket);
         self.attached = Some(conn);
+        self.touch = touch;
         // A drag or pointer position belongs to the client that had them.
         self.drag = None;
         self.mouse_at = None;
@@ -729,12 +749,14 @@ impl App {
         }
         if self.attached == Some(conn) {
             self.attached = None;
+            self.touch = false;
         }
         false
     }
 
     fn detach(&mut self) {
         if let Some(conn) = self.attached.take() {
+            self.touch = false;
             tracing::info!(conn, "client detached");
             self.bye(conn, ByeReason::Detached);
         }
@@ -1319,6 +1341,7 @@ mod tests {
             cols: 40,
             truecolor: true,
             term: "xterm".into(),
+            touch: false,
         };
         app.handle(AppEvent::Client { conn, msg });
         rx
@@ -1446,6 +1469,7 @@ mod tests {
             cols: 40,
             truecolor: true,
             term: "x".into(),
+            touch: false,
         };
         app.handle(AppEvent::Client { conn: 1, msg });
         press(

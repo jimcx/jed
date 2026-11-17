@@ -24,6 +24,8 @@ pub struct Terminal {
     pub cols: u16,
     pub truecolor: bool,
     pub term: String,
+    /// `--touch`: the server draws its touch layout for this client.
+    pub touch: bool,
 }
 
 /// Why [`attach`] returned.
@@ -74,6 +76,7 @@ pub async fn attach(
         cols: terminal.cols,
         truecolor: terminal.truecolor,
         term: terminal.term.clone(),
+        touch: terminal.touch,
     };
     if write_all_msg(&mut write, &hello).await.is_err() {
         return Ok(Outcome::ServerGone);
@@ -140,7 +143,7 @@ fn truecolor(colorterm: Option<&str>) -> bool {
 /// Attaches to the session `name` listening on `socket` in this process's terminal: raw mode,
 /// then every way out restores the terminal before the one line saying why is printed. Returns the
 /// exit code. Needs no runtime (it starts its own).
-pub fn run_attached(socket: &Path, name: &str) -> i32 {
+pub fn run_attached(socket: &Path, name: &str, touch: bool) -> i32 {
     let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
         Ok(rt) => rt,
         Err(e) => {
@@ -162,6 +165,7 @@ pub fn run_attached(socket: &Path, name: &str) -> i32 {
             cols,
             truecolor: truecolor(std::env::var("COLORTERM").ok().as_deref()),
             term: std::env::var("TERM").unwrap_or_default(),
+            touch,
         };
         install_panic_hook();
         let kitty = terminal::kitty_supported();

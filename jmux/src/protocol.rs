@@ -16,7 +16,9 @@ use crossterm::event::Event;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-/// Bumped when a message changes shape; a server answers a different one with `Bye(VersionMismatch)`.
+/// Bumped when a message changes shape incompatibly: version 1 has `Hello::touch` optional (an
+/// old server ignores it and draws the normal layout; an old client's `Hello` lacks it: false).
+/// A server answers a different one with `Bye(VersionMismatch)`.
 pub const PROTOCOL_VERSION: u32 = 1;
 
 /// The largest frame body (kind byte + payload) accepted.
@@ -34,6 +36,9 @@ pub enum ClientMsg {
         cols: u16,
         truecolor: bool,
         term: String,
+        /// `--touch`: draw the touch layout for this client (absent from an old client: false).
+        #[serde(default)]
+        touch: bool,
     },
     /// An input event read from the client's terminal.
     Input(Event),
@@ -346,6 +351,15 @@ mod tests {
                 cols: 80,
                 truecolor: true,
                 term: "xterm-256color".into(),
+                touch: false,
+            },
+            ClientMsg::Hello {
+                version: PROTOCOL_VERSION,
+                rows: 24,
+                cols: 80,
+                truecolor: true,
+                term: "xterm-256color".into(),
+                touch: true,
             },
             ClientMsg::Resize { rows: 50, cols: 200 },
             ClientMsg::Detach,
@@ -388,6 +402,27 @@ mod tests {
                 message: "taken".into(),
             },
         ]
+    }
+
+    #[test]
+    fn a_hello_without_touch_is_read_as_not_touch() {
+        // An old client's `Hello` (protocol version 1 before `touch`).
+        let body = br#"{"Hello":{"version":1,"rows":24,"cols":80,"truecolor":true,"term":"xterm"}}"#;
+        let msg: ClientMsg = serde_json::from_slice(body).unwrap();
+        assert_eq!(
+            msg,
+            ClientMsg::Hello {
+                version: 1,
+                rows: 24,
+                cols: 80,
+                truecolor: true,
+                term: "xterm".into(),
+                touch: false,
+            }
+        );
+        // And the new `Hello` carries the field (an old server ignores it: no `deny_unknown_fields`).
+        let new = serde_json::to_string(&client_msgs()[1]).unwrap();
+        assert!(new.contains("\"touch\":true"), "{new}");
     }
 
     #[test]

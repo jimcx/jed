@@ -2,7 +2,7 @@
 id: jmux_touch
 name: "jmux: touch layout"
 summary: "`jmux attach --touch` (also `jmux --touch` and `jmux new --touch`) draws taller, wider tab bars with bigger close and scroll targets for a touch screen, for as long as that client stays attached"
-status: open
+status: done
 priority: 0
 dependencies: [jmux_config, jmux_tabs_at_bottom]
 ---
@@ -28,3 +28,8 @@ On a touch-screen device (a tablet or phone running an SSH terminal app, or a to
   - Docs: `jmux/README.md` (the flag, under attaching), `jmux/PLAN.md` (`--touch` in Sessions and in the `Hello` line), [crates](../docs/dev/crates.md) (`jtui::tabs`).
   - Deferred (unless it turns out cheap): a `touch` setting or `$JMUX_TOUCH` to make it the default for one machine's client; a command that turns it on and off while attached; taller side bar rows and a wider divider grab area; passing the touch layout on to a jed started in a jmux terminal (`jed_touch` can read an env variable jmux sets).
   - Still to check by hand: attach with `--touch` from a tablet's SSH app (e.g. Termius or Blink) and from a phone in portrait; whether a tap arrives as a click, and a finger drag as a mouse drag, in each app; whether 3 rows and 2 cells of padding are enough there.
+- ✅ Done. `jmux attach --touch`, `jmux new --touch` and `jmux --touch` draw 3-row tab bars with `  title  ×  ` tabs, 3-cell close targets on every row and 3-cell scroll arrows, for as long as that client stays attached.
+  - Layout comes from `jtui::tabs::TabMetrics` (`NORMAL`, `TOUCH`; helpers `tab_width`, `text_row`, `close_reach`, `arrow_reach`), which `jed_touch` can reuse. `ui::bar_and_term` / `term_area` take the metrics (the bar is clamped to the group's height); `App::tab_metrics()` picks them from `App::touch`, set by each `Hello` and cleared on detach or a dropped connection. `TabHit` has `close_x0..close_x1`; `TabArrows` holds `Range<u16>`s (no longer `Copy`).
+  - Also: `--touch` rides on `client::Terminal.touch`, so `client::attach` keeps its signature; `--touch` as the first argument is accepted only alone (`jmux --touch attach` is an error, `jmux attach --touch` isn't).
+  - Deferred: as listed above (a `touch` setting / `$JMUX_TOUCH`, a toggle while attached, taller side bar rows and divider grabs, passing it to jed).
+  - Still to check by hand: as listed above (a tablet's and a phone's SSH app: taps as clicks, finger drags as drags, whether 3 rows and 2 cells of padding are enough).

@@ -25,6 +25,7 @@ a client to it. Closing the host terminal or detaching leaves everything running
 | `jmux` | Attach to the most recently used session, or start one |
 | `jmux new [-s name] [-c dir]` | Start a session (shell in `dir`) and attach |
 | `jmux attach [-t name]` | Attach (the most recently used by default); takes the session over from another client |
+| `jmux --touch`, `jmux new --touch`, `jmux attach --touch` | Attach with the touch layout: tab bars three rows tall, tabs padded, wider `×` and scroll targets (3 cells), for a touch screen. It lasts until this client detaches or another takes the session over; the shells lose two rows per group |
 | `jmux ls` | List the sessions |
 | `jmux kill-session -t name` | End a session and its shells |
 | `jmux rename-session [-t name] new` | Rename a session (the current one inside jmux) |

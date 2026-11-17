@@ -72,6 +72,7 @@ impl Harness {
             cols,
             truecolor: true,
             term: "xterm".into(),
+            touch: false,
         };
         app.handle(AppEvent::Client { conn: 1, msg });
         let mut h = Harness {
@@ -298,7 +299,7 @@ async fn jmux_tabs_at_bottom_clicks_on_the_bar_pick_and_close_tabs() {
     h.mouse(MouseEventKind::Up(MouseButton::Left), tabs[1].x0 + 1, 0);
     assert_eq!(h.active(), 0);
     // The x of the second closes it.
-    h.click(MouseButton::Left, tabs[1].close_x, 10);
+    h.click(MouseButton::Left, tabs[1].close_x0, 10);
     assert_eq!(h.titles(), ["sh ○", "sh (3) ○"]);
     h.settle("a redrawn bar", |h| !h.row(10).contains("sh (2)")).await;
     let tabs = h.app.hit.groups[0].tabs.clone();
@@ -315,10 +316,10 @@ async fn jmux_tabs_at_bottom_the_bars_scroll_arrows_work() {
         h.row(8).starts_with('‹') && h.row(8).trim_end().ends_with('›')
     })
     .await;
-    let arrows = h.app.hit.groups[0].arrows.expect("arrows");
+    let arrows = h.app.hit.groups[0].arrows.clone().expect("arrows");
     let before = h.app.groups.active_group().scroll;
     assert!(before > 0);
-    h.click(MouseButton::Left, arrows.back, 8);
+    h.click(MouseButton::Left, arrows.back.start, 8);
     assert_eq!(h.app.groups.active_group().scroll, before - 1);
     h.mouse(MouseEventKind::ScrollDown, 10, 8);
     assert_eq!(h.app.groups.active_group().scroll, before);

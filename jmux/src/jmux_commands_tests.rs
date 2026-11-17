@@ -90,6 +90,7 @@ impl Harness {
             cols: 100,
             truecolor: true,
             term: "xterm".into(),
+            touch: false,
         };
         app.handle(AppEvent::Client { conn: 1, msg });
         Harness {

@@ -1,9 +1,11 @@
-//! A group's tab bar: ` title × ` per shell, the title ending in its state glyph (`○` at the
+//! A group's tab bar: ` title × ` per shell (padded by `TabMetrics`: the touch layout is three rows
+//! tall with `  title  ×  ` and wider targets), the title ending in its state glyph (`○` at the
 //! prompt, `●` while a command runs, in `tab.shellError` after a failure). Tabs wider than the bar
 //! scroll: `‹` / `›` at its ends (dimmed when there's nothing more that way), the wheel and the
 //! arrows move it a tab at a time, and it jumps back to the active tab only when that (or the
 //! bar's width) changes.
 
+use jtui::tabs::TabMetrics;
 use jtui::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -12,18 +14,15 @@ use unicode_width::UnicodeWidthStr;
 use crate::group::Group;
 use crate::hit::{TabArrows, TabHit};
 
-/// Cells a tab takes: the title and ` ` before, ` × ` after.
-fn width(title: &str) -> u16 {
-    title.width() as u16 + 4
-}
-
-/// Draws the bar into `area` (one row); returns where its tabs and arrows landed. `drop` is the
-/// gap a dragged tab would land in, marked with one cell.
+/// Draws the bar into `area` (`metrics.rows` tall: the title and `×` on its middle row, the other
+/// rows filled with each tab's background); returns where its tabs and arrows landed. `drop` is
+/// the gap a dragged tab would land in, marked with one cell across the bar's rows.
 pub fn render(
     f: &mut Frame,
     area: Rect,
     group: &mut Group,
     theme: &Theme,
+    metrics: &TabMetrics,
     focused: bool,
     drop: Option<usize>,
 ) -> (Vec<TabHit>, Option<TabArrows>) {
@@ -34,12 +33,14 @@ pub fn render(
     if area.width == 0 || area.height == 0 || group.tabs.is_empty() {
         return (Vec::new(), None);
     }
+    let width = |title: &str| metrics.tab_width(title.width() as u16);
+    let text_y = area.y + metrics.text_row(area.height);
     let widths: Vec<u32> = group.tabs.iter().map(|t| width(&t.title) as u32).collect();
     let total: u32 = widths.iter().sum();
 
-    let overflow = total > area.width as u32 && area.width >= 3;
+    let overflow = total > area.width as u32 && area.width > 2 * metrics.arrow;
     let (left, right) = if overflow {
-        (area.x + 1, area.x + area.width - 1)
+        (area.x + metrics.arrow, area.x + area.width - metrics.arrow)
     } else {
         (area.x, area.x + area.width)
     };
@@ -75,12 +76,16 @@ pub fn render(
                 "tab.scrollArrow.disabled"
             })
         };
-        out.set_string(area.x, area.y, "‹", arrow(group.scroll > 0));
-        out.set_string(right, area.y, "›", arrow(group.scroll < max_scroll));
-        arrows = Some(TabArrows {
-            back: area.x,
-            forward: right,
-        });
+        let (back, forward) = (area.x..left, right..area.x + area.width);
+        let (back_style, forward_style) = (arrow(group.scroll > 0), arrow(group.scroll < max_scroll));
+        out.set_style(Rect::new(back.start, area.y, metrics.arrow, area.height), back_style);
+        out.set_style(
+            Rect::new(forward.start, area.y, metrics.arrow, area.height),
+            forward_style,
+        );
+        out.set_string(back.start + metrics.arrow_reach(), text_y, "‹", back_style);
+        out.set_string(forward.start + metrics.arrow_reach(), text_y, "›", forward_style);
+        arrows = Some(TabArrows { back, forward });
     }
 
     let mut hits = Vec::new();
@@ -95,10 +100,16 @@ pub fn render(
             (true, false) => theme.get("tab.unfocusedActive"),
             _ => theme.get("tab.inactive"),
         };
-        out.set_style(Rect::new(x, area.y, w, 1), style);
-        out.set_stringn(x + 1, area.y, &tab.title, w.saturating_sub(1) as usize, style);
+        out.set_style(Rect::new(x, area.y, w, area.height), style);
+        out.set_stringn(
+            x + metrics.pad,
+            text_y,
+            &tab.title,
+            w.saturating_sub(metrics.pad) as usize,
+            style,
+        );
         // The state glyph is the title's last cell, in its own colour.
-        let glyph_x = x + tab.title.width() as u16;
+        let glyph_x = x + metrics.pad - 1 + tab.title.width() as u16;
         if glyph_x < x + w && glyph_x < right {
             let key = if !tab.idle {
                 "tab.shellRunning"
@@ -108,17 +119,18 @@ pub fn render(
                 "tab.shellIdle"
             };
             let glyph = tab.title.chars().last().unwrap_or(' ');
-            out.set_stringn(glyph_x, area.y, glyph.to_string(), 1, style.patch(theme.get(key)));
+            out.set_stringn(glyph_x, text_y, glyph.to_string(), 1, style.patch(theme.get(key)));
         }
-        let close_x = x + w.saturating_sub(2);
-        if close_x > x + 1 && close_x < right {
-            out.set_stringn(close_x, area.y, "×", 1, style);
+        let close_x = x + w.saturating_sub(metrics.pad + 1);
+        if close_x > x + metrics.pad && close_x < right {
+            out.set_stringn(close_x, text_y, "×", 1, style);
         }
         hits.push(TabHit {
             index: i,
             x0: x,
             x1: x + w,
-            close_x,
+            close_x0: close_x.saturating_sub(metrics.close_reach()).max(x),
+            close_x1: (close_x + metrics.close_reach() + 1).min(x + w).max(close_x + 1),
         });
         x += w;
     }
@@ -133,7 +145,7 @@ pub fn render(
             },
         };
         let gap_x = gap_x.clamp(left, right.saturating_sub(1));
-        out.set_style(Rect::new(gap_x, area.y, 1, 1), theme.get("tab.dropMarker"));
+        out.set_style(Rect::new(gap_x, area.y, 1, area.height), theme.get("tab.dropMarker"));
     }
     (hits, arrows)
 }

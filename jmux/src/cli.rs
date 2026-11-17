@@ -14,6 +14,7 @@ pub const USAGE: &str = "usage: jmux [command]
   (none)                        attach to the most recently used session, or start one
   new [-s name] [-c dir]        start a session (shell in dir) and attach to it
   attach [-t name]              attach to a session (the most recently used by default)
+  --touch                       with (none), new or attach: taller, wider tab bars for a touch screen
   ls                            list the sessions
   kill-session -t name          end a session
   rename-session [-t name] new  rename a session (this one inside jmux)
@@ -26,12 +27,26 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, PartialEq)]
 pub enum Cmd {
-    Default,
-    New { name: Option<String>, dir: Option<PathBuf> },
-    Attach { target: Option<String> },
+    Default {
+        touch: bool,
+    },
+    New {
+        name: Option<String>,
+        dir: Option<PathBuf>,
+        touch: bool,
+    },
+    Attach {
+        target: Option<String>,
+        touch: bool,
+    },
     Ls,
-    Kill { target: String },
-    Rename { target: Option<String>, new: String },
+    Kill {
+        target: String,
+    },
+    Rename {
+        target: Option<String>,
+        new: String,
+    },
     InstallShellIntegration,
     Help,
 }
@@ -40,8 +55,15 @@ pub enum Cmd {
 pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Cmd, String> {
     let mut args = args.into_iter();
     let Some(cmd) = args.next() else {
-        return Ok(Cmd::Default);
+        return Ok(Cmd::Default { touch: false });
     };
+    if cmd == "--touch" {
+        return match args.next() {
+            None => Ok(Cmd::Default { touch: true }),
+            Some(arg) => Err(format!("unknown argument {arg}")),
+        };
+    }
+    let mut touch = false;
     // The flags of a command: `-x value` pairs (and the positional ones it allows).
     let mut flags: Vec<(String, String)> = Vec::new();
     let mut positional = Vec::new();
@@ -56,7 +78,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Cmd, String> {
         if arg == "-h" || arg == "--help" {
             return Ok(Cmd::Help);
         }
-        if allowed.contains(&arg.as_str()) {
+        if arg == "--touch" && matches!(cmd.as_str(), "new" | "attach") {
+            touch = true;
+        } else if allowed.contains(&arg.as_str()) {
             let value = args.next().ok_or(format!("{arg} needs a value"))?;
             flags.push((arg, value));
         } else if arg.starts_with('-') || cmd != "rename-session" {
@@ -70,8 +94,12 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Cmd, String> {
         "new" => Cmd::New {
             name: flag("-s"),
             dir: flag("-c").map(PathBuf::from),
+            touch,
         },
-        "attach" => Cmd::Attach { target: flag("-t") },
+        "attach" => Cmd::Attach {
+            target: flag("-t"),
+            touch,
+        },
         "ls" => Cmd::Ls,
         "install-shell-integration" => Cmd::InstallShellIntegration,
         "kill-session" => Cmd::Kill {
@@ -256,21 +284,66 @@ mod tests {
     }
 
     #[test]
+    fn touch_flag_goes_on_new_attach_and_bare_jmux_only() {
+        assert_eq!(p(&["--touch"]), Ok(Cmd::Default { touch: true }));
+        assert_eq!(
+            p(&["attach", "--touch", "-t", "w"]),
+            Ok(Cmd::Attach {
+                target: Some("w".into()),
+                touch: true
+            })
+        );
+        assert_eq!(
+            p(&["new", "-s", "a", "--touch"]),
+            Ok(Cmd::New {
+                name: Some("a".into()),
+                dir: None,
+                touch: true
+            })
+        );
+        for args in [
+            &["ls", "--touch"][..],
+            &["kill-session", "-t", "w", "--touch"],
+            &["rename-session", "--touch", "x"],
+            &["install-shell-integration", "--touch"],
+            &["--touch", "attach"],
+        ] {
+            assert!(p(args).is_err(), "{args:?} is refused");
+        }
+        assert_eq!(p(&["ls", "--touch"]), Err("unknown argument --touch".into()));
+    }
+
+    #[test]
     fn parses_every_command() {
-        assert_eq!(p(&[]), Ok(Cmd::Default));
+        assert_eq!(p(&[]), Ok(Cmd::Default { touch: false }));
         assert_eq!(
             p(&["new", "-s", "work", "-c", "/tmp"]),
             Ok(Cmd::New {
                 name: Some("work".into()),
-                dir: Some("/tmp".into())
+                dir: Some("/tmp".into()),
+                touch: false
             })
         );
-        assert_eq!(p(&["new"]), Ok(Cmd::New { name: None, dir: None }));
-        assert_eq!(p(&["attach"]), Ok(Cmd::Attach { target: None }));
+        assert_eq!(
+            p(&["new"]),
+            Ok(Cmd::New {
+                name: None,
+                dir: None,
+                touch: false
+            })
+        );
+        assert_eq!(
+            p(&["attach"]),
+            Ok(Cmd::Attach {
+                target: None,
+                touch: false
+            })
+        );
         assert_eq!(
             p(&["attach", "-t", "w"]),
             Ok(Cmd::Attach {
-                target: Some("w".into())
+                target: Some("w".into()),
+                touch: false
             })
         );
         assert_eq!(p(&["ls"]), Ok(Cmd::Ls));
