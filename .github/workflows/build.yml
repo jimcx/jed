@@ -60,7 +60,11 @@ jobs:
       - name: Build
         run: cargo build --release -p jed -p jmux
 
+      # Each multi-thread tokio test runtime starts a worker per CPU and a test runs per CPU:
+      # CPUs² threads, past a Gitea container's process limit. scripts/check does the same.
       - name: Test
+        env:
+          TOKIO_WORKER_THREADS: 2
         run: scripts/timeout 900 cargo test --workspace
 
       - name: Package

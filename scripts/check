@@ -91,7 +91,11 @@ clippy() {
 }
 
 tests() {
-    "$dir/timeout" "${CHECK_TIMEOUT:-900}" cargo test -q --workspace "$@" >"$out" 2>&1
+    # Each `#[tokio::test(flavor = "multi_thread")]` runtime starts a worker per CPU, and the
+    # harness runs a test per CPU at once: CPUs² threads plus the PTYs' own, past a CI
+    # container's process limit ("can't spawn worker thread", EAGAIN). Two workers are plenty.
+    TOKIO_WORKER_THREADS="${TOKIO_WORKER_THREADS:-2}" \
+        "$dir/timeout" "${CHECK_TIMEOUT:-900}" cargo test -q --workspace "$@" >"$out" 2>&1
     status=$?
     # Compile errors, failure sections and result lines; not the progress dots.
     grep -v -E '^[.FiE]+( [0-9]+/[0-9]+)?$|^running [0-9]+ tests?$|^$' "$out" | grep -v -E '^test .* \.\.\. ok$' | tail -150
