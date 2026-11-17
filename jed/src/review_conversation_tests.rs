@@ -702,7 +702,13 @@ mod summary {
         app.test_execute(Command::ReviewSubmitApprove);
         assert_eq!(app.test_composer_text().as_deref(), Some("half a thought"));
         // Emptying it and Esc forgets it.
-        app.press(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        // Select all is Cmd+A on macOS (Ctrl+A goes to the line's start there).
+        let primary = if cfg!(target_os = "macos") {
+            KeyModifiers::SUPER
+        } else {
+            KeyModifiers::CONTROL
+        };
+        app.press(KeyCode::Char('a'), primary);
         app.press(KeyCode::Backspace, KeyModifiers::NONE);
         app.press(KeyCode::Esc, KeyModifiers::NONE);
         assert!(app.settle(|_| !store_text(&state).contains("half a thought")).await);
