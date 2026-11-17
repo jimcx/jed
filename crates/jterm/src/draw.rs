@@ -49,7 +49,7 @@ pub fn draw_cells(buf: &mut ratatui::buffer::Buffer, area: Rect, screen: &vt100:
                 continue;
             };
             if c.has_contents() {
-                out.set_symbol(c.contents());
+                set_cell_symbol(out, c.contents(), c.is_wide());
             }
             let mut modifier = Modifier::empty();
             for (on, m) in [
@@ -70,6 +70,32 @@ pub fn draw_cells(buf: &mut ratatui::buffer::Buffer, area: Rect, screen: &vt100:
                     .add_modifier(modifier),
             );
         }
+    }
+}
+
+/// Sets `out`'s symbol to a cell's `text`, `wide` when the screen gives it two columns. An emoji
+/// selector (U+FE0F) widens a narrow base (`✔️`) on the screen, as in the terminals that draw it
+/// two wide; ratatui's diff, though, writes the cell after such a symbol straight after it with
+/// no cursor move (for terminals that draw it narrow), so in a terminal that drew it wide that
+/// cell and the rest of the run land one column right: an extra space after the emoji until the
+/// row is repainted. `ForcedWidth(2)` takes the cell off that path: the next cell is written
+/// with a cursor move, as after any wide character. A narrow cell whose symbol ratatui would
+/// measure wider (a selector the screen didn't widen) loses its selectors instead.
+fn set_cell_symbol(out: &mut ratatui::buffer::Cell, text: &str, wide: bool) {
+    use ratatui::buffer::CellDiffOption;
+    const TWO: std::num::NonZeroU16 = std::num::NonZeroU16::new(2).unwrap();
+    if text.len() == 1 {
+        out.set_symbol(text);
+    } else if wide {
+        out.set_symbol(text);
+        if text.contains('\u{FE0F}') {
+            out.set_diff_option(CellDiffOption::ForcedWidth(TWO));
+        }
+    } else if text.width() > 1 {
+        let plain: String = text.chars().filter(|&c| c != '\u{FE0E}' && c != '\u{FE0F}').collect();
+        out.set_symbol(if plain.is_empty() { " " } else { &plain });
+    } else {
+        out.set_symbol(text);
     }
 }
 
@@ -451,6 +477,32 @@ mod tests {
         draw_cells(&mut buf, area, p.screen(), 4);
         assert_eq!(buf[(0, 2)].symbol(), "s");
         assert_eq!(cursor_in(p.screen(), 4), (3, 0));
+    }
+
+    /// A `✔️` (a narrow base widened by U+FE0F) takes two cells; when the cell after it changes
+    /// (here a scrolled row: `ab` under it becomes `✔️ x`), ratatui's diff writes that cell
+    /// with a cursor move rather than straight after the emoji, which a terminal drawing the
+    /// emoji two wide would put one column right (an extra space).
+    #[test]
+    fn a_cell_after_an_emoji_selector_is_written_where_the_screen_has_it() {
+        use ratatui::buffer::CellDiffOption;
+        let mut p = crate::select::test_parser(2, 10, 0);
+        p.process(b"abcd");
+        let area = Rect::new(0, 0, 10, 1);
+        let mut prev = ratatui::buffer::Buffer::empty(area);
+        draw_cells(&mut prev, area, p.screen(), 0);
+        p.process("\r\u{2714}\u{FE0F} x\x1b[K".as_bytes());
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        draw_cells(&mut buf, area, p.screen(), 0);
+        assert_eq!(buf[(0, 0)].symbol(), "\u{2714}\u{FE0F}");
+        assert!(matches!(buf[(0, 0)].diff_option, CellDiffOption::ForcedWidth(w) if w.get() == 2));
+        let updates: Vec<(u16, &str)> = prev.diff(&buf).into_iter().map(|(x, _, c)| (x, c.symbol())).collect();
+        // no write to column 1 (under the emoji) straight after it
+        assert_eq!(updates, [(0, "\u{2714}\u{FE0F}"), (2, " "), (3, "x")]);
+        // a CJK character is left to ratatui's usual handling
+        p.process("\r\u{4E2D}".as_bytes());
+        draw_cells(&mut buf, area, p.screen(), 0);
+        assert_eq!(buf[(0, 0)].diff_option, CellDiffOption::None);
     }
 
     /// `draw_cells` hands every cell's look to the buffer:
