@@ -32,7 +32,7 @@ fn lines(app: &mut App, w: u16, h: u16) -> Vec<String> {
         .collect()
 }
 
-fn graphql(connection: &str, nodes: &str) -> String {
+pub(crate) fn graphql(connection: &str, nodes: &str) -> String {
     format!(
         r#"{{"data":{{"repository":{{"pullRequest":{{"{connection}":{{"pageInfo":{{"hasNextPage":false,"endCursor":null}},"nodes":{nodes}}}}}}}}}}}"#
     )

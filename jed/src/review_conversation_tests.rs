@@ -543,6 +543,15 @@ async fn review_conversation_github_edit_and_delete_go_to_the_issue_comment_endp
         (format!("POST {api}/issues/7/comments"), Reply::json("{}")),
         (format!("PATCH {api}/issues/comments/300"), Reply::json("{}")),
         (format!("DELETE {api}/issues/comments/300"), Reply::status(204)),
+        // The boot lookup gets no comments; every lookup after it (the refreshes that follow
+        // each write) lists sam's comment 300, so a refresh can't take it away mid-test.
+        (
+            "POST /api/graphql ~comments(first:100,after".into(),
+            Reply::json(&crate::mr_review_tests::github::graphql(
+                "comments",
+                r#"[{"databaseId":300,"body":"my words","createdAt":"2026-01-02T10:00:00Z","updatedAt":"2026-01-02T10:00:00Z","url":"","author":{"login":"sam"}}]"#,
+            )),
+        ),
     ];
     let server = server_plus(&main, &head, true, false, extra);
     let mut app = boot_github(&root, &server).await;
@@ -556,9 +565,17 @@ async fn review_conversation_github_edit_and_delete_go_to_the_issue_comment_endp
         .find(|r| r.target.ends_with("/issues/7/comments"))
         .expect("a post");
     assert_eq!(post.body, r#"{"body":"hi there"}"#);
-    app.review.user = Some("sam".into());
-    review(&mut app).conversation.push(comment("300", "sam", "my words"));
-    changed(&mut app);
+    // The post's refresh brings comment 300.
+    crate::mr_review_tests::idle(&mut app).await;
+    assert!(
+        app.settle(|a| {
+            let Content::Loaded(r) = &a.review.content else {
+                return false;
+            };
+            a.review.user.as_deref() == Some("sam") && r.conversation.iter().any(|c| c.id == "300")
+        })
+        .await
+    );
     assert!(app.settle(|a| a.diffs_settled()).await);
     click_label(&mut app, "[Edit]");
     app.type_text("!");

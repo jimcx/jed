@@ -926,8 +926,6 @@ impl App {
     }
 }
 
-/// A forge thread's block under `line` of a diff's text, covering `span` lines above it too
-/// (`apply`: it may offer Apply Suggestion).
 /// The blocks of a merge request's conversation tab: the description (headed by its author and the
 /// title), then each comment and review summary, block `i` under row `i`.
 fn conversation_blocks(r: &crate::review::Review, user: Option<&str>) -> Vec<crate::review_blocks::ThreadBlock> {
@@ -977,6 +975,8 @@ fn conversation_blocks(r: &crate::review::Review, user: Option<&str>) -> Vec<cra
         .collect()
 }
 
+/// A forge thread's block under `line` of a diff's text, covering `span` lines above it too
+/// (`apply`: it may offer Apply Suggestion).
 fn forge_block(
     t: &crate::review::ThreadRow,
     user: Option<&str>,

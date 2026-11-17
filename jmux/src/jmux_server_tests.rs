@@ -380,6 +380,7 @@ async fn jmux_server_ctrl_d_without_shift_goes_to_the_shell() {
     server.join().unwrap();
 }
 
+// FLAKE: 2026-11-17, failed once in a merge check: no message from the server within WAIT (`Client::next`)
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_server_puts_the_cursor_where_the_shells_is() {
     let mut server = TestServer::start();
