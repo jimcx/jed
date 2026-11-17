@@ -1,0 +1,69 @@
+name: Release
+
+# A version tag (git tag -a v<N> && git push github v<N>, the /release command)
+# publishes a release with the jed and jmux tarballs for Linux and macOS. It
+# builds nothing: the binaries are the artifacts of the Build workflow's run on
+# the tagged commit (a push to main), so what ships is what was tested. The
+# release command waits for that run to pass before tagging; if it is still
+# running here, this waits for it, and if it failed or never ran, no release.
+# The notes are a changelog of the commits and tasks completed since the
+# previous release (scripts/changelog, shared with the release command).
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  release:
+    if: github.server_url == 'https://github.com'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Find the Build run
+        shell: bash
+        run: |
+          # The commit the (annotated) tag points at.
+          sha=$(git rev-parse "$GITHUB_REF_NAME^{commit}")
+          run=$(gh run list --workflow build.yml --commit "$sha" --event push --limit 1 \
+            --json databaseId --jq '.[0].databaseId // empty')
+          if [ -z "$run" ]; then
+            echo "::error::No Build run for $sha: push the commit to main and let it pass before tagging"
+            exit 1
+          fi
+          # Waits if it's still running; fails unless it passed.
+          gh run watch "$run" --exit-status --interval 30 >/dev/null || {
+            echo "::error::Build run $run for $sha did not pass: $(gh run view "$run" --json url --jq .url)"
+            exit 1
+          }
+          echo "RUN=$run" >> "$GITHUB_ENV"
+
+      - name: Download the tarballs
+        shell: bash
+        run: |
+          gh run download "$RUN" --dir "$RUNNER_TEMP/artifacts" --pattern 'dist-*'
+          mkdir dist
+          find "$RUNNER_TEMP/artifacts" -name '*.tar.gz' -exec mv {} dist/ \;
+          ls -l dist
+          for os in linux macos; do
+            for bin in jed jmux; do
+              ls dist/"$bin-$os"-*.tar.gz >/dev/null 2>&1 || {
+                echo "::error::Build run $RUN has no $bin-$os tarball (artifacts expired?)"
+                exit 1
+              }
+            done
+          done
+
+      - name: Changelog
+        run: scripts/changelog > "$RUNNER_TEMP/changelog.md"
+
+      - name: Create release
+        run: gh release create "$GITHUB_REF_NAME" dist/* --notes-file "$RUNNER_TEMP/changelog.md"

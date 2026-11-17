@@ -26,7 +26,7 @@ for b in $bins; do pkgs="$pkgs -p $b"; done
 cargo build --release $pkgs
 mkdir -p "$dest"
 for b in $bins; do
-  # Cargo's strip = true can fail with only a warning, so make sure (as the release workflow does).
+  # Cargo's strip = true can fail with only a warning, so make sure (as the build workflow does).
   strip "target/release/$b"
   install -m 755 "target/release/$b" "$dest/$b"
   echo "installed $dest/$b"
