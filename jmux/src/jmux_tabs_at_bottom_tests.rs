@@ -15,7 +15,7 @@ use std::num::NonZeroU16;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{Event as Input, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{MouseButton, MouseEventKind};
 use jtui::stream_backend::StreamBackend;
 use ratatui::Terminal;
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
@@ -134,29 +134,8 @@ impl Harness {
             .unwrap_or_default()
     }
 
-    fn input(&mut self, input: Input) {
-        self.app.handle(AppEvent::Client {
-            conn: 1,
-            msg: ClientMsg::Input(input),
-        });
-    }
-
-    fn command(&mut self, command: Command) {
-        let combo = self.app.keymap.binding_for(command).expect("a default key");
-        self.input(Input::Key(KeyEvent::new(combo.code, combo.mods)));
-    }
-
-    fn mouse(&mut self, kind: MouseEventKind, column: u16, row: u16) {
-        self.input(Input::Mouse(MouseEvent {
-            kind,
-            column,
-            row,
-            modifiers: KeyModifiers::NONE,
-        }));
-    }
-
     fn click(&mut self, button: MouseButton, column: u16, row: u16) {
-        self.mouse(MouseEventKind::Down(button), column, row);
+        self.app.send_mouse(MouseEventKind::Down(button), column, row);
     }
 
     fn shell_size(&self, group: u64) -> (u16, u16) {
@@ -204,15 +183,16 @@ impl Harness {
     }
 
     async fn press_and_move(&mut self, from: (u16, u16), to: (u16, u16)) {
-        self.mouse(MouseEventKind::Down(MouseButton::Left), from.0, from.1);
-        self.mouse(MouseEventKind::Drag(MouseButton::Left), to.0, to.1);
+        self.app
+            .send_mouse(MouseEventKind::Down(MouseButton::Left), from.0, from.1);
+        self.app.send_mouse(MouseEventKind::Drag(MouseButton::Left), to.0, to.1);
         self.frame().await;
     }
 
     /// Opens tabs until there are `n`, waiting until the shells fit.
     async fn tabs(&mut self, n: usize) {
         for i in 1..n {
-            self.command(Command::NewTerminal);
+            self.app.run(Command::NewTerminal);
             self.settle("a new tab", |h| h.tab_count() == i + 1 && h.shells_fit())
                 .await;
         }
@@ -222,7 +202,7 @@ impl Harness {
     async fn reload(&mut self, text: &str) -> String {
         std::fs::write(self.dir.path().join(crate::settings::FILE_NAME), text).unwrap();
         self.app.notice = None;
-        self.app.execute(Command::ReloadSettings);
+        self.app.run(Command::ReloadSettings);
         self.settle("the reload's notice", |h| h.app.notice.is_some()).await;
         self.frame().await;
         self.app.notice.clone().unwrap()
@@ -256,7 +236,7 @@ async fn jmux_tabs_at_bottom_the_bar_is_on_the_groups_last_row_and_the_shell_sta
         (top.app.hit.groups[0].bar.y, top.app.hit.groups[0].term.height),
         (0, 10)
     );
-    h.command(Command::NewTerminal);
+    h.app.run(Command::NewTerminal);
     h.settle("a second tab at the drawn size", |h| {
         h.tab_count() == 2 && h.shells_fit()
     })
@@ -267,7 +247,7 @@ async fn jmux_tabs_at_bottom_the_bar_is_on_the_groups_last_row_and_the_shell_sta
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_tabs_at_bottom_each_group_of_a_split_has_its_bar_on_its_own_last_row() {
     let mut h = Harness::new(16, 61, BOTTOM).await;
-    h.command(Command::SplitDown);
+    h.app.run(Command::SplitDown);
     h.settle("two stacked groups", |h| h.app.hit.groups.len() == 2 && h.shells_fit())
         .await;
     for g in &h.app.hit.groups {
@@ -293,10 +273,12 @@ async fn jmux_tabs_at_bottom_clicks_on_the_bar_pick_and_close_tabs() {
     assert_eq!((tabs.len(), h.active()), (3, 2));
     h.click(MouseButton::Left, tabs[0].x0 + 1, 10);
     assert_eq!(h.active(), 0);
-    h.mouse(MouseEventKind::Up(MouseButton::Left), tabs[0].x0 + 1, 10);
+    h.app
+        .send_mouse(MouseEventKind::Up(MouseButton::Left), tabs[0].x0 + 1, 10);
     // The top row is the terminal now: the same x there picks nothing.
     h.click(MouseButton::Left, tabs[1].x0 + 1, 0);
-    h.mouse(MouseEventKind::Up(MouseButton::Left), tabs[1].x0 + 1, 0);
+    h.app
+        .send_mouse(MouseEventKind::Up(MouseButton::Left), tabs[1].x0 + 1, 0);
     assert_eq!(h.active(), 0);
     // The x of the second closes it.
     h.click(MouseButton::Left, tabs[1].close_x0, 10);
@@ -321,19 +303,19 @@ async fn jmux_tabs_at_bottom_the_bars_scroll_arrows_work() {
     assert!(before > 0);
     h.click(MouseButton::Left, arrows.back.start, 8);
     assert_eq!(h.app.groups.active_group().scroll, before - 1);
-    h.mouse(MouseEventKind::ScrollDown, 10, 8);
+    h.app.send_mouse(MouseEventKind::ScrollDown, 10, 8);
     assert_eq!(h.app.groups.active_group().scroll, before);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_tabs_at_bottom_a_tab_drags_to_another_bar_and_to_a_terminal_half() {
     let mut h = Harness::new(14, 61, BOTTOM).await;
-    h.command(Command::SplitRight);
+    h.app.run(Command::SplitRight);
     h.settle("two groups", |h| h.app.hit.groups.len() == 2 && h.shells_fit())
         .await;
     let (left, right) = (h.app.hit.groups[0].id, h.app.hit.groups[1].id);
-    h.command(Command::FocusSide(crate::group::Side::Left));
-    h.command(Command::NewTerminal);
+    h.app.run(Command::FocusSide(crate::group::Side::Left));
+    h.app.run(Command::NewTerminal);
     h.settle("two tabs on the left", |h| {
         h.app.groups.get(left).unwrap().tabs.len() == 2 && h.shells_fit()
     })
@@ -345,7 +327,7 @@ async fn jmux_tabs_at_bottom_a_tab_drags_to_another_bar_and_to_a_terminal_half()
     assert_eq!(from.1, 12, "the tab to drag is on the bottom row");
     let end = (rbar.x + rbar.width - 1, rbar.y);
     h.press_and_move(from, end).await;
-    h.mouse(MouseEventKind::Up(MouseButton::Left), end.0, end.1);
+    h.app.send_mouse(MouseEventKind::Up(MouseButton::Left), end.0, end.1);
     h.frame().await;
     let counts = |h: &Harness| {
         (
@@ -375,7 +357,7 @@ async fn jmux_tabs_at_bottom_a_tab_drags_to_another_bar_and_to_a_terminal_half()
         "down to the terminal's last row"
     );
     assert_ne!(h.bg_at(term.x + term.width / 2 - 1, term.y), shade, "not the left half");
-    h.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+    h.app.send_mouse(MouseEventKind::Up(MouseButton::Left), x, y);
     h.frame().await;
     h.settle("three groups, each shell sized", |h| {
         h.app.hit.groups.len() == 3 && h.shells_fit()

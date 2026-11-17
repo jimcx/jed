@@ -5,7 +5,9 @@
 //! `app.test_execute(Command::..)`. It presses a Ctrl, Cmd or Alt key only when the test is about
 //! key handling (a focused field, a shell tab, an overlay), and then through
 //! `app.press_bound(Command::..)`, never a raw platform key. The `command_driven_tests_guard_*`
-//! test fails on a `.press(` with such modifiers in any other test file that isn't on its line allowlist.
+//! test fails on a `.press(` with such modifiers in any other test file of `jed/src` or `jmux/src` (also
+//! `KeyEvent::new(..)` in jmux's test files) that isn't on its line allowlist. jmux's own routing suite is
+//! `jmux/src/command_driven_tests.rs`; its harness helpers are `jmux/src/test_harness.rs`.
 //!
 //! What is checked here:
 //! - Keymap level, both platforms in one run (`Keymap::default_for(Platform::MacOs / Linux)`):
@@ -121,13 +123,14 @@ fn press_calls() -> Vec<(&'static str, String, String)> {
     let mut out = Vec::new();
     let mut files = sources();
     files.push((
-        "command_driven_tests.rs".into(),
+        "jed/src/command_driven_tests.rs".into(),
         include_str!("command_driven_tests.rs").into(),
     ));
-    for (path, src) in files {
+    // jmux's `press_bound` names jmux's commands: its own suite checks those.
+    for (path, src) in files.into_iter().filter(|(p, _)| p.starts_with("jed/src/")) {
         for call in ["press_bound", "press_field_key"] {
             // This file's own `press_field_key` test names a command the editor doesn't bind.
-            if call == "press_field_key" && path == "command_driven_tests.rs" {
+            if call == "press_field_key" && path == "jed/src/command_driven_tests.rs" {
                 continue;
             }
             let needle = format!(".{call}(Command::");
@@ -656,117 +659,183 @@ async fn command_driven_tests_terminal_copy_key_and_ctrl_c() {
 // ---------------------------------------------------------------------------------------------
 
 const GUARD_HELP: &str = "Tests run features through their command, not key presses: start a feature with \
-`app.test_execute(Command::..)`. Press a Ctrl, Cmd or Alt key only when the test is about key handling \
+`app.test_execute(Command::..)` (jmux: `app.run(Command::..)`). Press a Ctrl, Cmd or Alt key only when the test is about key handling \
 (a focused field, a shell tab, an overlay), and then through `app.press_bound(Command::..)`, never a raw \
 platform key. To keep a press, add the line with its reason to the guard's allowlist in \
-jed/src/command_driven_tests.rs.";
+jed/src/command_driven_tests.rs (jmux's tests: `app.run(..)`, `app.press_bound(..)`).";
 
-/// Single presses that stay: (path under `jed/src`, text of the line, reason). The guard fails
+/// Single presses that stay: (path from the repository root, text of the line, reason). The guard fails
 /// on an entry whose line is gone.
 const ALLOWED_LINES: &[(&str, &str, &str)] = &[
     (
-        "fuzz_tests.rs",
+        "jed/src/fuzz_tests.rs",
         "0..=24 => app.press(KEYS[r.below(KEYS.len())]",
         "the fuzzer presses random keys with random modifiers on purpose",
     ),
     (
-        "fuzz_tests.rs",
+        "jed/src/fuzz_tests.rs",
         "app.press(K::Char(c), mods)",
         "the fuzzer presses random keys with random modifiers on purpose",
     ),
     (
-        "fuzz_tests.rs",
+        "jed/src/fuzz_tests.rs",
         "55..=57 => app.press(K::F(",
         "the fuzzer presses random keys with random modifiers on purpose",
     ),
     (
-        "shell_tests.rs",
+        "jed/src/shell_tests.rs",
         "app.press(KeyCode::Char('c'), KeyModifiers::CONTROL);",
         "the test is about the key: a shell tab's Ctrl+C is the program's SIGINT on every platform",
     ),
     (
-        "term_select_tests.rs",
+        "jed/src/term_select_tests.rs",
         "app.press(KeyCode::Char('c'), KeyModifiers::CONTROL);",
         "the test is about the key: Ctrl+C never copies a terminal selection on any platform",
     ),
     (
-        "milestone12_tests.rs",
+        "jed/src/milestone12_tests.rs",
         "app.press(KeyCode::Char('c'), M::CONTROL);",
         "the test is about the key: a task's terminal gets Ctrl+C as an interrupt on every platform, not as jed's copy",
     ),
     (
-        "milestone9_tests.rs",
+        "jed/src/milestone9_tests.rs",
         "app.press(K::Char('@'), M::CONTROL); // a legacy terminal's Ctrl+Space",
         "the test is about the key: a legacy terminal sends Ctrl+Space as Ctrl+@, no default binding",
     ),
     (
-        "todo_tests.rs",
+        "jed/src/todo_tests.rs",
         "app.press(K::Char('y'), M::CONTROL);",
         "the test's own keybindings.toml binds ctrl+y: the key is the subject, it is no default binding",
     ),
     (
-        "todo_tests.rs",
+        "jed/src/todo_tests.rs",
         "app.press(K::Char('k'), M::CONTROL);",
         "the test's own keybindings.toml binds ctrl+k in the find context",
     ),
     (
-        "todo_tests.rs",
+        "jed/src/todo_tests.rs",
         "app.press(K::Char('h'), M::CONTROL | M::ALT);",
         "the live-reload test's keybindings.toml binds ctrl+alt+h",
     ),
     (
-        "todo_tests.rs",
+        "jed/src/todo_tests.rs",
         "app.press(paste.code, paste.mods);",
         "the key the keymap binds to Paste (none on macOS, where Cmd+V is the terminal's): the field takes it",
     ),
     (
-        "todo_tests.rs",
+        "jed/src/todo_tests.rs",
         "app.press(K::Char('a'), M::CONTROL); // select all in the editor",
         "no binding in the context menu: the test is that a key the menu does not bind is swallowed",
     ),
     (
-        "milestone5_tests.rs",
+        "jed/src/milestone5_tests.rs",
         "app.press(save_key.code, save_key.mods);",
         "the test's keybindings.toml rebinds file.save: the default Save key is pressed to show it no longer saves",
     ),
     (
-        "milestone5_tests.rs",
+        "jed/src/milestone5_tests.rs",
         "app.press(K::Char('s'), M::CONTROL | M::ALT);",
         "the key the test's keybindings.toml binds to file.save",
     ),
     (
-        "milestone5_tests.rs",
+        "jed/src/milestone5_tests.rs",
         "app.press(sidebar_key.code, sidebar_key.mods);",
         "the test's keybindings.toml binds the side bar key to palette.next in the palette context only",
     ),
     (
-        "milestone6_tests.rs",
+        "jed/src/milestone6_tests.rs",
         "app.press(K::Char('n'), M::CONTROL);",
         "the test's keybindings.toml binds ctrl+n to find.next in the find context; the editor's own Ctrl+N is checked after",
     ),
     (
-        "milestone7_tests.rs",
+        "jed/src/milestone7_tests.rs",
         "app.press(K::Char('t'), M::CONTROL);",
         "the test's keybindings.toml binds ctrl+t to search.toggleCase in the search context",
     ),
     (
-        "milestone7_tests.rs",
+        "jed/src/milestone7_tests.rs",
         "app.press(default_toggle.code, default_toggle.mods);",
         "the default toggle key, which the test's keybindings.toml has taken the command from",
     ),
     (
-        "keys_tests.rs",
+        "jed/src/keys_tests.rs",
         "app.press(K::Char('k'), M::ALT);",
         "Alt+K is the Keyboard Shortcuts view's record key: it is no command binding",
     ),
     (
-        "keys_tests.rs",
+        "jmux/src/jmux_server_tests.rs",
+        "KeyEvent::new(code, modifiers)",
+        "a key sent over the wire to a real server (client to server path): the key is the subject",
+    ),
+    (
+        "jmux/src/jmux_server_tests.rs",
+        "c.press(KeyCode::Char('D'), KeyModifiers::CONTROL | KeyModifiers::SHIFT)",
+        "the detach key over the wire to a real server (client to server path): the key is the subject",
+    ),
+    (
+        "jmux/src/jmux_server_tests.rs",
+        "c.press(KeyCode::Char('d'), KeyModifiers::CONTROL)",
+        "Ctrl+D over the wire to a real server: the shell's end of input ends the session",
+    ),
+    (
+        "jmux/src/jmux_server_tests.rs",
+        "Event::Key(KeyEvent::new(",
+        "a key sent over the wire to a real server (client to server path): the key is the subject (the detach key)",
+    ),
+    (
+        "jmux/src/app.rs",
+        "app.press(KeyCode::Char('d'), KeyModifiers::CONTROL)",
+        "plain Ctrl+D is the shell's: the test is that it does not detach",
+    ),
+    (
+        "jmux/src/jmux_commands_tests.rs",
+        "h.app.press(KeyCode::Char('b'), KeyModifiers::CONTROL)",
+        "plain Ctrl+B is the shell's: the test is that it does not toggle the side bar",
+    ),
+    (
+        "jmux/src/jmux_commands_tests.rs",
+        "h.app.press(KeyCode::Char('c'), KeyModifiers::CONTROL)",
+        "a Ctrl chord no command binds is swallowed by the focused side bar, never sent to the shell",
+    ),
+    (
+        "jmux/src/jmux_layout_tests.rs",
+        "h.app.press(KeyCode::Char('d'), KeyModifiers::CONTROL)",
+        "plain Ctrl+D is the shell's end of input, and the close question swallows it",
+    ),
+    (
+        "jmux/src/jmux_layout_tests.rs",
+        "h.app.press(KeyCode::Char('n'), KeyModifiers::CONTROL)",
+        "the close question swallows Ctrl chords: Ctrl+N is not No",
+    ),
+    (
+        "jmux/src/jmux_layout_tests.rs",
+        "h.app.press(KeyCode::Char('y'), KeyModifiers::CONTROL)",
+        "the close question swallows Ctrl chords: Ctrl+Y is not Yes",
+    ),
+    (
+        "jmux/src/jmux_layout_tests.rs",
+        "h.app.press(KeyCode::Char('c'), KeyModifiers::CONTROL)",
+        "Ctrl+C with the search bar open goes to no program: no command binds it there",
+    ),
+    (
+        "jmux/src/jmux_config_tests.rs",
+        "h.app.press(old.code, old.mods)",
+        "the default split key, which the test's keybindings.toml has taken the command from",
+    ),
+    (
+        "jmux/src/jmux_config_tests.rs",
+        "h.app.press(KeyCode::Char('k'), ctrl_alt())",
+        "the key the test's keybindings.toml binds to the command",
+    ),
+    (
+        "jed/src/keys_tests.rs",
         "app.press(code, mods);",
         "the key recorded by the Keyboard Shortcuts view's record mode: the key is the subject",
     ),
 ];
 
-/// Every `.rs` under `jed/src` with its path relative to it (`/`-separated), except this file.
+/// Every `.rs` under `jed/src` and `jmux/src` with its path relative to the repository root
+/// (`/`-separated), except the two routing suites (this file and jmux's), which press keys on purpose.
 fn sources() -> Vec<(String, String)> {
     fn walk(dir: &Path, base: &Path, out: &mut Vec<(String, String)>) {
         let mut entries: Vec<_> = fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect();
@@ -776,15 +845,17 @@ fn sources() -> Vec<(String, String)> {
                 walk(&path, base, out);
             } else if path.extension().is_some_and(|e| e == "rs") {
                 let rel = path.strip_prefix(base).unwrap().to_string_lossy().replace('\\', "/");
-                if rel != "command_driven_tests.rs" {
+                if rel != "jed/src/command_driven_tests.rs" && rel != "jmux/src/command_driven_tests.rs" {
                     out.push((rel, fs::read_to_string(&path).unwrap()));
                 }
             }
         }
     }
-    let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let base = crate::test_util::repo_root();
     let mut out = Vec::new();
-    walk(&base, &base, &mut out);
+    for krate in ["jed", "jmux"] {
+        walk(&base.join(krate).join("src"), base, &mut out);
+    }
     out
 }
 
@@ -831,17 +902,29 @@ fn plain_modifiers(expr: &str) -> bool {
     })
 }
 
-/// The `.press(code, mods)` calls in `src` whose modifiers aren't plainly none / Shift: (1-based
+/// The calls a file's raw key presses go through: `.press(code, mods)` everywhere, and in jmux's
+/// test files (which have no `press` on their own harnesses any more) also `KeyEvent::new(..)`,
+/// `.key_with(..)` and the like.
+fn press_patterns(path: &str) -> &'static [&'static str] {
+    if path.starts_with("jmux/") && path.ends_with("_tests.rs") {
+        &[".press(", ".key_with(", "KeyEvent::new("]
+    } else {
+        &[".press("]
+    }
+}
+
+/// The press calls (`patterns`) in `src` whose modifiers aren't plainly none / Shift: (1-based
 /// line, the call's first line trimmed). Calls inside `//` comment lines are skipped.
-fn flagged_presses(src: &str) -> Vec<(usize, String)> {
+fn flagged_presses(src: &str, patterns: &[&str]) -> Vec<(usize, String)> {
     let mut out = Vec::new();
     let mut offset = 0;
     for (n, line) in src.split_inclusive('\n').enumerate() {
         let trimmed = line.trim_start();
+        let found = patterns.iter().find_map(|pat| line.find(pat).map(|at| (at, pat.len())));
         if !trimmed.starts_with("//")
-            && let Some(at) = line.find(".press(")
+            && let Some((at, len)) = found
         {
-            let from = offset + at + ".press(".len();
+            let from = offset + at + len;
             let (args, _) = call_args(&src[from..]);
             if let Some(mods) = second_arg(args)
                 && !plain_modifiers(mods)
@@ -856,7 +939,7 @@ fn flagged_presses(src: &str) -> Vec<(usize, String)> {
 
 #[test]
 fn command_driven_tests_guard_finds_platform_key_presses() {
-    let flagged = |src: &str| flagged_presses(src).len();
+    let flagged = |src: &str| flagged_presses(src, &[".press("]).len();
     // The task's example: flagged until it is `test_execute`.
     assert_eq!(flagged("app.press(KeyCode::Char('s'), KeyModifiers::CONTROL);"), 1);
     assert_eq!(flagged("app.test_execute(Command::Save);"), 0);
@@ -884,9 +967,18 @@ fn command_driven_tests_guard_finds_platform_key_presses() {
         1
     );
     assert_eq!(
-        flagged_presses("x\n  a.press(K::Left, M::ALT);").first().map(|f| f.0),
+        flagged_presses("x\n  a.press(K::Left, M::ALT);", &[".press("])
+            .first()
+            .map(|f| f.0),
         Some(2)
     );
+}
+
+#[test]
+fn command_driven_tests_guard_finds_jmux_key_events() {
+    let src = "let ev = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);\nh.key_with(KeyCode::Left, m);\nKeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);\n";
+    assert_eq!(flagged_presses(src, press_patterns("jmux/src/x_tests.rs")).len(), 2);
+    assert_eq!(flagged_presses(src, press_patterns("jed/src/x_tests.rs")).len(), 0);
 }
 
 /// The guard's check over `files` (path, source) against `allowed`: the presses it flags that
@@ -895,7 +987,7 @@ fn guard_problems(files: &[(String, String)], allowed: &[(&str, &str, &str)]) ->
     let mut problems = Vec::new();
     let mut lines_used: HashSet<(&str, &str)> = HashSet::new();
     for (path, src) in files {
-        let mut flagged = flagged_presses(src);
+        let mut flagged = flagged_presses(src, press_patterns(path));
         flagged.retain(|(_, text)| {
             allowed
                 .iter()

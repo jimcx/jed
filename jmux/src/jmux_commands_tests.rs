@@ -27,7 +27,7 @@ use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crossterm::event::{Event as Input, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{Event as Input, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use jtui::stream_backend::StreamBackend;
 use ratatui::Terminal;
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
@@ -162,35 +162,15 @@ impl Harness {
             .collect()
     }
 
-    /// The key bound to `command` on this platform, pressed.
-    fn command(&mut self, command: Command) {
-        let combo = self.app.keymap.binding_for(command).expect("a default key");
-        self.key_with(combo.code, combo.mods);
-    }
-
-    fn key_with(&mut self, code: KeyCode, mods: KeyModifiers) {
-        let msg = ClientMsg::Input(Input::Key(KeyEvent::new(code, mods)));
-        self.app.handle(AppEvent::Client { conn: 1, msg });
-    }
-
-    fn mouse(&mut self, kind: MouseEventKind, column: u16, row: u16) {
-        let msg = ClientMsg::Input(Input::Mouse(MouseEvent {
-            kind,
-            column,
-            row,
-            modifiers: KeyModifiers::NONE,
-        }));
-        self.app.handle(AppEvent::Client { conn: 1, msg });
-    }
-
     fn click(&mut self, column: u16, row: u16) {
-        self.mouse(MouseEventKind::Down(MouseButton::Left), column, row);
-        self.mouse(MouseEventKind::Up(MouseButton::Left), column, row);
+        self.app
+            .send_mouse(MouseEventKind::Down(MouseButton::Left), column, row);
+        self.app.send_mouse(MouseEventKind::Up(MouseButton::Left), column, row);
     }
 
     /// Shows the side bar and waits for it to be drawn.
     async fn show_side(&mut self) {
-        self.app.execute(Command::Side(SideCommand::Toggle));
+        self.app.run(Command::Side(SideCommand::Toggle));
         self.settle("the side bar", |h| h.app.hit.side.is_some()).await;
     }
 
@@ -286,11 +266,11 @@ async fn jmux_commands_a_rows_of_two_terminals_interleave_by_time() {
     h.fake("one", 0, 0);
     h.settle("one", |h| h.rows().len() == 1 && !h.app.history.rows()[0].running())
         .await;
-    h.app.execute(Command::NewTerminal);
+    h.app.run(Command::NewTerminal);
     h.fake("two", 0, 0);
     h.settle("two", |h| h.rows().len() == 2 && !h.app.history.rows()[0].running())
         .await;
-    h.app.execute(Command::PrevTab);
+    h.app.run(Command::PrevTab);
     h.fake("three", 0, 3);
     h.settle("three", |h| h.rows().len() == 3 && !h.app.history.rows()[0].running())
         .await;
@@ -310,7 +290,7 @@ async fn jmux_commands_a_a_closed_terminals_rows_stay_marked_and_a_running_one_e
     h.fake("keep", 0, 0);
     h.settle("keep", |h| h.rows().len() == 1 && !h.app.history.rows()[0].running())
         .await;
-    h.app.execute(Command::NewTerminal);
+    h.app.run(Command::NewTerminal);
     h.fake("done", 0, 0);
     h.settle("done", |h| h.rows().len() == 2 && !h.app.history.rows()[0].running())
         .await;
@@ -320,9 +300,9 @@ async fn jmux_commands_a_a_closed_terminals_rows_stay_marked_and_a_running_one_e
     })
     .await;
     // A running command asks first.
-    h.app.execute(Command::CloseTerminal);
+    h.app.run(Command::CloseTerminal);
     assert!(h.app.confirm.is_some());
-    h.app.execute(Command::ConfirmYes);
+    h.app.run(Command::ConfirmYes);
     h.settle("the tab closed", |h| h.app.groups.tab_count() == 1).await;
     assert_eq!(
         h.rows(),
@@ -387,7 +367,7 @@ async fn jmux_commands_a_install_writes_the_snippet_and_the_init_line_once_and_s
     let d = dirs(tmp.path());
     let mut h = Harness::new(zsh.to_str().unwrap(), Some(d.clone()), COMMAND_HISTORY).await;
     h.settle("the missing notice", |h| h.app.notice.is_some()).await;
-    h.app.execute(Command::InstallShellIntegration);
+    h.app.run(Command::InstallShellIntegration);
     h.settle("the install notice", |h| {
         h.status_row().contains("Added to ~/.zshrc") || h.app.notice.as_deref().is_some_and(|n| n.starts_with("Added"))
     })
@@ -397,7 +377,7 @@ async fn jmux_commands_a_install_writes_the_snippet_and_the_init_line_once_and_s
     let snippet = std::fs::read_to_string(d.state.join("shell-integration.zsh")).unwrap();
     assert!(snippet.contains("JMUX"), "the guard is jmux's");
     // Again: the snippet is refreshed, the line is not added twice.
-    h.app.execute(Command::InstallShellIntegration);
+    h.app.run(Command::InstallShellIntegration);
     h.settle("the second notice", |h| {
         h.app.notice.as_deref().is_some_and(|n| n.starts_with("Updated"))
     })
@@ -408,7 +388,7 @@ async fn jmux_commands_a_install_writes_the_snippet_and_the_init_line_once_and_s
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_commands_a_closing_a_tab_keeps_a_finish_the_app_had_not_seen() {
     let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
-    h.app.execute(Command::NewTerminal);
+    h.app.run(Command::NewTerminal);
     h.fake("late", 0, 7);
     // Wait on the run itself, not the app: no event is handled meanwhile, so the history has
     // not seen the finish when the tab closes.
@@ -424,7 +404,7 @@ async fn jmux_commands_a_closing_a_tab_keeps_a_finish_the_app_had_not_seen() {
         assert!(Instant::now() < until, "the run never finished the command");
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    h.app.execute(Command::CloseTerminal);
+    h.app.run(Command::CloseTerminal);
     assert_eq!(h.app.groups.tab_count(), 1, "the tab closed without a question");
     assert_eq!(h.rows(), [row("late", '✗', "sh (2)", true)]);
 }
@@ -439,8 +419,8 @@ async fn jmux_commands_a_the_integration_is_checked_once_per_session() {
     h.key(KeyCode::Char(' '));
     assert_eq!(h.app.notice, None);
     // More terminals start; a second check would show the notice again.
-    h.app.execute(Command::NewTerminal);
-    h.app.execute(Command::NewTerminal);
+    h.app.run(Command::NewTerminal);
+    h.app.run(Command::NewTerminal);
     let until = Instant::now() + Duration::from_millis(500);
     while Instant::now() < until {
         h.step().await;
@@ -494,10 +474,10 @@ async fn jmux_commands_b_rows_of_two_terminals_interleave_by_time_on_screen() {
     h.show_side().await;
     h.fake("one", 0, 0);
     finished(&mut h, 1).await;
-    h.app.execute(Command::NewTerminal);
+    h.app.run(Command::NewTerminal);
     h.fake("two", 0, 0);
     finished(&mut h, 2).await;
-    h.app.execute(Command::PrevTab);
+    h.app.run(Command::PrevTab);
     h.fake("three", 0, 0);
     finished(&mut h, 3).await;
     h.settle("all three drawn", |h| {
@@ -521,7 +501,7 @@ async fn jmux_commands_b_clicking_an_old_row_in_the_other_group_focuses_it_and_s
     h.prompted().await;
     h.fake_out("old", 60);
     finished(&mut h, 1).await;
-    h.app.execute(Command::SplitRight);
+    h.app.run(Command::SplitRight);
     let second = h.app.groups.active;
     assert_ne!(first, second);
     h.prompted().await;
@@ -564,10 +544,10 @@ async fn jmux_commands_b_a_lost_command_only_focuses_with_a_notice() {
 async fn jmux_commands_b_a_closed_terminals_rows_are_dimmed_and_do_nothing() {
     let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
     h.show_side().await;
-    h.app.execute(Command::NewTerminal);
+    h.app.run(Command::NewTerminal);
     h.fake_out("gone", 3);
     finished(&mut h, 1).await;
-    h.app.execute(Command::CloseTerminal);
+    h.app.run(Command::CloseTerminal);
     h.settle("the row is closed", |h| h.rows().first().is_some_and(|r| r.3))
         .await;
     h.settle("the dimmed row", |h| {
@@ -588,7 +568,7 @@ async fn jmux_commands_b_a_closed_terminals_rows_are_dimmed_and_do_nothing() {
         .await;
     let y = h.side_row_of("gone").unwrap() as u16;
     let (group, before) = (h.app.groups.active, h.app.groups.active_group().active);
-    h.app.execute(Command::Side(SideCommand::Focus));
+    h.app.run(Command::Side(SideCommand::Focus));
     h.click(5, y);
     assert_eq!(h.app.notice, None);
     assert_eq!(h.app.groups.active, group);
@@ -603,7 +583,7 @@ async fn jmux_commands_b_a_closed_terminals_rows_are_dimmed_and_do_nothing() {
     );
     assert!(h.app.side.focused, "the click did not hand the keys to the shell");
     // Enter on it does nothing either.
-    h.app.execute(Command::Side(SideCommand::Focus));
+    h.app.run(Command::Side(SideCommand::Focus));
     h.key(KeyCode::Enter);
     assert!(h.app.side.focused, "Enter on a closed row keeps the bar's keys");
     assert_eq!(h.app.notice, None);
@@ -620,7 +600,7 @@ async fn jmux_commands_b_the_filter_narrows_the_list() {
     }
     h.settle("rows drawn", |h| h.side_has("beta")).await;
     assert!(h.side_has("Filter"), "the placeholder");
-    h.app.execute(Command::Side(SideCommand::Focus));
+    h.app.run(Command::Side(SideCommand::Focus));
     h.key(KeyCode::Char('a'));
     h.key(KeyCode::Char('l'));
     h.settle("narrowed", |h| {
@@ -681,40 +661,39 @@ async fn jmux_commands_b_keys_move_the_selection_open_a_row_and_hand_the_keys_ba
     finished(&mut h, 1).await;
     h.fake_out("second", 3);
     finished(&mut h, 2).await;
-    let none = KeyModifiers::NONE;
     // Ctrl+Shift+E (Cmd+Shift+E) shows the bar and gives it the keys; Ctrl+Shift+B (Cmd+B) hides it.
-    h.command(Command::Side(SideCommand::Focus));
+    h.app.run(Command::Side(SideCommand::Focus));
     assert!(h.app.side.visible && h.app.side.focused);
-    h.key_with(KeyCode::Down, none);
+    h.app.press(KeyCode::Down, KeyModifiers::NONE);
     assert_eq!(h.app.history.selected().unwrap().label(), "second");
-    h.key_with(KeyCode::Down, none);
+    h.app.press(KeyCode::Down, KeyModifiers::NONE);
     assert_eq!(h.app.history.selected().unwrap().label(), "first");
-    h.key_with(KeyCode::Up, none);
+    h.app.press(KeyCode::Up, KeyModifiers::NONE);
     assert_eq!(h.app.history.selected().unwrap().label(), "second");
-    h.key_with(KeyCode::End, none);
+    h.app.press(KeyCode::End, KeyModifiers::NONE);
     assert_eq!(h.app.history.selected().unwrap().label(), "first");
-    h.key_with(KeyCode::Home, none);
+    h.app.press(KeyCode::Home, KeyModifiers::NONE);
     assert_eq!(h.app.history.selected().unwrap().label(), "second");
-    h.key_with(KeyCode::PageDown, none);
+    h.app.press(KeyCode::PageDown, KeyModifiers::NONE);
     assert_eq!(h.app.history.selected().unwrap().label(), "first");
-    h.key_with(KeyCode::PageUp, none);
+    h.app.press(KeyCode::PageUp, KeyModifiers::NONE);
     assert_eq!(h.app.history.selected().unwrap().label(), "second");
     // Typing goes to the filter, never to the shell.
     h.key(KeyCode::Char('s'));
     assert_eq!(h.app.side.filter.text, "s");
     // Enter opens the selected row and the terminal has the keys again.
-    h.key_with(KeyCode::Enter, none);
+    h.app.press(KeyCode::Enter, KeyModifiers::NONE);
     assert!(!h.app.side.focused);
     assert_eq!(h.app.notice, None);
     // Esc gives the keys back without opening anything.
-    h.command(Command::Side(SideCommand::Focus));
+    h.app.run(Command::Side(SideCommand::Focus));
     assert!(h.app.side.focused);
-    h.key_with(KeyCode::Esc, none);
+    h.app.press(KeyCode::Esc, KeyModifiers::NONE);
     assert!(!h.app.side.focused && h.app.side.visible);
-    h.command(Command::Side(SideCommand::Toggle));
+    h.app.run(Command::Side(SideCommand::Toggle));
     assert!(!h.app.side.visible);
     // Plain Ctrl+B stays the shell's.
-    h.key_with(KeyCode::Char('b'), KeyModifiers::CONTROL);
+    h.app.press(KeyCode::Char('b'), KeyModifiers::CONTROL);
     assert!(!h.app.side.visible);
 }
 
@@ -736,18 +715,18 @@ async fn jmux_commands_b_dragging_the_border_resizes_the_bar_and_the_shells() {
             .get()
     };
     h.settle("the shell fits", |h| cols(h) == 100 - 33 - 1).await;
-    h.mouse(MouseEventKind::Down(MouseButton::Left), 32, 5);
-    h.mouse(MouseEventKind::Drag(MouseButton::Left), 40, 5);
+    h.app.send_mouse(MouseEventKind::Down(MouseButton::Left), 32, 5);
+    h.app.send_mouse(MouseEventKind::Drag(MouseButton::Left), 40, 5);
     h.settle("the bar is wider", |h| h.app.side.width == 40).await;
-    h.mouse(MouseEventKind::Up(MouseButton::Left), 40, 5);
+    h.app.send_mouse(MouseEventKind::Up(MouseButton::Left), 40, 5);
     h.settle("the shell follows", |h| cols(h) == 100 - 41 - 1).await;
     // Too far: the groups keep their room; too narrow: the minimum.
-    h.mouse(MouseEventKind::Down(MouseButton::Left), 40, 5);
-    h.mouse(MouseEventKind::Drag(MouseButton::Left), 99, 5);
+    h.app.send_mouse(MouseEventKind::Down(MouseButton::Left), 40, 5);
+    h.app.send_mouse(MouseEventKind::Drag(MouseButton::Left), 99, 5);
     assert_eq!(h.app.side.width, 100 - 20 - 1);
-    h.mouse(MouseEventKind::Drag(MouseButton::Left), 0, 5);
+    h.app.send_mouse(MouseEventKind::Drag(MouseButton::Left), 0, 5);
     assert_eq!(h.app.side.width, 12);
-    h.mouse(MouseEventKind::Up(MouseButton::Left), 0, 5);
+    h.app.send_mouse(MouseEventKind::Up(MouseButton::Left), 0, 5);
     assert!(h.app.drag.is_none());
 }
 
@@ -762,19 +741,19 @@ async fn jmux_commands_b_the_wheel_and_scroll_bar_move_a_long_list() {
         .await;
     let thumb = h.app.hit.side.as_ref().unwrap().scroll.thumb;
     assert!(thumb.is_some(), "a scroll bar thumb");
-    h.mouse(MouseEventKind::ScrollDown, 5, 5);
+    h.app.send_mouse(MouseEventKind::ScrollDown, 5, 5);
     assert_eq!(h.app.history.scroll(), 3);
-    h.mouse(MouseEventKind::ScrollUp, 5, 5);
+    h.app.send_mouse(MouseEventKind::ScrollUp, 5, 5);
     assert_eq!(h.app.history.scroll(), 0);
     // A press below the thumb on the track jumps the list down.
     let track = h.app.hit.side.as_ref().unwrap().scroll.track;
-    h.mouse(
+    h.app.send_mouse(
         MouseEventKind::Down(MouseButton::Left),
         track.x,
         track.y + track.height - 1,
     );
     assert!(h.app.history.scroll() > 0);
-    h.mouse(
+    h.app.send_mouse(
         MouseEventKind::Up(MouseButton::Left),
         track.x,
         track.y + track.height - 1,
@@ -809,7 +788,7 @@ async fn jmux_commands_b_the_tick_does_not_redraw_without_a_client() {
     h.fake("a", 0, 0);
     finished(&mut h, 1).await;
     h.show_side().await;
-    h.app.execute(Command::Detach);
+    h.app.run(Command::Detach);
     h.app.needs_redraw = false;
     h.app.handle(AppEvent::Tick);
     assert!(!h.app.needs_redraw, "no client: no frame");
@@ -819,11 +798,11 @@ async fn jmux_commands_b_the_tick_does_not_redraw_without_a_client() {
 async fn jmux_commands_b_keys_typed_in_the_bar_never_reach_the_shell() {
     let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
     h.show_side().await;
-    h.app.execute(Command::Side(SideCommand::Focus));
+    h.app.run(Command::Side(SideCommand::Focus));
     for ch in "zzq".chars() {
         h.key(KeyCode::Char(ch));
     }
-    h.key_with(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    h.app.press(KeyCode::Char('c'), KeyModifiers::CONTROL);
     h.key(KeyCode::Tab);
     h.key(KeyCode::F(5));
     assert!(h.app.side.focused);
@@ -846,7 +825,8 @@ async fn jmux_commands_b_the_close_question_has_the_keys_over_a_focused_bar() {
     h.settle("running", |h| h.app.history.rows().iter().any(|r| r.running()))
         .await;
     h.show_side().await;
-    h.app.execute(Command::Side(SideCommand::Focus));
+    h.app.run(Command::Side(SideCommand::Focus));
+    // Not through `run`: the key path hands the bar's keys back first; the question is asked of a still focused bar.
     h.app.execute(Command::CloseTerminal);
     assert!(h.app.confirm.is_some());
     h.key(KeyCode::Char('n'));
@@ -859,7 +839,7 @@ async fn jmux_commands_b_the_close_question_has_the_keys_over_a_focused_bar() {
 async fn jmux_commands_b_a_paste_into_the_focused_bar_goes_to_the_filter() {
     let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
     h.show_side().await;
-    h.app.execute(Command::Side(SideCommand::Focus));
+    h.app.run(Command::Side(SideCommand::Focus));
     let msg = ClientMsg::Input(Input::Paste("ab\ncd".into()));
     h.app.handle(AppEvent::Client { conn: 1, msg });
     assert_eq!(h.app.side.filter.text, "abcd");

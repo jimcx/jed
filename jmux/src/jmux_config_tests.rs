@@ -157,14 +157,6 @@ impl Harness {
         self.screen.screen().rows(0, 100).nth(23).unwrap_or_default()
     }
 
-    fn press(&mut self, code: crossterm::event::KeyCode, mods: crossterm::event::KeyModifiers) {
-        let key = crossterm::event::KeyEvent::new(code, mods);
-        self.app.handle(AppEvent::Client {
-            conn: 1,
-            msg: ClientMsg::Input(Input::Key(key)),
-        });
-    }
-
     async fn settle(&mut self, what: &str, done: impl Fn(&Harness) -> bool) {
         let deadline = Instant::now() + WAIT;
         self.step().await;
@@ -194,7 +186,7 @@ impl Harness {
     /// Reloads and waits for the notice it ends with.
     async fn reload(&mut self) -> String {
         self.app.notice = None;
-        self.app.execute(Command::ReloadSettings);
+        self.app.run(Command::ReloadSettings);
         self.settle("the reload's notice", |h| h.app.notice.is_some()).await;
         self.app.notice.clone().unwrap()
     }
@@ -249,7 +241,7 @@ async fn jmux_config_a_reload_changes_the_next_terminal_only() {
     assert_eq!(h.reload().await, "Settings reloaded");
     assert_eq!(h.app.side.width, 40);
     assert_eq!(h.last_tab().0, "sh", "the running terminal keeps its shell");
-    h.app.execute(Command::NewTerminal);
+    h.app.run(Command::NewTerminal);
     h.settle("the second shell's marker", |h| {
         h.screen_text().contains("marker-second")
     })
@@ -275,7 +267,7 @@ async fn jmux_config_a_reload_without_a_settings_path_says_so() {
     let mut h = Harness::new("").await;
     h.app.config.settings_path = None;
     h.app.config.keybindings_path = None;
-    h.app.execute(Command::ReloadSettings);
+    h.app.run(Command::ReloadSettings);
     assert!(h.app.notice.as_deref().unwrap().contains("No settings file"));
 }
 
@@ -287,15 +279,16 @@ fn ctrl_alt() -> crossterm::event::KeyModifiers {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_config_b_a_user_binding_for_split_right_works_and_the_default_key_stops() {
-    use crossterm::event::{KeyCode, KeyModifiers};
+    use crossterm::event::KeyCode;
     let mut h = Harness::with_keys("", Some(SPLIT_RIGHT_ON_CTRL_ALT_K)).await;
     assert!(h.app.notice.is_none(), "{:?}", h.app.notice);
     h.settle("the first shell", |h| h.app.groups.tabs().count() == 1).await;
     assert_eq!(h.app.groups.order().len(), 1);
     // The default key (Ctrl+\\) no longer splits.
-    h.press(KeyCode::Char('\\'), KeyModifiers::CONTROL);
+    let old = crate::keymap::keymap().binding_for(Command::SplitRight).unwrap();
+    h.app.press(old.code, old.mods);
     assert_eq!(h.app.groups.order().len(), 1);
-    h.press(KeyCode::Char('k'), ctrl_alt());
+    h.app.press(KeyCode::Char('k'), ctrl_alt());
     h.settle("a second group", |h| h.app.groups.order().len() == 2).await;
 }
 
@@ -309,7 +302,7 @@ async fn jmux_config_b_a_bad_binding_is_reported_and_the_others_apply() {
         notice.contains("keybindings.toml") && notice.contains("nope.nothing"),
         "{notice}"
     );
-    h.press(KeyCode::Char('k'), ctrl_alt());
+    h.app.press(KeyCode::Char('k'), ctrl_alt());
     h.settle("a second group", |h| h.app.groups.order().len() == 2).await;
 }
 
@@ -317,24 +310,24 @@ async fn jmux_config_b_a_bad_binding_is_reported_and_the_others_apply() {
 async fn jmux_config_b_reload_rereads_the_file_and_a_broken_file_keeps_the_old_keymap() {
     use crossterm::event::KeyCode;
     let mut h = Harness::new("").await;
-    h.press(KeyCode::Char('k'), ctrl_alt());
+    h.app.press(KeyCode::Char('k'), ctrl_alt());
     assert_eq!(h.app.groups.order().len(), 1, "unbound before the reload");
     std::fs::write(h.keys_file(), SPLIT_RIGHT_ON_CTRL_ALT_K).unwrap();
     assert_eq!(h.reload().await, "Settings reloaded");
-    h.press(KeyCode::Char('k'), ctrl_alt());
+    h.app.press(KeyCode::Char('k'), ctrl_alt());
     h.settle("a second group", |h| h.app.groups.order().len() == 2).await;
     // A file that does not parse: reported, the keymap from before stays.
     std::fs::write(h.keys_file(), "[[binding\n").unwrap();
     let notice = h.reload().await;
     assert!(notice.contains("keybindings.toml"), "{notice}");
-    h.press(KeyCode::Char('k'), ctrl_alt());
+    h.app.press(KeyCode::Char('k'), ctrl_alt());
     h.settle("a third group", |h| h.app.groups.order().len() == 3).await;
     // One bad binding in a parsable file: reported on a reload too, the good one still applies.
     let bad = format!("{SPLIT_RIGHT_ON_CTRL_ALT_K}\n[[binding]]\nkey = \"ctrl+alt+j\"\ncommand = \"nope.nothing\"\n");
     std::fs::write(h.keys_file(), bad).unwrap();
     let notice = h.reload().await;
     assert!(notice.contains("nope.nothing"), "{notice}");
-    h.press(KeyCode::Char('k'), ctrl_alt());
+    h.app.press(KeyCode::Char('k'), ctrl_alt());
     h.settle("a fourth group", |h| h.app.groups.order().len() == 4).await;
 }
 
@@ -353,14 +346,14 @@ async fn jmux_config_b_the_status_bar_shows_the_counts_and_they_update() {
     })
     .await;
     assert!(h.bar().contains("detach"), "{}", h.bar());
-    h.app.execute(Command::NewTerminal);
+    h.app.run(Command::NewTerminal);
     h.settle("2 terminals", |h| h.bar().contains("2 terminals")).await;
     // A running command (the codes the shell integration prints) shows, then goes.
     h.type_text("printf '\\033]133;B\\007'; sleep 2; printf '\\033]133;D;0\\007'");
     h.settle("1 running", |h| h.bar().contains("1 running")).await;
     h.settle("no longer running", |h| !h.bar().contains("running")).await;
     assert!(h.bar().contains("2 terminals"), "{}", h.bar());
-    h.app.execute(Command::CloseTerminal);
+    h.app.run(Command::CloseTerminal);
     h.settle("1 terminal again", |h| h.bar().contains("1 terminal ")).await;
 }
 

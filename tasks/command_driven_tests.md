@@ -1,8 +1,8 @@
 ---
 id: command_driven_tests
 name: Command-driven tests
-summary: jed's and jmux's tests run features through their `Command` instead of pressing platform keys; one light suite per app checks that every default key reaches its command, on each platform
-status: in-progress
+summary: jed's and jmux's tests run features through their `Command` instead of pressing platform keys; a routing suite per app (with a snapshot of each platform's default keys) checks that every key reaches its command, and a guard keeps new raw Ctrl / Cmd / Alt presses out
+status: done
 priority: 0
 dependencies: []
 ---
@@ -44,6 +44,10 @@ Tests keep breaking on one platform because they press keys that only one platfo
     - changing one default binding in `keymap::defaults` (e.g. Save to Ctrl+Alt+S) fails only the routing suite's tests, not feature tests
     - removing a context binding that `press_bound` relies on fails with a message naming the command and context
     - each routing test's log matches exactly; the special-case tests show each interception
+    - What it changed: `App::press_bound` / `press_field_key` / `test_dispatch_log` (jed), `jmux/src/test_harness.rs` (`App::run`, `press_bound`, `press`, `type_text`, `send_mouse`, `send_input`) and jmux's `test_dispatch_log` / `dispatch_key_command` / `context()` / `take_keys_back`; `jed/src/command_driven_tests.rs` and `jmux/src/command_driven_tests.rs` with key snapshots `command_driven_keys.txt` (`JED_BLESS_KEYS=1` / `JMUX_BLESS_KEYS=1 scripts/check test default_keys`); one guard (jed's `guard_problems`, walking `jed/src` and `jmux/src`, exceptions in `ALLOWED_LINES` by repo path); `press_file_start` / `press_file_end` and every local `cmd()` removed.
+    - Also: helpers renamed after what they do (`milestone10_tests::focus_scm`, `milestone13_tests::open_recent_picker`); a key press clears `app.message` (jed) / the notice (jmux) and `test_execute` doesn't, `run` does.
+    - Deferred: as above (the other platform's keymap at the app level; user `keybindings.toml` in the routing suite); jed's Suggest, CodeActions, Commit, Task and Composer contexts aren't routed by the suite (their key tests use `press_bound`); `press_calls` checks a `press_bound` command is bound in some context, not at each call site's context.
+    - Still to check by hand: the macOS CI run on the merge request (nothing was run on macOS locally).
   - Subtasks (one agent and one commit each):
     - ✅ command_driven_tests-a: the helpers (`press_bound`, the record switch), the routing suite (keymap level on both platforms, app level per context, the special cases), the guard with an allowlist of every file not yet migrated, and the docs (the root and `app/` `CLAUDE.md`s, `testing.md`, both `task.md` commands), so tests written from now on follow the rule. Migrates no feature tests
         - Done: `App::press_bound(cmd)` (app/mod.rs; palette key first, then by label; panics naming the command, context and keys tried) and the `#[cfg(test)] test_dispatch_log` record switch (`dispatch_key_command` in `handle_event`'s keymap branch), plus `test_context()` / `test_field_takes(cmd)`. `keymap::default_list(platform)` (test-only) exposes the raw list. `press_file_start` / `press_file_end` are still there for d.
@@ -60,4 +64,4 @@ Tests keep breaking on one platform because they press keys that only one platfo
     - ✅ command_driven_tests-d: migrate the terminal, tools and review tests (`term_area`, `term_select`, `shell`, `clear_scrollback`, `kitty_recent`, `tools`, `mr_review_tests` and its modules, `review_*_tests`) and the tests inside `app/` modules; the allowlist keeps only the routing suite and listed exceptions; remove `press_file_start` / `press_file_end` if unused; check both platforms on CI
         - Done: the terminal, tools, review, fuzz and `app/` tests are migrated; `press_file_start` / `press_file_end` are gone (callers run `Move { DocStart / DocEnd }`); no `fn cmd()` is left in `jed/src`. `ALLOWED_FILES` is deleted: the guard (`guard_problems`, unit-tested including a stale entry) keeps only `ALLOWED_LINES` (fuzz's random modifiers, Ctrl+C to a program, test-owned `keybindings.toml` keys, recorded keys). `press_bound` stays where the context isn't routed by the suite (Task, Composer: `test_submit` / ReviewSaveComment) or the key is the subject (shell scroll keys, `term_select_tests::press_terminal_copy`). Link clicks use CONTROL (the handlers take CONTROL or SUPER on every platform).
         - macOS not run locally: CI on the MR checks it.
-    - command_driven_tests-e: jmux: the shared harness module (`run`, `press_bound`) replacing the four `command()` copies, its record switch and routing suite, migrate its tests, extend the guard to `jmux/src` (with the server tests' wire keys allowlisted), the jmux lines in `docs/dev/crates.md`; check both platforms on CI; mark the task ✅
+    - ✅ command_driven_tests-e: jmux: the shared harness module (`run`, `press_bound`) replacing the four `command()` copies, its record switch and routing suite, migrate its tests, extend the guard to `jmux/src` (with the server tests' wire keys allowlisted), the jmux lines in `docs/dev/crates.md`; check both platforms on CI; mark the task ✅

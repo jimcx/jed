@@ -162,7 +162,17 @@ directory, tests pass a temp dir) and the server:
   with `client::attach` (`Attached`: events in a channel, output into a parser). `jmux/tests/cli.rs` runs the binary
   (`CARGO_BIN_EXE_jmux`, env via `Command::env`): `kill -9` of the server, `ls`, kill / rename, the `$JMUX` refusal.
   `jmux/src/jmux_layout_tests.rs` drives an `App` in-process (`Harness`: `settle` runs the event loop's steps until a
-  condition, keys via `command(Command)` from the keymap, a `vt100` screen fed by the connection's `Output`) with real shells.
+  condition, a `vt100` screen fed by the connection's `Output`) with real shells.
+  Every harness shares `jmux/src/test_harness.rs`, methods on `App` (`#[cfg(test)]`, sending as the attached client): `run(Command)`
+  (what `App::key` does around a command, minus the key: the side bar gives the keys back for a terminal command, then `execute`),
+  `press_bound(Command)` (the key `lookup` resolves to it in the current context; panics naming command and context),
+  `press(code, mods)`, `type_text`, `send_mouse`, `send_input`. **New tests run the command (`app.run(Command::..)`)**; they press a
+  Ctrl / Cmd / Alt key only when the test is about key handling, and then with `press_bound`, never a raw platform key.
+  Key routing is tested once, in `jmux/src/command_driven_tests.rs` (keymap level on both platforms, one app per context with the
+  record switch `App::test_dispatch_log` on and every applicable binding pressed, the dispatch's special cases; the snapshot
+  `command_driven_keys.txt` is rewritten with `JMUX_BLESS_KEYS=1 scripts/check test default_keys`). jed's guard test
+  (`jed/src/command_driven_tests.rs`) covers `jmux/src` too: a `.press(` (or `KeyEvent::new(`) with Ctrl / Cmd / Alt in any other
+  file fails unless its `ALLOWED_LINES` entry says why (the server tests' keys over the wire, the shell's plain Ctrl+letters).
 
 ## Rules
 

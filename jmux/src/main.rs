@@ -23,6 +23,8 @@ mod ui;
 mod ui_side;
 
 #[cfg(test)]
+mod command_driven_tests;
+#[cfg(test)]
 mod jmux_commands_tests;
 #[cfg(test)]
 mod jmux_config_tests;
@@ -34,6 +36,8 @@ mod jmux_server_tests;
 mod jmux_tabs_at_bottom_tests;
 #[cfg(test)]
 mod jmux_touch_tests;
+#[cfg(test)]
+mod test_harness;
 
 use std::path::PathBuf;
 

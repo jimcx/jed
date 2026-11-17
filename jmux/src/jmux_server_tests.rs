@@ -185,7 +185,7 @@ impl Client {
         }
     }
 
-    async fn key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+    async fn press(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         self.send(ClientMsg::Input(Event::Key(KeyEvent::new(code, modifiers))))
             .await;
     }
@@ -194,7 +194,7 @@ impl Client {
     async fn type_text(&mut self, text: &str) {
         for ch in text.chars() {
             let code = if ch == '\r' { KeyCode::Enter } else { KeyCode::Char(ch) };
-            self.key(code, KeyModifiers::NONE).await;
+            self.press(code, KeyModifiers::NONE).await;
         }
     }
 
@@ -301,7 +301,7 @@ async fn jmux_server_keeps_running_after_a_detach_and_keeps_the_screen() {
     let mut c = Client::attach(&server.socket, 20, 60).await;
     c.type_text("echo kept-$((5+5))\r").await;
     c.wait_text("kept-10").await;
-    c.key(KeyCode::Char('D'), KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+    c.press(KeyCode::Char('D'), KeyModifiers::CONTROL | KeyModifiers::SHIFT)
         .await;
     assert_eq!(c.wait_bye().await, ByeReason::Detached);
     // Still listening; the same screen comes back, and output while away is not lost.
@@ -377,7 +377,7 @@ async fn jmux_server_ctrl_d_without_shift_goes_to_the_shell() {
     c.type_text("echo ready-$((1+1))\r").await;
     c.wait_text("ready-2").await;
     // End of input at an empty prompt makes `sh` exit: the session ends, nobody detached.
-    c.key(KeyCode::Char('d'), KeyModifiers::CONTROL).await;
+    c.press(KeyCode::Char('d'), KeyModifiers::CONTROL).await;
     assert_eq!(c.wait_bye().await, ByeReason::SessionEnded);
     server.join().unwrap();
 }
@@ -533,14 +533,14 @@ impl Attached {
         self.events.send(Ok(event)).unwrap();
     }
 
-    fn key(&self, code: KeyCode, modifiers: KeyModifiers) {
+    fn press(&self, code: KeyCode, modifiers: KeyModifiers) {
         self.send(Event::Key(KeyEvent::new(code, modifiers)));
     }
 
     fn type_text(&self, text: &str) {
         for ch in text.chars() {
             let code = if ch == '\r' { KeyCode::Enter } else { KeyCode::Char(ch) };
-            self.key(code, KeyModifiers::NONE);
+            self.press(code, KeyModifiers::NONE);
         }
     }
 

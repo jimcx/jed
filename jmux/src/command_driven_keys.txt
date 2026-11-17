@@ -1,0 +1,188 @@
+linux Confirm Enter ConfirmYes
+linux Confirm Esc ConfirmNo
+linux Confirm N ConfirmNo
+linux Confirm Y ConfirmYes
+linux Search Alt+C Search(ToggleCase)
+linux Search Backspace Field(DeleteLeft)
+linux Search Ctrl+A Field(SelectAll)
+linux Search Ctrl+Backspace Field(DeleteWordLeft)
+linux Search Ctrl+Delete Field(DeleteWordRight)
+linux Search Ctrl+Left Field(Move { motion: WordLeft, select: false })
+linux Search Ctrl+Right Field(Move { motion: WordRight, select: false })
+linux Search Ctrl+Shift+Left Field(Move { motion: WordLeft, select: true })
+linux Search Ctrl+Shift+Right Field(Move { motion: WordRight, select: true })
+linux Search Ctrl+U Field(DeleteToStart)
+linux Search Delete Field(DeleteRight)
+linux Search End Field(Move { motion: End, select: false })
+linux Search Enter Search(Next)
+linux Search Esc Search(Close)
+linux Search F3 Search(Next)
+linux Search Home Field(Move { motion: Start, select: false })
+linux Search Left Field(Move { motion: Left, select: false })
+linux Search Right Field(Move { motion: Right, select: false })
+linux Search Shift+Backspace Field(DeleteLeft)
+linux Search Shift+End Field(Move { motion: End, select: true })
+linux Search Shift+Enter Search(Previous)
+linux Search Shift+F3 Search(Previous)
+linux Search Shift+Home Field(Move { motion: Start, select: true })
+linux Search Shift+Left Field(Move { motion: Left, select: true })
+linux Search Shift+Right Field(Move { motion: Right, select: true })
+linux Side Backspace Field(DeleteLeft)
+linux Side Ctrl+A Field(SelectAll)
+linux Side Ctrl+Backspace Field(DeleteWordLeft)
+linux Side Ctrl+Delete Field(DeleteWordRight)
+linux Side Ctrl+Left Field(Move { motion: WordLeft, select: false })
+linux Side Ctrl+Right Field(Move { motion: WordRight, select: false })
+linux Side Ctrl+U Field(DeleteToStart)
+linux Side Delete Field(DeleteRight)
+linux Side Down Side(Down)
+linux Side End Side(Last)
+linux Side Enter Side(Open)
+linux Side Esc Side(Back)
+linux Side Home Side(First)
+linux Side Left Field(Move { motion: Left, select: false })
+linux Side PageDown Side(PageDown)
+linux Side PageUp Side(PageUp)
+linux Side Right Field(Move { motion: Right, select: false })
+linux Side Shift+Backspace Field(DeleteLeft)
+linux Side Shift+Left Field(Move { motion: Left, select: true })
+linux Side Shift+Right Field(Move { motion: Right, select: true })
+linux Side Up Side(Up)
+linux Terminal Alt+1 GoToTab(1)
+linux Terminal Alt+2 GoToTab(2)
+linux Terminal Alt+3 GoToTab(3)
+linux Terminal Alt+4 GoToTab(4)
+linux Terminal Alt+5 GoToTab(5)
+linux Terminal Alt+6 GoToTab(6)
+linux Terminal Alt+7 GoToTab(7)
+linux Terminal Alt+8 GoToTab(8)
+linux Terminal Alt+9 GoToTab(9)
+linux Terminal Alt+Shift+Down FocusSide(Down)
+linux Terminal Alt+Shift+Left FocusSide(Left)
+linux Terminal Alt+Shift+Right FocusSide(Right)
+linux Terminal Alt+Shift+Up FocusSide(Up)
+linux Terminal Ctrl+1 FocusGroup(1)
+linux Terminal Ctrl+2 FocusGroup(2)
+linux Terminal Ctrl+3 FocusGroup(3)
+linux Terminal Ctrl+4 FocusGroup(4)
+linux Terminal Ctrl+5 FocusGroup(5)
+linux Terminal Ctrl+6 FocusGroup(6)
+linux Terminal Ctrl+7 FocusGroup(7)
+linux Terminal Ctrl+8 FocusGroup(8)
+linux Terminal Ctrl+Alt+\ SplitDown
+linux Terminal Ctrl+End ScrollBottom
+linux Terminal Ctrl+Home ScrollTop
+linux Terminal Ctrl+PageDown NextTab
+linux Terminal Ctrl+PageUp PrevTab
+linux Terminal Ctrl+Shift+, FocusPreviousGroup
+linux Terminal Ctrl+Shift+. FocusNextGroup
+linux Terminal Ctrl+Shift+B Side(Toggle)
+linux Terminal Ctrl+Shift+C Copy
+linux Terminal Ctrl+Shift+Down ScrollDown
+linux Terminal Ctrl+Shift+E Side(Focus)
+linux Terminal Ctrl+Shift+F Search(Open)
+linux Terminal Ctrl+Shift+T NewTerminal
+linux Terminal Ctrl+Shift+Up ScrollUp
+linux Terminal Ctrl+Shift+W CloseTerminal
+linux Terminal Ctrl+\ SplitRight
+linux Terminal Ctrl+` NewTerminal
+linux Terminal Shift+PageDown PageDown
+linux Terminal Shift+PageUp PageUp
+linux global Ctrl+Shift+D Detach
+linux global Ctrl+Shift+I InstallShellIntegration
+linux global Ctrl+Shift+R ReloadSettings
+macos Confirm Enter ConfirmYes
+macos Confirm Esc ConfirmNo
+macos Confirm N ConfirmNo
+macos Confirm Y ConfirmYes
+macos Search Alt+Backspace Field(DeleteWordLeft)
+macos Search Alt+Delete Field(DeleteWordRight)
+macos Search Alt+Left Field(Move { motion: WordLeft, select: false })
+macos Search Alt+Right Field(Move { motion: WordRight, select: false })
+macos Search Alt+Shift+Left Field(Move { motion: WordLeft, select: true })
+macos Search Alt+Shift+Right Field(Move { motion: WordRight, select: true })
+macos Search Backspace Field(DeleteLeft)
+macos Search Cmd+A Field(SelectAll)
+macos Search Cmd+Alt+C Search(ToggleCase)
+macos Search Cmd+Backspace Field(DeleteToStart)
+macos Search Cmd+Left Field(Move { motion: Start, select: false })
+macos Search Cmd+Right Field(Move { motion: End, select: false })
+macos Search Delete Field(DeleteRight)
+macos Search End Field(Move { motion: End, select: false })
+macos Search Enter Search(Next)
+macos Search Esc Search(Close)
+macos Search F3 Search(Next)
+macos Search Home Field(Move { motion: Start, select: false })
+macos Search Left Field(Move { motion: Left, select: false })
+macos Search Right Field(Move { motion: Right, select: false })
+macos Search Shift+Backspace Field(DeleteLeft)
+macos Search Shift+End Field(Move { motion: End, select: true })
+macos Search Shift+Enter Search(Previous)
+macos Search Shift+F3 Search(Previous)
+macos Search Shift+Home Field(Move { motion: Start, select: true })
+macos Search Shift+Left Field(Move { motion: Left, select: true })
+macos Search Shift+Right Field(Move { motion: Right, select: true })
+macos Side Alt+Backspace Field(DeleteWordLeft)
+macos Side Alt+Delete Field(DeleteWordRight)
+macos Side Alt+Left Field(Move { motion: WordLeft, select: false })
+macos Side Alt+Right Field(Move { motion: WordRight, select: false })
+macos Side Backspace Field(DeleteLeft)
+macos Side Cmd+A Field(SelectAll)
+macos Side Cmd+Backspace Field(DeleteToStart)
+macos Side Delete Field(DeleteRight)
+macos Side Down Side(Down)
+macos Side End Side(Last)
+macos Side Enter Side(Open)
+macos Side Esc Side(Back)
+macos Side Home Side(First)
+macos Side Left Field(Move { motion: Left, select: false })
+macos Side PageDown Side(PageDown)
+macos Side PageUp Side(PageUp)
+macos Side Right Field(Move { motion: Right, select: false })
+macos Side Shift+Backspace Field(DeleteLeft)
+macos Side Shift+Left Field(Move { motion: Left, select: true })
+macos Side Shift+Right Field(Move { motion: Right, select: true })
+macos Side Up Side(Up)
+macos Terminal Cmd+1 FocusGroup(1)
+macos Terminal Cmd+2 FocusGroup(2)
+macos Terminal Cmd+3 FocusGroup(3)
+macos Terminal Cmd+4 FocusGroup(4)
+macos Terminal Cmd+5 FocusGroup(5)
+macos Terminal Cmd+6 FocusGroup(6)
+macos Terminal Cmd+7 FocusGroup(7)
+macos Terminal Cmd+8 FocusGroup(8)
+macos Terminal Cmd+Alt+Down FocusSide(Down)
+macos Terminal Cmd+Alt+Left FocusSide(Left)
+macos Terminal Cmd+Alt+Right FocusSide(Right)
+macos Terminal Cmd+Alt+Up FocusSide(Up)
+macos Terminal Cmd+Alt+\ SplitDown
+macos Terminal Cmd+B Side(Toggle)
+macos Terminal Cmd+C Copy
+macos Terminal Cmd+F Search(Open)
+macos Terminal Cmd+Shift+E Side(Focus)
+macos Terminal Cmd+T NewTerminal
+macos Terminal Cmd+W CloseTerminal
+macos Terminal Cmd+\ SplitRight
+macos Terminal Ctrl+1 GoToTab(1)
+macos Terminal Ctrl+2 GoToTab(2)
+macos Terminal Ctrl+3 GoToTab(3)
+macos Terminal Ctrl+4 GoToTab(4)
+macos Terminal Ctrl+5 GoToTab(5)
+macos Terminal Ctrl+6 GoToTab(6)
+macos Terminal Ctrl+7 GoToTab(7)
+macos Terminal Ctrl+8 GoToTab(8)
+macos Terminal Ctrl+9 GoToTab(9)
+macos Terminal Ctrl+End ScrollBottom
+macos Terminal Ctrl+Home ScrollTop
+macos Terminal Ctrl+PageDown NextTab
+macos Terminal Ctrl+PageUp PrevTab
+macos Terminal Ctrl+Shift+, FocusPreviousGroup
+macos Terminal Ctrl+Shift+. FocusNextGroup
+macos Terminal Ctrl+Shift+Down ScrollDown
+macos Terminal Ctrl+Shift+Up ScrollUp
+macos Terminal Ctrl+` NewTerminal
+macos Terminal Shift+PageDown PageDown
+macos Terminal Shift+PageUp PageUp
+macos global Ctrl+Shift+D Detach
+macos global Ctrl+Shift+I InstallShellIntegration
+macos global Ctrl+Shift+R ReloadSettings

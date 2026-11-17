@@ -169,6 +169,10 @@ pub struct App {
     /// What the last frame drew where (`ui::render`), for the mouse.
     pub hit: HitMap,
     pub confirm: Option<Confirm>,
+    /// Tests: when set, `key` records the command a key resolved to here instead of running it
+    /// (the routing suite, `command_driven_tests.rs`).
+    #[cfg(test)]
+    pub test_dispatch_log: Option<Vec<Command>>,
     /// A one-line message in place of the status bar's title, until the next key.
     pub notice: Option<String>,
     /// The commands of every terminal, running and finished (`history`).
@@ -198,7 +202,7 @@ pub struct App {
     conns: HashMap<u64, Conn>,
     /// Writers of connections told `Bye`: `shutdown` waits for them so the message is delivered.
     closing: Vec<JoinHandle<()>>,
-    attached: Option<u64>,
+    pub(crate) attached: Option<u64>,
     /// The attached client asked for the touch layout (`--touch`); false while none is attached.
     pub touch: bool,
     /// The attached client's screen: rows, columns.
@@ -281,6 +285,8 @@ impl App {
             keymap,
             hit: HitMap::default(),
             confirm: None,
+            #[cfg(test)]
+            test_dispatch_log: None,
             notice,
             integration_checked: false,
             integration_missing: false,
@@ -790,14 +796,10 @@ impl App {
         }
     }
 
-    fn key(&mut self, key: KeyEvent) {
-        if key.kind == KeyEventKind::Release {
-            return;
-        }
-        if self.notice.take().is_some() {
-            self.needs_redraw = true;
-        }
-        let context = if self.confirm.is_some() {
+    /// The context keys are looked up in now: the close question, the focused side bar, the open
+    /// search bar, else the terminal.
+    pub(crate) fn context(&self) -> Context {
+        if self.confirm.is_some() {
             Context::Confirm
         } else if self.side.focused {
             Context::Side
@@ -805,7 +807,43 @@ impl App {
             Context::Search
         } else {
             Context::Terminal
-        };
+        }
+    }
+
+    /// A terminal command (new tab, split, scrolling, ...) takes the keys back from the bar.
+    pub(crate) fn take_keys_back(&mut self, context: Context, command: Command) {
+        if context == Context::Side
+            && !matches!(
+                command,
+                Command::Side(_)
+                    | Command::Field(_)
+                    | Command::Detach
+                    | Command::InstallShellIntegration
+                    | Command::ReloadSettings
+            )
+        {
+            self.side.focused = false;
+        }
+    }
+
+    /// Runs the command a key resolved to (under `cfg(test)` with `test_dispatch_log` set: records it).
+    fn dispatch_key_command(&mut self, command: Command) {
+        #[cfg(test)]
+        if let Some(log) = self.test_dispatch_log.as_mut() {
+            log.push(command);
+            return;
+        }
+        self.execute(command);
+    }
+
+    fn key(&mut self, key: KeyEvent) {
+        if key.kind == KeyEventKind::Release {
+            return;
+        }
+        if self.notice.take().is_some() {
+            self.needs_redraw = true;
+        }
+        let context = self.context();
         if let Some(command) = self.keymap.lookup(&key, context) {
             // A held key repeats nothing but the tab cycling.
             let repeats = matches!(
@@ -816,20 +854,8 @@ impl App {
                     | Command::Side(SideCommand::Up | SideCommand::Down | SideCommand::PageUp | SideCommand::PageDown)
             );
             if key.kind == KeyEventKind::Press || repeats {
-                // A terminal command (new tab, split, scrolling, ...) takes the keys back from the bar.
-                if context == Context::Side
-                    && !matches!(
-                        command,
-                        Command::Side(_)
-                            | Command::Field(_)
-                            | Command::Detach
-                            | Command::InstallShellIntegration
-                            | Command::ReloadSettings
-                    )
-                {
-                    self.side.focused = false;
-                }
-                self.execute(command);
+                self.take_keys_back(context, command);
+                self.dispatch_key_command(command);
             }
             return;
         }
@@ -1314,10 +1340,6 @@ mod tests {
 
     use super::*;
 
-    fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
-        KeyEvent::new(code, modifiers)
-    }
-
     /// An app with no shell and a connection 1 that said hello with a queue of `cap`; the receiver
     /// plays the writer task's queue, and the writer itself never finishes by itself.
     async fn attached_app(cap: usize) -> (App, tokio::sync::mpsc::Receiver<ServerMsg>, Terminal<StreamBackend>) {
@@ -1357,23 +1379,14 @@ mod tests {
         rx
     }
 
-    fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
-        let msg = ClientMsg::Input(Input::Key(key(code, modifiers)));
-        app.handle(AppEvent::Client { conn: 1, msg });
-    }
-
     #[tokio::test]
     async fn ctrl_shift_d_detaches_and_plain_ctrl_d_does_not() {
         let (mut app, mut rx, _t) = attached_app(8).await;
         assert!(matches!(rx.try_recv(), Ok(ServerMsg::Welcome { .. })));
-        press(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL);
+        app.press(KeyCode::Char('d'), KeyModifiers::CONTROL);
         assert_eq!(app.attached, Some(1));
         assert!(rx.try_recv().is_err(), "Ctrl+D must not detach");
-        press(
-            &mut app,
-            KeyCode::Char('D'),
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-        );
+        app.press_bound(Command::Detach);
         assert_eq!(app.attached, None);
         assert!(matches!(
             rx.try_recv(),
@@ -1393,11 +1406,7 @@ mod tests {
             matches!(rx.try_recv(), Ok(ServerMsg::Output(b)) if !b.is_empty()),
             "an attached client gets a frame"
         );
-        press(
-            &mut app,
-            KeyCode::Char('d'),
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-        );
+        app.press_bound(Command::Detach);
         let _ = rx.try_recv();
         app.resize(12, 50);
         app.redraw(&mut terminal).unwrap();
@@ -1482,11 +1491,7 @@ mod tests {
             touch: false,
         };
         app.handle(AppEvent::Client { conn: 1, msg });
-        press(
-            &mut app,
-            KeyCode::Char('d'),
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-        );
+        app.press_bound(Command::Detach);
         let writers = app.shutdown();
         assert_eq!(
             writers.len(),

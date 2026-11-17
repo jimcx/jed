@@ -17,7 +17,7 @@ use std::num::NonZeroU16;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{Event as Input, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{MouseButton, MouseEventKind};
 use jtui::stream_backend::StreamBackend;
 use ratatui::Terminal;
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
@@ -138,36 +138,8 @@ impl Harness {
             .unwrap_or_default()
     }
 
-    fn input(&mut self, input: Input) {
-        self.app.handle(AppEvent::Client {
-            conn: 1,
-            msg: ClientMsg::Input(input),
-        });
-    }
-
-    fn command(&mut self, command: Command) {
-        let combo = self.app.keymap.binding_for(command).expect("a default key");
-        self.input(Input::Key(KeyEvent::new(combo.code, combo.mods)));
-    }
-
-    fn mouse(&mut self, kind: MouseEventKind, column: u16, row: u16) {
-        self.input(Input::Mouse(MouseEvent {
-            kind,
-            column,
-            row,
-            modifiers: KeyModifiers::NONE,
-        }));
-    }
-
     fn click(&mut self, button: MouseButton, column: u16, row: u16) {
-        self.mouse(MouseEventKind::Down(button), column, row);
-    }
-
-    fn type_text(&mut self, text: &str) {
-        for ch in text.chars() {
-            let code = if ch == '\n' { KeyCode::Enter } else { KeyCode::Char(ch) };
-            self.input(Input::Key(KeyEvent::new(code, KeyModifiers::NONE)));
-        }
+        self.app.send_mouse(MouseEventKind::Down(button), column, row);
     }
 
     /// Another client connects and says hello, taking the session over.
@@ -215,15 +187,16 @@ impl Harness {
     }
 
     async fn press_and_move(&mut self, from: (u16, u16), to: (u16, u16)) {
-        self.mouse(MouseEventKind::Down(MouseButton::Left), from.0, from.1);
-        self.mouse(MouseEventKind::Drag(MouseButton::Left), to.0, to.1);
+        self.app
+            .send_mouse(MouseEventKind::Down(MouseButton::Left), from.0, from.1);
+        self.app.send_mouse(MouseEventKind::Drag(MouseButton::Left), to.0, to.1);
         self.frame().await;
     }
 
     /// Opens tabs until there are `n`, waiting until the shells fit.
     async fn tabs(&mut self, n: usize) {
         for i in 1..n {
-            self.command(Command::NewTerminal);
+            self.app.run(Command::NewTerminal);
             self.settle("a new tab", |h| h.tab_count() == i + 1 && h.shells_fit())
                 .await;
         }
@@ -288,7 +261,7 @@ async fn jmux_touch_the_bar_is_three_rows_with_padded_tabs_at_the_bottom() {
 /// A tap (press and release) at the cell.
 fn tap(h: &mut Harness, x: u16, y: u16) {
     h.click(MouseButton::Left, x, y);
-    h.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+    h.app.send_mouse(MouseEventKind::Up(MouseButton::Left), x, y);
 }
 
 async fn taps_on_every_row_focus(bottom: bool) {
@@ -346,7 +319,7 @@ async fn jmux_touch_the_close_target_is_three_cells_on_all_three_rows() {
 async fn jmux_touch_closing_a_running_command_asks_first() {
     let mut h = Harness::new(16, 70, "", true).await;
     h.tabs(2).await;
-    h.type_text("printf '\\033]133;B\\a'; sleep 30\n");
+    h.app.type_text("printf '\\033]133;B\\a'; sleep 30\n");
     h.settle("a running command", |h| {
         h.app.groups.active_group().active_tab().is_some_and(|t| !t.idle)
     })
@@ -391,7 +364,7 @@ async fn jmux_touch_the_arrows_are_three_cells_and_scroll_an_overflowing_bar() {
         scrolled + 1,
         "forward at its far cell"
     );
-    h.mouse(MouseEventKind::ScrollUp, 10, 2);
+    h.app.send_mouse(MouseEventKind::ScrollUp, 10, 2);
     assert_eq!(
         h.app.groups.active_group().scroll,
         scrolled,
@@ -402,12 +375,12 @@ async fn jmux_touch_the_arrows_are_three_cells_and_scroll_an_overflowing_bar() {
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_touch_a_tab_drags_to_another_bar_and_to_a_terminal_half() {
     let mut h = Harness::new(20, 61, "", true).await;
-    h.command(Command::SplitRight);
+    h.app.run(Command::SplitRight);
     h.settle("two groups", |h| h.app.hit.groups.len() == 2 && h.shells_fit())
         .await;
     let (left, right) = (h.app.hit.groups[0].id, h.app.hit.groups[1].id);
-    h.command(Command::FocusSide(crate::group::Side::Left));
-    h.command(Command::NewTerminal);
+    h.app.run(Command::FocusSide(crate::group::Side::Left));
+    h.app.run(Command::NewTerminal);
     h.settle("two tabs on the left", |h| {
         h.app.groups.get(left).unwrap().tabs.len() == 2 && h.shells_fit()
     })
@@ -425,7 +398,7 @@ async fn jmux_touch_a_tab_drags_to_another_bar_and_to_a_terminal_half() {
     for y in 0..3 {
         assert_eq!(h.bg_at(gap, rbar.y + y), marker, "the marker on bar row {y}");
     }
-    h.mouse(MouseEventKind::Up(MouseButton::Left), end.0, end.1);
+    h.app.send_mouse(MouseEventKind::Up(MouseButton::Left), end.0, end.1);
     h.frame().await;
     assert_eq!(
         (
@@ -446,7 +419,7 @@ async fn jmux_touch_a_tab_drags_to_another_bar_and_to_a_terminal_half() {
     };
     h.press_and_move(from, (x, y)).await;
     assert_ne!(h.bg_at(x - 1, y), before, "the half is shaded");
-    h.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+    h.app.send_mouse(MouseEventKind::Up(MouseButton::Left), x, y);
     h.frame().await;
     h.settle("three groups, each shell sized", |h| {
         h.app.hit.groups.len() == 3 && h.shells_fit()
@@ -465,7 +438,7 @@ async fn jmux_touch_the_shells_are_two_rows_shorter_and_told_so() {
     // `shell_size` is what the program in the shell was told, not only the drawn area.
     let want = h.shell_size(id);
     assert_eq!(want, (10, 59));
-    h.command(Command::NewTerminal);
+    h.app.run(Command::NewTerminal);
     // Before any frame is drawn, the new shell has started at the touch size already.
     assert_eq!(h.app.groups.get(id).unwrap().tabs.len(), 2);
     assert_eq!(h.shell_size(id), want, "the size the new shell was started at");
@@ -562,11 +535,11 @@ async fn jmux_touch_a_hello_without_touch_is_accepted() {
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_touch_the_plus_opens_a_tab_in_its_group() {
     let mut h = Harness::new(20, 61, "", true).await;
-    h.command(Command::SplitRight);
+    h.app.run(Command::SplitRight);
     h.settle("two groups", |h| h.app.hit.groups.len() == 2 && h.shells_fit())
         .await;
     let (left, right) = (h.app.hit.groups[0].id, h.app.hit.groups[1].id);
-    h.command(Command::FocusSide(crate::group::Side::Left));
+    h.app.run(Command::FocusSide(crate::group::Side::Left));
     let g = h.app.hit.group(right).unwrap().clone();
     let plus = g.new_tab.clone().expect("a + on the right bar");
     assert_eq!(
