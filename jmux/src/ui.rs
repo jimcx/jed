@@ -89,7 +89,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
             Some(TabDrop::TabBar { group, index }) if group == id => Some(index),
             _ => None,
         };
-        let (tabs, arrows) = tabbar::render(f, bar, group, &app.theme, &metrics, focused, drop);
+        let crate::hit::BarHit { tabs, arrows, new_tab } =
+            tabbar::render(f, bar, group, &app.theme, &metrics, focused, drop);
         let (text, track) = shell_area(term);
         let mut scroll = ScrollBarHit::default();
         if let Some(shell) = group.active_tab() {
@@ -131,6 +132,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             scroll,
             tabs,
             arrows,
+            new_tab,
         });
     }
     // The dividers' lines, joined where they cross, and the side bar's border.

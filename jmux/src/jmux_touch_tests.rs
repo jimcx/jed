@@ -10,7 +10,8 @@
 //! bar and to a terminal half (`..._a_tab_drags_...`); the shells are two rows shorter than for a
 //! plain client (`..._shells_are_two_rows_shorter_...`); a plain client taking the session over
 //! gets the normal bar (`..._a_plain_client_taking_over_...`); a `Hello` without `touch` is
-//! accepted (`..._a_hello_without_touch_...`).
+//! accepted (`..._a_hello_without_touch_...`); a tap on any row of the `+` at the bar's right end
+//! opens a tab in that bar's group, and a plain client has no `+` (`..._the_plus_...`).
 
 use std::num::NonZeroU16;
 use std::path::PathBuf;
@@ -246,8 +247,8 @@ async fn jmux_touch_the_bar_is_three_rows_with_padded_tabs_at_the_top() {
     assert_eq!((g.bar.y, g.bar.height, g.term.y, g.term.height), (0, 3, 3, 10));
     assert_eq!(
         h.row(1).trim_end(),
-        "  sh ○  ×",
-        "two cells of padding at each end and round the x"
+        format!("{:<58}+", "  sh ○  ×"),
+        "two cells of padding at each end and round the x; the + in the middle of the bar's last 3"
     );
     assert_eq!(
         (h.row(0).trim(), h.row(2).trim()),
@@ -275,7 +276,7 @@ async fn jmux_touch_the_bar_is_three_rows_with_padded_tabs_at_the_bottom() {
         .await;
     let g = h.app.hit.groups[0].clone();
     assert_eq!((g.bar.y, g.bar.height, g.term.y, g.term.height), (10, 3, 0, 10));
-    assert_eq!(h.row(11).trim_end(), "  sh ○  ×");
+    assert_eq!(h.row(11).trim_end(), format!("{:<58}+", "  sh ○  ×"));
     assert_eq!((h.row(10).trim(), h.row(12).trim()), ("", ""));
     let t = g.tabs[0];
     let bg = h.bg_at(t.x0, 11);
@@ -367,7 +368,11 @@ async fn jmux_touch_the_arrows_are_three_cells_and_scroll_an_overflowing_bar() {
     .await;
     assert_eq!((h.row(0).trim(), h.row(2).trim()), ("", ""));
     let arrows = h.app.hit.groups[0].arrows.clone().unwrap();
-    assert_eq!((arrows.back.clone(), arrows.forward.clone()), (0..3, 37..40));
+    assert_eq!(
+        (arrows.back.clone(), arrows.forward.clone()),
+        (0..3, 34..37),
+        "the + keeps the last 3 cells"
+    );
     assert_eq!(
         h.row(1).chars().nth(1),
         Some('‹'),
@@ -380,7 +385,7 @@ async fn jmux_touch_the_arrows_are_three_cells_and_scroll_an_overflowing_bar() {
         assert_eq!(h.app.groups.active_group().scroll, before - 1 - n, "back at ({x}, {y})");
     }
     let scrolled = h.app.groups.active_group().scroll;
-    tap(&mut h, 39, 0);
+    tap(&mut h, 36, 0);
     assert_eq!(
         h.app.groups.active_group().scroll,
         scrolled + 1,
@@ -552,4 +557,42 @@ async fn jmux_touch_a_hello_without_touch_is_accepted() {
     h.app.handle(AppEvent::Client { conn: 3, msg });
     assert!(matches!(rx.try_recv(), Ok(ServerMsg::Welcome { .. })));
     assert!(!h.app.touch, "the old client's layout is the normal one");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_touch_the_plus_opens_a_tab_in_its_group() {
+    let mut h = Harness::new(20, 61, "", true).await;
+    h.command(Command::SplitRight);
+    h.settle("two groups", |h| h.app.hit.groups.len() == 2 && h.shells_fit())
+        .await;
+    let (left, right) = (h.app.hit.groups[0].id, h.app.hit.groups[1].id);
+    h.command(Command::FocusSide(crate::group::Side::Left));
+    let g = h.app.hit.group(right).unwrap().clone();
+    let plus = g.new_tab.clone().expect("a + on the right bar");
+    assert_eq!(
+        plus,
+        g.bar.x + g.bar.width - 3..g.bar.x + g.bar.width,
+        "the bar's last 3 cells"
+    );
+    h.frame().await;
+    assert_eq!(h.row(1).chars().nth(usize::from(plus.start + 1)), Some('+'));
+    let tabs = |h: &Harness, id| h.app.groups.get(id).unwrap().tabs.len();
+    for (n, (x, y)) in [(plus.start, 0), (plus.start + 1, 1), (plus.end - 1, 2)]
+        .into_iter()
+        .enumerate()
+    {
+        tap(&mut h, x, y);
+        assert_eq!(tabs(&h, right), n + 2, "a tab opened by the tap at ({x}, {y})");
+        assert_eq!(h.app.groups.active, right, "the right group is focused");
+        assert_eq!(h.app.groups.get(right).unwrap().active, n + 1, "the new tab is active");
+        h.settle("the new shell sized", |h| h.shells_fit()).await;
+    }
+    assert_eq!(tabs(&h, left), 1, "the left group is untouched");
+    tap(&mut h, plus.start - 1, 1);
+    assert_eq!(tabs(&h, right), 4, "the cell before the + opens nothing");
+
+    let mut plain = Harness::new(14, 60, "", false).await;
+    plain.frame().await;
+    assert!(plain.app.hit.groups[0].new_tab.is_none());
+    assert!(!plain.row(0).contains('+'), "no + in the normal bar");
 }

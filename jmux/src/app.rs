@@ -942,7 +942,17 @@ impl App {
                     g.scroll_tabs(if forward { 1 } else { -1 });
                 }
             }
-            Some(Hit::Tab { group, .. } | Hit::Close { group, .. } | Hit::Arrow { group, .. } | Hit::Bar { group }) => {
+            Some(Hit::NewTab { group }) if down(MouseButton::Left) => {
+                self.groups.active = group;
+                self.new_terminal(group);
+            }
+            Some(
+                Hit::Tab { group, .. }
+                | Hit::Close { group, .. }
+                | Hit::Arrow { group, .. }
+                | Hit::NewTab { group }
+                | Hit::Bar { group },
+            ) => {
                 // The wheel over a bar scrolls its tabs; a click elsewhere on it focuses the group.
                 match m.kind {
                     MouseEventKind::ScrollUp | MouseEventKind::ScrollLeft => {

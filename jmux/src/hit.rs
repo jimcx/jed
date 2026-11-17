@@ -23,6 +23,16 @@ pub struct TabArrows {
     pub forward: Range<u16>,
 }
 
+/// Where `tabbar::render` put a bar's tabs, its arrows (when it overflows) and its `+` (the
+/// touch layout's).
+#[derive(Debug, Clone, Default)]
+pub struct BarHit {
+    pub tabs: Vec<TabHit>,
+    pub arrows: Option<TabArrows>,
+    /// The `+`'s x range (half-open).
+    pub new_tab: Option<Range<u16>>,
+}
+
 /// One group's bar and terminal area.
 #[derive(Debug, Clone, Default)]
 pub struct GroupHit {
@@ -36,6 +46,8 @@ pub struct GroupHit {
     pub scroll: ScrollBarHit,
     pub tabs: Vec<TabHit>,
     pub arrows: Option<TabArrows>,
+    /// The `+` that opens a tab in this group (touch layout only).
+    pub new_tab: Option<Range<u16>>,
 }
 
 /// The side bar as drawn.
@@ -78,6 +90,10 @@ pub enum Hit {
     Arrow {
         group: GroupId,
         forward: bool,
+    },
+    /// The `+` at the end of a group's bar (touch layout).
+    NewTab {
+        group: GroupId,
     },
     /// A group's bar beside its tabs.
     Bar {
@@ -144,6 +160,9 @@ impl HitMap {
             if !contains(g.bar, x, y) {
                 continue;
             }
+            if g.new_tab.as_ref().is_some_and(|r| r.contains(&x)) {
+                return Some(Hit::NewTab { group });
+            }
             if let Some(a) = &g.arrows {
                 if a.back.contains(&x) {
                     return Some(Hit::Arrow { group, forward: false });
@@ -202,6 +221,7 @@ mod tests {
                     back: 0..1,
                     forward: 29..30,
                 }),
+                new_tab: None,
             }],
             dividers: Vec::new(),
             side: None,

@@ -14,7 +14,7 @@ default member, so plain `cargo build --release` builds only `target/release/jed
 `jterm` depends on `jtui`; neither depends on jed or jmux.
 
 `jtui` holds: `paths` (per-app XDG dirs, `~` display, `file:line:col`), `url`, `socket` (socket dir
-for a pid), `clipboard` (arboard / OSC 52 / in-process `memory()`, `base64`, `osc52_sequence(text)`: the OSC 52 bytes for a process that sends them on, as jmux's server does), `clicks` (`ClickTracker`: single / double / triple), `tabs` (`TabMetrics { rows, pad, close, arrow }`, `NORMAL` and `TOUCH`: a tab bar's height, padding and target widths, `tab_width(title)`; jmux's bars read it, jed's touch layout will), `terminal` (host terminal
+for a pid), `clipboard` (arboard / OSC 52 / in-process `memory()`, `base64`, `osc52_sequence(text)`: the OSC 52 bytes for a process that sends them on, as jmux's server does), `clicks` (`ClickTracker`: single / double / triple), `tabs` (`TabMetrics { rows, pad, close, arrow, new_tab }`, `NORMAL` and `TOUCH`: a tab bar's height, padding and target widths (`new_tab`: the `+` at the bar's end, 0 for none), `tab_width(title)`; jmux's bars read it, jed's touch layout will), `terminal` (host terminal
 setup, `Identity`, `CursorShape`), `scrollbar` (model) and `scrollbar_draw` (bars and marks, colours via the
 `style::Styles` trait: `Theme` implements it), `field` (`TextField`) with `field_draw` (`draw_field`: one input row, scrolled, placeholder, selection) and `text` (its `&str` grapheme and word
 steps), `context_menu` (generic over the command type; jed aliases it to `Command`), `split` (the split tree,
@@ -139,7 +139,7 @@ directory, tests pass a temp dir) and the server:
   Ctrl+Shift+D detach; jed's `cmd` is Ctrl / Cmd: `cmd+\` split right, `cmd+alt+\` down, `cmd+1..8` group N,
   Ctrl+Shift+, / . previous / next group, Alt+Shift+arrows (Cmd+Alt on macOS) focus by side; `keymap::load` / `reload` put `keybindings.toml` over them, jed's file format via `Keymap::load`/`reload`), `group` (`Group` = tabs + active + bar scroll; `Groups` over
   `jtui::split::SplitTree`, an emptied group leaves the tree), `hit` (`HitMap` with the dividers / `Hit`, written by
-  `ui::render`), `tab_drag`, `tabbar` (` title × ` tabs by `jtui::tabs::TabMetrics`, `App::touch` / `tab_metrics()` picks the touch one, state glyph colours, `‹ ›` overflow arrows),
+  `ui::render`), `tab_drag`, `tabbar` (` title × ` tabs by `jtui::tabs::TabMetrics`, `App::touch` / `tab_metrics()` picks the touch one, state glyph colours, `‹ ›` overflow arrows, the touch layout's `+`),
   `ui` (`render(f, &mut App)`: each group's tab bar and terminal, the dividers (`jtui::borders`), above a one-row status bar: session name / title / detach
   hint from the keymap), `theme` (the only file
   with colours: `jterm::draw::KEYS` + `statusBar*` over `widget_entries`), `logging` (`<state dir>/jmux/logs/<name>-<pid>.log`,

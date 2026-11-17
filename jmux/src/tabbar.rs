@@ -3,7 +3,7 @@
 //! prompt, `●` while a command runs, in `tab.shellError` after a failure). Tabs wider than the bar
 //! scroll: `‹` / `›` at its ends (dimmed when there's nothing more that way), the wheel and the
 //! arrows move it a tab at a time, and it jumps back to the active tab only when that (or the
-//! bar's width) changes.
+//! bar's width) changes. The touch layout ends the bar in a `+` that opens a tab in its group.
 
 use jtui::tabs::TabMetrics;
 use jtui::theme::Theme;
@@ -12,11 +12,11 @@ use ratatui::layout::Rect;
 use unicode_width::UnicodeWidthStr;
 
 use crate::group::Group;
-use crate::hit::{TabArrows, TabHit};
+use crate::hit::{BarHit, TabArrows, TabHit};
 
 /// Draws the bar into `area` (`metrics.rows` tall: the title and `×` on its middle row, the other
-/// rows filled with each tab's background); returns where its tabs and arrows landed. `drop` is
-/// the gap a dragged tab would land in, marked with one cell across the bar's rows.
+/// rows filled with each tab's background); returns where its tabs, arrows and `+` landed. `drop`
+/// is the gap a dragged tab would land in, marked with one cell across the bar's rows.
 pub fn render(
     f: &mut Frame,
     area: Rect,
@@ -25,16 +25,32 @@ pub fn render(
     metrics: &TabMetrics,
     focused: bool,
     drop: Option<usize>,
-) -> (Vec<TabHit>, Option<TabArrows>) {
+) -> BarHit {
     // A group squeezed out of a tiny window can lie outside the frame.
-    let area = area.intersection(f.area());
+    let mut area = area.intersection(f.area());
     let out = f.buffer_mut();
     out.set_style(area, theme.get("tabBar"));
-    if area.width == 0 || area.height == 0 || group.tabs.is_empty() {
-        return (Vec::new(), None);
+    if area.width == 0 || area.height == 0 {
+        return BarHit::default();
+    }
+    let text_y = area.y + metrics.text_row(area.height);
+    // The `+` takes the bar's right end; the tabs and arrows share what's left.
+    let mut new_tab = None;
+    if metrics.new_tab > 0 && area.width > metrics.new_tab {
+        area.width -= metrics.new_tab;
+        let x = area.x + area.width;
+        let style = theme.get("tab.scrollArrow");
+        out.set_style(Rect::new(x, area.y, metrics.new_tab, area.height), style);
+        out.set_string(x + metrics.new_tab / 2, text_y, "+", style);
+        new_tab = Some(x..x + metrics.new_tab);
+    }
+    if group.tabs.is_empty() {
+        return BarHit {
+            new_tab,
+            ..BarHit::default()
+        };
     }
     let width = |title: &str| metrics.tab_width(title.width() as u16);
-    let text_y = area.y + metrics.text_row(area.height);
     let widths: Vec<u32> = group.tabs.iter().map(|t| width(&t.title) as u32).collect();
     let total: u32 = widths.iter().sum();
 
@@ -147,5 +163,9 @@ pub fn render(
         let gap_x = gap_x.clamp(left, right.saturating_sub(1));
         out.set_style(Rect::new(gap_x, area.y, 1, area.height), theme.get("tab.dropMarker"));
     }
-    (hits, arrows)
+    BarHit {
+        tabs: hits,
+        arrows,
+        new_tab,
+    }
 }
