@@ -16,3 +16,5 @@ pub mod select;
 pub mod shell;
 pub mod shell_integration;
 pub mod spec;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;

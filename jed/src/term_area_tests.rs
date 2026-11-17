@@ -760,10 +760,11 @@ async fn shell_answers(app: &mut App, group: GroupId, n: u32) {
         .filter_map(|t| t.shell())
         .any(|s| {
             let text = s.run.screen().screen().contents();
-            // Typed before the prompt, the tty echoes the command first and the answer lands after
-            // the prompt (`$ `, or `# ` when the tests run as root, as in CI containers).
-            text.lines()
-                .any(|l| l.trim().trim_start_matches(['$', '#']).trim_start() == want)
+            // Typed before the prompt, the tty echoes the command first and the answer lands after the prompt.
+            text.lines().any(|l| {
+                let l = l.trim();
+                jterm::testing::after_prompt(l).unwrap_or(l) == want
+            })
         })
     };
     assert!(app.settle(seen).await, "no answer from the shell");

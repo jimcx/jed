@@ -159,7 +159,7 @@ async fn term_select_shell_drag_highlights_and_copy() {
     let prompts = |a: &App| {
         screen_text(a)
             .lines()
-            .filter(|l| l.trim_end().ends_with(['$', '#']))
+            .filter(|l| jterm::testing::ends_with_prompt(l))
             .count()
     };
     let before = prompts(&app);
@@ -1056,11 +1056,10 @@ fn send(app: &App, id: Option<RunId>, bytes: &[u8]) {
     assert!(run_of(app, id).write(bytes));
 }
 
-/// Waits for the shell's prompt (`$`, or `#` as root) on the last row (the output before it
-/// is all in).
+/// Waits for the shell's prompt on the last row (the output before it is all in).
 async fn at_prompt(app: &mut App, id: Option<RunId>) {
     assert!(
-        app.settle(|a| text_of(a, id).lines().last().is_some_and(|l| l.contains(['$', '#'])))
+        app.settle(|a| text_of(a, id).lines().last().is_some_and(jterm::testing::has_prompt))
             .await,
         "{}",
         text_of(app, id)

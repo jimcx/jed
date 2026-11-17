@@ -115,9 +115,11 @@ impl Harness {
         };
         h.attach(1);
         // Typing before the shell's first prompt races the prompt against the command's echo. The
-        // prompt is `$ ` (dash) or `sh-5.3$ ` (bash as sh).
-        h.settle("the shell's first prompt", |h| h.row(1).trim_end().ends_with('$'))
-            .await;
+        // prompt is `$ ` (dash) or `sh-5.3$ ` (bash as sh); `#` for either as root.
+        h.settle("the shell's first prompt", |h| {
+            jterm::testing::ends_with_prompt(&h.row(1))
+        })
+        .await;
         h
     }
 
@@ -621,12 +623,7 @@ async fn jmux_layout_a_plain_ctrl_d_reaches_the_shell_and_only_ctrl_shift_d_deta
     h.settle("a second tab", |h| h.tab_count() == 2).await;
     // Wait for the new shell's prompt: an EOF typed before its line editor starts is lost.
     h.settle("the second shell's prompt", |h| {
-        h.app.groups.active_group().tabs[1]
-            .run
-            .screen()
-            .screen()
-            .contents()
-            .contains('$')
+        jterm::testing::has_prompt(&h.app.groups.active_group().tabs[1].run.screen().screen().contents())
     })
     .await;
     // Ctrl+D is end of input to the shell: it exits and its tab goes; nobody is detached.
@@ -1369,8 +1366,7 @@ impl Harness {
     /// output) or a number below `below`.
     fn at_oldest(&self, below: u32) -> bool {
         let row = self.row(1);
-        row.split_once("$ ")
-            .is_some_and(|(_, line)| line.starts_with("seq 1 200"))
+        jterm::testing::after_prompt(&row).is_some_and(|line| line.starts_with("seq 1 200"))
             || row
                 .split_whitespace()
                 .next()

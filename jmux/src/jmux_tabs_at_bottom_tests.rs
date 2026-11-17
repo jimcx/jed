@@ -242,7 +242,7 @@ async fn jmux_tabs_at_bottom_the_bar_is_on_the_groups_last_row_and_the_shell_sta
     let mut h = Harness::new(12, 60, BOTTOM).await;
     // 12 rows: the status bar is the last, so the group's last row is 10.
     h.settle("the bar on row 10 and the prompt on row 0", |h| {
-        h.row(10).contains("sh") && h.row(0).trim_end().ends_with('$')
+        h.row(10).contains("sh") && jterm::testing::ends_with_prompt(&h.row(0))
     })
     .await;
     assert!(!h.row(0).contains('×'), "{}", h.text());

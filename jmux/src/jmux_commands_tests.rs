@@ -229,7 +229,7 @@ impl Harness {
                 .groups
                 .active_group()
                 .active_tab()
-                .is_some_and(|t| t.run.screen().screen().contents().contains('$'))
+                .is_some_and(|t| jterm::testing::has_prompt(&t.run.screen().screen().contents()))
         })
         .await;
     }

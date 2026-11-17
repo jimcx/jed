@@ -25,4 +25,5 @@ unicode-width = { workspace = true }
 vt100 = { workspace = true }
 
 [dev-dependencies]
+jterm = { path = "../crates/jterm", features = ["testing"] }
 tempfile = { workspace = true }

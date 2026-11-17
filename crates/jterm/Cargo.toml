@@ -4,6 +4,10 @@ version = "0.1.0"
 edition.workspace = true
 publish = false
 
+[features]
+# Test helpers (`jterm::testing`) for jed's and jmux's tests.
+testing = []
+
 [dependencies]
 jtui = { path = "../jtui" }
 crossterm = { workspace = true }
