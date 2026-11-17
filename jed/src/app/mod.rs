@@ -1928,34 +1928,16 @@ impl App {
         matches!(self.drag, Some(mouse::Drag::Tab(_)))
     }
 
-    /// Presses the platform's file start key: Cmd+Up on macOS (VS Code's; Cmd+Home is unbound
-    /// there), Ctrl+Home on Linux.
-    pub fn press_file_start(&mut self) {
-        if cfg!(target_os = "macos") {
-            self.press(KeyCode::Up, KeyModifiers::SUPER);
-        } else {
-            self.press(KeyCode::Home, KeyModifiers::CONTROL);
-        }
-    }
-
-    /// Presses the platform's file end key: Cmd+Down on macOS, Ctrl+End on Linux.
-    pub fn press_file_end(&mut self) {
-        if cfg!(target_os = "macos") {
-            self.press(KeyCode::Down, KeyModifiers::SUPER);
-        } else {
-            self.press(KeyCode::End, KeyModifiers::CONTROL);
-        }
-    }
-
     /// Activates the active group's tab `index`.
     pub fn test_activate_tab(&mut self, index: usize) {
         self.activate_tab(index);
     }
 
-    /// Runs a Submit Review command and sends the review with no summary (Ctrl+Enter in its box).
+    /// Runs a Submit Review command and sends the review with no summary: the comment box's save key,
+    /// through `press_bound` because the routing suite does not set up the Composer context.
     pub fn test_submit(&mut self, cmd: Command) {
         self.test_execute(cmd);
-        self.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        self.press_bound(Command::ReviewSaveComment);
     }
 
     /// Runs a command as a key bound to it would.

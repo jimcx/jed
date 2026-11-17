@@ -56,7 +56,10 @@ async fn setup() -> (tempfile::TempDir, std::path::PathBuf, App) {
 
 /// Selects whole lines `first..=last` with real keys (the selection ends at column 0 of the next).
 fn select_lines(app: &mut App, first: usize, last: usize) {
-    app.press_file_start();
+    app.test_execute(crate::command::Command::Move {
+        motion: crate::command::Motion::DocStart,
+        select: false,
+    });
     for _ in 0..first {
         app.press(KeyCode::Down, M::NONE);
     }
@@ -227,7 +230,10 @@ async fn stage_selected_lines_unstage_maps_the_buffers_lines_to_the_index() {
     git(&root, &["add", "f.txt"]);
     // Lines inserted above shift the buffer's lines against the index's; the buffer is dirty and
     // unstaging doesn't ask.
-    app.press_file_start();
+    app.test_execute(crate::command::Command::Move {
+        motion: crate::command::Motion::DocStart,
+        select: false,
+    });
     app.type_text("a\nb\n");
     select_each(&mut app, &[(5, 5)]);
     assert_eq!(buffer_text(&app).lines().nth(5), Some("THREE"));
@@ -332,7 +338,10 @@ async fn stage_selected_lines_commands_are_in_the_palette_and_unbound() {
 #[tokio::test(flavor = "multi_thread")]
 async fn stage_selected_lines_a_bare_cursor_picks_its_line() {
     let (_d, root, mut app) = setup().await;
-    app.press_file_start();
+    app.test_execute(crate::command::Command::Move {
+        motion: crate::command::Motion::DocStart,
+        select: false,
+    });
     for _ in 0..15 {
         app.press(KeyCode::Down, M::NONE);
     }
@@ -652,7 +661,10 @@ async fn stage_selected_lines_diff_tab_revert_refuses_a_buffer_edited_since_the_
     let (_d, _root, mut app) = diff_setup(true, Pair::UNSTAGED, false).await;
     // Edit the file's tab and come straight back, before the diff reads the buffer again.
     app.test_execute(Command::PrevTab);
-    app.press_file_start();
+    app.test_execute(crate::command::Command::Move {
+        motion: crate::command::Motion::DocStart,
+        select: false,
+    });
     app.type_text("x");
     app.test_execute(Command::NextTab);
     assert!(app.group().active_diff().is_some());

@@ -17,19 +17,35 @@ use vt100::MouseProtocolMode;
 
 use crate::app::{App, Focus};
 use crate::clipboard::Copied;
-use crate::command::Command;
-use crate::config::keymap::{Keymap, Platform};
+use crate::command::{Command, ShellCommand, TaskCommand};
+use crate::config::keymap::{Context, Keymap, Platform};
 use crate::layout;
 use crate::shell_tests::{COUNT_TO_200, dirs, draw, screen_text, scrollback, shell_app};
 use crate::tasks::RunId;
 
-/// The modifiers of this platform's terminal copy key with `c`: Cmd+C on macOS, Ctrl+Shift+C on
-/// Linux (where Ctrl+C is the program's SIGINT).
-fn cmd() -> KeyModifiers {
-    if cfg!(target_os = "macos") {
-        KeyModifiers::SUPER
+/// Presses the copy key of the focused terminal (a shell tab or the task panel): where the
+/// context binds one (Ctrl+Shift+C on Linux) that key, else the editor's copy key, which a
+/// terminal with a selection takes over (Cmd+C on macOS).
+fn press_terminal_copy(app: &mut App) {
+    let bound = app
+        .keymap
+        .context_bindings(app.context())
+        .iter()
+        .any(|(_, c)| *c == Command::Copy);
+    if bound {
+        app.press_bound(Command::Copy);
     } else {
-        KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        app.press_field_key(Command::Copy);
+    }
+}
+
+/// The scroll-back-a-line / forward-a-line command of the focused terminal's context.
+fn scroll(app: &App, up: bool) -> Command {
+    match (app.context() == Context::Task, up) {
+        (true, true) => Command::Task(TaskCommand::ScrollUp),
+        (true, false) => Command::Task(TaskCommand::ScrollDown),
+        (false, true) => Command::Shell(ShellCommand::ScrollUp),
+        (false, false) => Command::Shell(ShellCommand::ScrollDown),
     }
 }
 
@@ -40,7 +56,7 @@ fn assert_copy_without_selection_keeps_clipboard(app: &mut App) {
         whole_line: false,
         pieces: Vec::new(),
     });
-    app.press(KeyCode::Char('c'), cmd());
+    press_terminal_copy(app);
     assert_eq!(app.clipboard.read().unwrap(), "keep", "no selection: nothing to copy");
 }
 
@@ -150,7 +166,7 @@ async fn term_select_shell_drag_highlights_and_copy() {
     drop(term);
 
     // The copy key copies exactly the covered text: trailing spaces trimmed per line.
-    app.press(KeyCode::Char('c'), cmd());
+    press_terminal_copy(&mut app);
     assert_eq!(app.clipboard.read().unwrap(), "alpha\nbeta");
 
     // Linux's Ctrl+C (its editor copy) stays the shell's SIGINT with a selection too: nothing
@@ -222,7 +238,7 @@ async fn term_select_task_drag_highlights_and_copy() {
     drop(term);
 
     // No shell tab has the editor's keys: the shown task is the terminal copied.
-    app.press(KeyCode::Char('c'), cmd());
+    press_terminal_copy(&mut app);
     assert_eq!(app.clipboard.read().unwrap(), "alpha\nbeta");
 }
 
@@ -297,7 +313,7 @@ async fn term_select_ended_task_drag_uses_the_drawn_rows() {
     );
     drop(term);
 
-    app.press(KeyCode::Char('c'), cmd());
+    press_terminal_copy(&mut app);
     assert_eq!(app.clipboard.read().unwrap(), expected);
 }
 
@@ -326,7 +342,7 @@ async fn term_select_click_clears_and_copy_leaves_the_clipboard_alone() {
     drop(draw(&mut app, 100, 30));
     let area = app.hits.group(app.groups.active).unwrap().editor;
     drag(&mut app, area, (alpha, 0), (beta, 4));
-    app.press(KeyCode::Char('c'), cmd());
+    press_terminal_copy(&mut app);
     assert_eq!(app.clipboard.read().unwrap(), "alpha\nbeta");
 
     // A click without a drag clears the selection: nothing is highlighted and Cmd/Ctrl+C finds
@@ -444,8 +460,14 @@ async fn term_select_mouse_reporting_keeps_every_event() {
 
     // Scrolled back (the scroll keys still scroll; the wheel is the program's), a drag still
     // selects nothing and leaves the view where it is.
-    app.press(KeyCode::Up, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
-    app.press(KeyCode::Up, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    {
+        let c = scroll(&app, true);
+        app.press_bound(c);
+    }
+    {
+        let c = scroll(&app, true);
+        app.press_bound(c);
+    }
     assert_eq!(
         scrollback(&app),
         2,
@@ -582,7 +604,7 @@ fn scrolled_back_scenario(app: &mut App, id: Option<RunId>, area: Rect) {
     assert_eq!(bg(&term, area.x, area.y + 3), selected);
     assert_ne!(bg(&term, area.x, area.y + 4), selected);
     drop(term);
-    app.press(KeyCode::Char('c'), cmd());
+    press_terminal_copy(app);
     assert_eq!(
         app.clipboard.read().unwrap(),
         expected,
@@ -612,7 +634,7 @@ fn scrolled_back_scenario(app: &mut App, id: Option<RunId>, area: Rect) {
     assert_eq!(run_of(app, id).screen().screen().scrollback(), 0);
     assert_eq!(run_of(app, id).selection(), Some(selection));
     drop(draw(app, 100, 30));
-    app.press(KeyCode::Char('c'), cmd());
+    press_terminal_copy(app);
     assert_eq!(
         app.clipboard.read().unwrap(),
         expected,
@@ -652,7 +674,7 @@ fn scrolled_back_scenario(app: &mut App, id: Option<RunId>, area: Rect) {
     // In the current view the anchor's line is row 5: rows 3 (from column 1) to 5 (none of it).
     let lines = visible_lines(app, id);
     let expected = format!("{}\n{}\n", &lines[3].trim_end()[1..], lines[4].trim_end());
-    app.press(KeyCode::Char('c'), cmd());
+    press_terminal_copy(app);
     assert_eq!(
         app.clipboard.read().unwrap(),
         expected,
@@ -661,14 +683,23 @@ fn scrolled_back_scenario(app: &mut App, id: Option<RunId>, area: Rect) {
 
     // The scroll keys (Ctrl+Shift+Up / Down, the tab having the keys after the drag) scroll the
     // scrollback too, and leave the selection on its text.
-    app.press(KeyCode::Up, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    {
+        let c = scroll(app, true);
+        app.press_bound(c);
+    }
     assert_eq!(
         run_of(app, id).screen().screen().scrollback(),
         now + 1,
         "Ctrl+Shift+Up scrolled the scrollback"
     );
-    app.press(KeyCode::Down, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
-    app.press(KeyCode::Down, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    {
+        let c = scroll(app, false);
+        app.press_bound(c);
+    }
+    {
+        let c = scroll(app, false);
+        app.press_bound(c);
+    }
     assert_eq!(
         run_of(app, id).screen().screen().scrollback(),
         now - 1,
@@ -775,26 +806,12 @@ async fn term_select_copy_elsewhere_is_unaffected_by_a_lingering_selection() {
     // Back in the editor, its own copy wins: the task's selection must not hijack it.
     app.ui.focus = Focus::Editor;
     app.test_execute(Command::SelectAll);
-    // The editor's copy: Cmd+C, Ctrl+C on Linux.
-    let editor_copy = if cfg!(target_os = "macos") {
-        KeyModifiers::SUPER
-    } else {
-        KeyModifiers::CONTROL
-    };
-    app.press(KeyCode::Char('c'), editor_copy);
+    app.test_execute(Command::Copy);
     assert_eq!(
         app.clipboard.read().unwrap(),
         "hello",
         "copy elsewhere is unaffected by a lingering terminal selection"
     );
-}
-
-/// Each platform's keys that copy a terminal's mouse selection (with that platform's keymap).
-fn copy_keys() -> [(Platform, KeyModifiers); 2] {
-    [
-        (Platform::MacOs, KeyModifiers::SUPER),
-        (Platform::Linux, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
-    ]
 }
 
 /// Puts "keep" on the clipboard, to see whether a copy replaced it.
@@ -838,15 +855,11 @@ fn double_click_checks(app: &mut App, area: Rect, row: u16, selection: impl Fn(&
     drop(term);
     // Every platform's copy key copies it, whichever this host is: Cmd+C on macOS, Ctrl+Shift+C
     // (the terminal emulator's copy key, VS Code's terminal copy) on Linux.
-    for (platform, mods) in copy_keys() {
+    for platform in [Platform::MacOs, Platform::Linux] {
         app.keymap = Keymap::default_for(platform);
         keep_clipboard(app);
-        app.press(KeyCode::Char('c'), mods);
-        assert_eq!(
-            app.clipboard.read().unwrap(),
-            "~/src/jed-0.1",
-            "{platform:?} {mods:?} copies"
-        );
+        press_terminal_copy(app);
+        assert_eq!(app.clipboard.read().unwrap(), "~/src/jed-0.1", "{platform:?} copies");
     }
     app.keymap = Keymap::default_for(Platform::current());
 
@@ -859,15 +872,11 @@ fn double_click_checks(app: &mut App, area: Rect, row: u16, selection: impl Fn(&
     double_click(app, x, y);
     assert_eq!(selection(app), None, "a blank selects nothing");
     // With nothing selected the copy keys copy nothing (nor the editor's text behind a task).
-    for (platform, mods) in copy_keys() {
+    for platform in [Platform::MacOs, Platform::Linux] {
         app.keymap = Keymap::default_for(platform);
         keep_clipboard(app);
-        app.press(KeyCode::Char('c'), mods);
-        assert_eq!(
-            app.clipboard.read().unwrap(),
-            "keep",
-            "{platform:?} {mods:?}: nothing to copy"
-        );
+        press_terminal_copy(app);
+        assert_eq!(app.clipboard.read().unwrap(), "keep", "{platform:?}: nothing to copy");
     }
     app.keymap = Keymap::default_for(Platform::current());
 
@@ -1083,7 +1092,7 @@ async fn keep_scrolls(task: bool) {
     assert!(after.anchor.0 < before.anchor.0, "it moved up with its text: {after:?}");
     assert_eq!(after.anchor.0 - before.anchor.0, after.head.0 - before.head.0);
     assert_eq!(run_of(&app, id).copy_selection().as_deref(), Some("199"));
-    app.press(KeyCode::Char('c'), cmd());
+    press_terminal_copy(&mut app);
     assert_eq!(app.clipboard.read().unwrap(), "199", "copies exactly the selected text");
 }
 

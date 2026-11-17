@@ -5,7 +5,7 @@
 //! `app.test_execute(Command::..)`. It presses a Ctrl, Cmd or Alt key only when the test is about
 //! key handling (a focused field, a shell tab, an overlay), and then through
 //! `app.press_bound(Command::..)`, never a raw platform key. The `command_driven_tests_guard_*`
-//! test fails on a `.press(` with such modifiers in any other test file that isn't on its allowlist.
+//! test fails on a `.press(` with such modifiers in any other test file that isn't on its line allowlist.
 //!
 //! What is checked here:
 //! - Keymap level, both platforms in one run (`Keymap::default_for(Platform::MacOs / Linux)`):
@@ -658,38 +658,37 @@ async fn command_driven_tests_terminal_copy_key_and_ctrl_c() {
 const GUARD_HELP: &str = "Tests run features through their command, not key presses: start a feature with \
 `app.test_execute(Command::..)`. Press a Ctrl, Cmd or Alt key only when the test is about key handling \
 (a focused field, a shell tab, an overlay), and then through `app.press_bound(Command::..)`, never a raw \
-platform key. To keep a press, add the file (or the line) with its reason to the guard's allowlist in \
+platform key. To keep a press, add the line with its reason to the guard's allowlist in \
 jed/src/command_driven_tests.rs.";
-
-/// Files with presses not yet migrated to `test_execute` (path under `jed/src`, reason). Each
-/// migration subtask removes its files; the guard fails on an entry with nothing left to allow.
-const ALLOWED_FILES: &[(&str, &str)] = &[
-    ("app/disk.rs", "not migrated yet: subtask d"),
-    ("app/mod.rs", "not migrated yet: subtask d"),
-    ("app/palette.rs", "not migrated yet: subtask d"),
-    ("clear_scrollback_tests.rs", "not migrated yet: subtask d"),
-    ("focus_groups_tests.rs", "not migrated yet: subtask d"),
-    ("fuzz_tests.rs", "not migrated yet: subtask d"),
-    ("kitty_recent_tests.rs", "not migrated yet: subtask d"),
-    ("mr_review_tests.rs", "not migrated yet: subtask d"),
-    ("mr_review_tests/done_when.rs", "not migrated yet: subtask d"),
-    ("mr_review_tests/github.rs", "not migrated yet: subtask d"),
-    ("mr_review_tests/gitlab.rs", "not migrated yet: subtask d"),
-    ("mr_review_tests/live.rs", "not migrated yet: subtask d"),
-    ("mr_review_tests/suggest.rs", "not migrated yet: subtask d"),
-    ("review_conversation_tests.rs", "not migrated yet: subtask d"),
-    ("review_fixes_tests.rs", "not migrated yet: subtask d"),
-    ("review_forge_fixes_tests.rs", "not migrated yet: subtask d"),
-    ("shell_tests.rs", "not migrated yet: subtask d"),
-    ("term_area_tests.rs", "not migrated yet: subtask d"),
-    ("term_search_tests.rs", "not migrated yet: subtask d"),
-    ("term_select_tests.rs", "not migrated yet: subtask d"),
-    ("tools_tests.rs", "not migrated yet: subtask d"),
-];
 
 /// Single presses that stay: (path under `jed/src`, text of the line, reason). The guard fails
 /// on an entry whose line is gone.
 const ALLOWED_LINES: &[(&str, &str, &str)] = &[
+    (
+        "fuzz_tests.rs",
+        "0..=24 => app.press(KEYS[r.below(KEYS.len())]",
+        "the fuzzer presses random keys with random modifiers on purpose",
+    ),
+    (
+        "fuzz_tests.rs",
+        "app.press(K::Char(c), mods)",
+        "the fuzzer presses random keys with random modifiers on purpose",
+    ),
+    (
+        "fuzz_tests.rs",
+        "55..=57 => app.press(K::F(",
+        "the fuzzer presses random keys with random modifiers on purpose",
+    ),
+    (
+        "shell_tests.rs",
+        "app.press(KeyCode::Char('c'), KeyModifiers::CONTROL);",
+        "the test is about the key: a shell tab's Ctrl+C is the program's SIGINT on every platform",
+    ),
+    (
+        "term_select_tests.rs",
+        "app.press(KeyCode::Char('c'), KeyModifiers::CONTROL);",
+        "the test is about the key: Ctrl+C never copies a terminal selection on any platform",
+    ),
     (
         "milestone12_tests.rs",
         "app.press(KeyCode::Char('c'), M::CONTROL);",
@@ -890,48 +889,59 @@ fn command_driven_tests_guard_finds_platform_key_presses() {
     );
 }
 
-#[test]
-fn command_driven_tests_guard_no_new_platform_key_presses() {
+/// The guard's check over `files` (path, source) against `allowed`: the presses it flags that
+/// no entry covers (`path:line: text`), and a message per entry that matched no press line.
+fn guard_problems(files: &[(String, String)], allowed: &[(&str, &str, &str)]) -> (Vec<String>, Vec<String>) {
     let mut problems = Vec::new();
-    let mut files_with_presses: HashSet<String> = HashSet::new();
     let mut lines_used: HashSet<(&str, &str)> = HashSet::new();
-    for (path, src) in sources() {
-        let mut flagged = flagged_presses(&src);
+    for (path, src) in files {
+        let mut flagged = flagged_presses(src);
         flagged.retain(|(_, text)| {
-            ALLOWED_LINES
+            allowed
                 .iter()
                 .find(|(p, t, _)| *p == path && text.contains(t))
                 .map(|(p, t, _)| lines_used.insert((p, t)))
                 .is_none()
         });
-        if flagged.is_empty() {
-            continue;
-        }
-        files_with_presses.insert(path.clone());
-        if ALLOWED_FILES.iter().any(|(p, _)| *p == path) {
-            continue;
-        }
         for (line, text) in flagged {
             problems.push(format!("{path}:{line}: {text}"));
         }
     }
+    let stale = allowed
+        .iter()
+        .filter(|(path, text, _)| !lines_used.contains(&(*path, *text)))
+        .map(|(path, text, reason)| format!("{path}: no press line contains {text:?} ({reason}): remove the entry"))
+        .collect();
+    (problems, stale)
+}
+
+#[test]
+fn command_driven_tests_guard_no_new_platform_key_presses() {
+    let (problems, stale) = guard_problems(&sources(), ALLOWED_LINES);
     assert!(
         problems.is_empty(),
         "{GUARD_HELP}\n\nPresses with Ctrl, Cmd or Alt (or a helper):\n{}",
         problems.join("\n")
     );
-    for (path, reason) in ALLOWED_FILES {
-        assert!(
-            files_with_presses.contains(*path),
-            "{path} is on the allowlist ({reason}) but has no such press left: remove the entry"
-        );
-    }
-    for (path, text, reason) in ALLOWED_LINES {
-        assert!(
-            lines_used.contains(&(*path, *text)),
-            "{path}: no press line contains {text:?} ({reason}): remove the entry"
-        );
-    }
+    assert!(stale.is_empty(), "{}", stale.join("\n"));
+}
+
+#[test]
+fn command_driven_tests_guard_reports_a_stale_allowed_line() {
+    let files = vec![(
+        "a_tests.rs".to_string(),
+        "app.press(KeyCode::Char('c'), KeyModifiers::CONTROL);\n".to_string(),
+    )];
+    let live = ("a_tests.rs", "KeyCode::Char('c')", "reason");
+    let gone = ("a_tests.rs", "KeyCode::Char('z')", "reason");
+    let (problems, stale) = guard_problems(&files, &[live]);
+    assert!(problems.is_empty() && stale.is_empty(), "{problems:?} {stale:?}");
+    let (problems, stale) = guard_problems(&files, &[live, gone]);
+    assert!(problems.is_empty());
+    assert_eq!(stale.len(), 1, "{stale:?}");
+    assert!(stale[0].contains("Char('z')"), "{stale:?}");
+    let (problems, _) = guard_problems(&files, &[]);
+    assert_eq!(problems.len(), 1, "an unlisted press is flagged");
 }
 
 /// The gutter's peek takes Enter (stage) and Esc before the keymap: Esc closes the peek and

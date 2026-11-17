@@ -100,15 +100,6 @@ pub(super) fn text(app: &App, root: &Path) -> String {
     app.buffers.get(id).unwrap().rope.to_string()
 }
 
-/// The platform's undo modifier: Cmd on macOS, Ctrl elsewhere.
-fn undo_mod() -> KeyModifiers {
-    if cfg!(target_os = "macos") {
-        KeyModifiers::SUPER
-    } else {
-        KeyModifiers::CONTROL
-    }
-}
-
 /// One undo of the file's buffer.
 fn undo(app: &mut App, root: &Path) {
     let id = app.buffers.find_path(&root.join("mod.txt")).unwrap();
@@ -269,7 +260,7 @@ async fn mr_review_insert_suggestion_fills_the_selected_lines_and_the_draft_is_s
     );
     let l = lines(&mut app, 120, 30).join("\n");
     assert!(l.contains("[Insert Suggestion]"), "{l}");
-    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    app.press_bound(Command::ReviewSaveComment);
     app.test_submit(Command::ReviewSubmitComment);
     assert!(
         app.settle(|a| a.review.draft_rows().is_empty() && !a.review.writing)
@@ -306,7 +297,7 @@ async fn mr_review_the_undo_key_on_the_diff_tab_undoes_the_apply() {
     }
     draw_wide(&mut app, 120);
     assert!(app.group().active_diff().is_some());
-    app.press(KeyCode::Char('z'), undo_mod());
+    app.press_bound(Command::Undo);
     assert_eq!(text(&app, &root), "m1\nm2 changed\nm3\n", "{}", message(&app));
 }
 
@@ -317,7 +308,7 @@ async fn mr_review_the_undo_key_works_with_the_caret_on_the_left_side() {
     let mut app = boot(&root, &server).await;
     apply(&mut app).await;
     select(&mut app, false, 0, 0);
-    app.press(KeyCode::Char('z'), undo_mod());
+    app.press_bound(Command::Undo);
     assert_eq!(text(&app, &root), "m1\nm2 changed\nm3\n", "{}", message(&app));
 }
 

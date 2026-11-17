@@ -274,7 +274,10 @@ mod render_whitespace {
         let (mut app, _, _) = open_app(&dir, "", "", TEXT);
         assert_eq!(app.settings.render_whitespace, RenderWhitespace::All, "the default");
         // The cursor away from the whitespace (cursor cells aren't dimmed).
-        app.press_file_end();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocEnd,
+            select: false,
+        });
         let term = draw(&mut app);
         assert_eq!(row(&app, &term, 0, 12), "→   ab··c·d·");
         let cs = cells(&app, &term, 0, 12);
@@ -286,7 +289,10 @@ mod render_whitespace {
         // Off: the same columns, blanks instead of glyphs.
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _, _) = open_app(&dir, "render_whitespace = \"none\"\n", "", TEXT);
-        app.press_file_end();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocEnd,
+            select: false,
+        });
         let term = draw(&mut app);
         assert_eq!(row(&app, &term, 0, 12), "    ab  c d ");
     }
@@ -295,7 +301,10 @@ mod render_whitespace {
     async fn boundary_skips_single_spaces_between_words() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _, _) = open_app(&dir, "render_whitespace = \"boundary\"\n", "", TEXT);
-        app.press_file_end();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocEnd,
+            select: false,
+        });
         let term = draw(&mut app);
         assert_eq!(row(&app, &term, 0, 12), "→   ab··c d·");
     }
@@ -304,7 +313,10 @@ mod render_whitespace {
     async fn trailing_draws_only_whitespace_at_line_ends() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _, _) = open_app(&dir, "render_whitespace = \"trailing\"\n", "", "\ta b  \n  \nx\n");
-        app.press_file_end();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocEnd,
+            select: false,
+        });
         let term = draw(&mut app);
         assert_eq!(row(&app, &term, 0, 9), "    a b··");
         assert_eq!(row(&app, &term, 1, 3), "·· ", "a blank line is all trailing");
@@ -354,7 +366,10 @@ mod render_whitespace {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _, _) = open_file(&dir, "", "", "a.py", "x = \"a b\"\n");
         assert!(app.settle(|a| a.active_buffer().unwrap().syntax.tree().is_some()).await);
-        app.press_file_end();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocEnd,
+            select: false,
+        });
         let term = draw(&mut app);
         assert_eq!(row(&app, &term, 0, 9), "x·=·\"a·b\"");
         let cs = cells(&app, &term, 0, 9);
@@ -409,7 +424,10 @@ mod render_whitespace {
         let dir = tempfile::tempdir().unwrap();
         let user = "render_whitespace = \"boundary\"\n";
         let (mut app, root, user_file) = open_app(&dir, user, "", TEXT);
-        app.press_file_end();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocEnd,
+            select: false,
+        });
         assert_eq!(drawn_line0(&mut app), "→   ab··c d·");
         run_command(&mut app, "View: Toggle Render Whitespace");
         assert_eq!(app.last_command, Some(Command::ToggleRenderWhitespace));
@@ -442,7 +460,10 @@ mod render_whitespace {
     async fn toggle_turns_all_on_when_the_setting_is_none() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _, _) = open_app(&dir, "render_whitespace = \"none\"\n", "", TEXT);
-        app.press_file_end();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocEnd,
+            select: false,
+        });
         assert_eq!(drawn_line0(&mut app), "    ab  c d ");
         app.test_execute(Command::ToggleRenderWhitespace);
         assert_eq!(drawn_line0(&mut app), "→   ab··c·d·");
@@ -455,7 +476,10 @@ mod render_whitespace {
         let dir = tempfile::tempdir().unwrap();
         let ws = "[settings]\nrender_whitespace = \"trailing\"\n";
         let (mut app, _, _) = open_app(&dir, "render_whitespace = \"none\"\n", ws, TEXT);
-        app.press_file_end();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocEnd,
+            select: false,
+        });
         assert_eq!(app.settings.render_whitespace, RenderWhitespace::Trailing);
         assert_eq!(drawn_line0(&mut app), "    ab  c d·");
     }
@@ -670,7 +694,10 @@ mod scroll_bars {
         let term = draw(&mut app);
         assert!(thumb(&app, &term).unwrap().0 > 0);
         // At the end: the thumb at the end of the track.
-        app.press_file_end();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocEnd,
+            select: false,
+        });
         let term = draw(&mut app);
         let (start, len) = thumb(&app, &term).unwrap();
         assert!(start + len < 22, "the last line isn't at the top yet");
@@ -1698,7 +1725,10 @@ mod inline_blame {
     }
 
     pub(super) fn go_to_line(app: &mut App, line: usize) {
-        app.press_file_start();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocStart,
+            select: false,
+        });
         for _ in 0..line {
             app.press(K::Down, M::NONE);
         }
@@ -3322,7 +3352,10 @@ mod revert_hunks {
         app.press(K::F(7), M::NONE);
         assert!(app.group().active_diff().unwrap().hunk_at_cursor().is_some());
         app.test_execute(Command::PrevTab);
-        app.press_file_start();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocStart,
+            select: false,
+        });
         app.type_text("x");
         app.test_execute(Command::NextTab);
         assert!(app.group().active_diff().is_some());
@@ -3336,7 +3369,10 @@ mod revert_hunks {
             app.settle(|a| a.diffs_settled() && a.group().active_diff().unwrap().doc.as_ref().unwrap().hunks.len() == 4)
                 .await
         );
-        app.press_file_start();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocStart,
+            select: false,
+        });
         app.test_execute(Command::RevertHunk);
         assert_eq!(buffer_text(&app), changed, "line 0 back");
         assert_eq!(message(&app), "Reverted the change at line 1 of f.txt (not saved)");
@@ -3841,9 +3877,15 @@ mod back_forward {
         let root = project(dir.path(), &[("a.txt", numbered("a", 4))]);
         let mut app = open_app(&root, "a.txt");
         app.press(K::Down, M::NONE);
-        app.press_file_end();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocEnd,
+            select: false,
+        });
         assert_eq!(place(&app), at("a.txt", 4));
-        app.press_file_start();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocStart,
+            select: false,
+        });
         assert_eq!(entries(&app), [e("a.txt", 1), e("a.txt", 4)]);
         back(&mut app);
         assert_eq!(place(&app), at("a.txt", 4));
@@ -12096,7 +12138,10 @@ mod reopen_closed_tab {
         let root = crate::workspace::normalize(dir.path());
         let mut app = app3(&root).await;
         draw(&mut app);
-        app.press_file_end();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocEnd,
+            select: false,
+        });
         draw(&mut app);
         let (head, top) = {
             let t = app.group().active_tab().unwrap();
@@ -13405,7 +13450,10 @@ mod live_diagnostics {
         let (mut app, fake, paths, _dir) = pull_app(false, &["a.cpp"], Some(report)).await;
         assert!(app.settle(|a| !marks(a, &paths[0]).is_empty()).await);
         fake.respond(PULL, full("r2", json!([diag(0, 0, 3, 2, "second")])));
-        app.press_file_end();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocEnd,
+            select: false,
+        });
         app.type_text("// a comment");
         assert!(app.settle(|_| fake.requests(PULL).len() >= 2).await);
         assert!(app.settle(|a| msgs(a, &paths[0]) == ["second"]).await);
@@ -13428,7 +13476,10 @@ mod live_diagnostics {
         let (mut app, fake, paths, _dir) = pull_app(false, &["a.cpp"], Some(report)).await;
         assert!(app.settle(|a| !marks(a, &paths[0]).is_empty()).await);
         fake.respond(PULL, json!({ "kind": "unchanged", "resultId": "r1" }));
-        app.press_file_end();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocEnd,
+            select: false,
+        });
         app.type_text("x");
         assert!(app.settle(|_| fake.requests(PULL).len() >= 2).await);
         idle(&mut app).await;
@@ -13486,7 +13537,10 @@ mod live_diagnostics {
         assert!(squiggle(&term, x + 4, y).is_none(), "not under `foo`");
         // After typing and resting, the new answer's squiggle replaces the old one.
         fake.respond(PULL, full("r2", json!([diag(0, 4, 7, 1, "bad foo")])));
-        app.press_file_end();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocEnd,
+            select: false,
+        });
         app.type_text("// c");
         assert!(app.settle(|_| fake.requests(PULL).len() >= 2).await);
         assert!(app.settle(|a| msgs(a, &paths[0]) == ["bad foo"]).await);
@@ -13506,7 +13560,10 @@ mod live_diagnostics {
         idle(&mut app).await;
         fake.hold(PULL, true);
         fake.respond(PULL, full("old", json!([diag(0, 0, 3, 1, "old answer")])));
-        app.press_file_end();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocEnd,
+            select: false,
+        });
         app.type_text("a");
         assert!(app.settle(|_| fake.requests(PULL).len() == 2).await);
         fake.respond(PULL, full("new", json!([diag(1, 0, 3, 2, "new answer")])));
@@ -13587,7 +13644,10 @@ mod live_diagnostics {
         let mut report = full("r2", json!([diag(0, 0, 3, 1, "in a")]));
         report["relatedDocuments"] = json!({ b.clone(): full("b1", json!([diag(1, 0, 3, 2, "in b")])) });
         fake.respond(PULL, report);
-        app.press_file_end();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocEnd,
+            select: false,
+        });
         app.type_text("x");
         assert!(app.settle(|a| msgs(a, &paths[1]) == ["in b"]).await);
         // The edited file asked (3rd request); its answer made the other open file due (4th), and

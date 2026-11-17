@@ -384,7 +384,7 @@ async fn review_conversation_comment_on_merge_request_posts_at_once() {
     // The box is after the description and ann's comment.
     assert!(l.find("looking").unwrap() < l.find("posted at once").unwrap(), "{l}");
     app.type_text("Looks good to me");
-    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    app.press_bound(Command::ReviewSaveComment);
     assert!(app.settle(|a| a.test_composer_text().is_none()).await);
     let posts = sent(&server, "POST");
     let post = posts
@@ -405,7 +405,7 @@ async fn review_conversation_a_refused_post_keeps_the_box_and_its_text() {
     app.test_execute(Command::ReviewCommentOnMergeRequest);
     assert!(app.settle(|a| a.diffs_settled()).await);
     app.type_text("keep me");
-    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    app.press_bound(Command::ReviewSaveComment);
     assert!(
         app.settle(|a| !a.review.writing && !sent(&server, "POST").is_empty())
             .await
@@ -448,7 +448,7 @@ async fn review_conversation_own_comments_have_edit_and_delete_buttons() {
     app.mouse(MouseEventKind::Down(MouseButton::Left), x + 2, y);
     assert_eq!(app.test_composer_text().as_deref(), Some("my words"));
     app.type_text(" and more");
-    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    app.press_bound(Command::ReviewSaveComment);
     assert!(app.settle(|a| a.test_composer_text().is_none()).await);
     assert_eq!(sent(&server, "PATCH")[0].body, r#"{"body":"my words and more"}"#);
     // Delete confirms first.
@@ -475,7 +475,7 @@ async fn review_conversation_the_box_is_guarded_kept_over_a_refresh_and_cancelle
     app.test_execute(Command::ReviewCommentOnMergeRequest);
     assert!(app.settle(|a| a.diffs_settled()).await);
     // An empty box posts nothing.
-    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    app.press_bound(Command::ReviewSaveComment);
     assert!(sent(&server, "POST").is_empty());
     assert_eq!(app.test_composer_text().as_deref(), Some(""));
     app.type_text("draft words");
@@ -523,7 +523,7 @@ async fn review_conversation_a_refused_edit_keeps_the_box() {
     open(&mut app).await;
     click_label(&mut app, "[Edit]");
     app.type_text("!");
-    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    app.press_bound(Command::ReviewSaveComment);
     assert!(
         app.settle(|a| !a.review.writing && !sent(&server, "PATCH").is_empty())
             .await
@@ -561,7 +561,7 @@ async fn review_conversation_github_edit_and_delete_go_to_the_issue_comment_endp
     app.test_execute(Command::ReviewCommentOnMergeRequest);
     assert!(app.settle(|a| a.diffs_settled()).await);
     app.type_text("hi there");
-    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    app.press_bound(Command::ReviewSaveComment);
     assert!(app.settle(|a| a.test_composer_text().is_none()).await);
     let post = sent(&server, "POST")
         .into_iter()
@@ -582,7 +582,7 @@ async fn review_conversation_github_edit_and_delete_go_to_the_issue_comment_endp
     assert!(app.settle(|a| a.diffs_settled()).await);
     click_label(&mut app, "[Edit]");
     app.type_text("!");
-    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    app.press_bound(Command::ReviewSaveComment);
     assert!(app.settle(|a| a.test_composer_text().is_none()).await);
     let patch = &sent(&server, "PATCH")[0];
     assert!(patch.target.ends_with("/issues/comments/300"), "{}", patch.target);
@@ -605,7 +605,7 @@ mod summary {
     };
 
     fn send(app: &mut App) {
-        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        app.press_bound(Command::ReviewSaveComment);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -702,13 +702,7 @@ mod summary {
         app.test_execute(Command::ReviewSubmitApprove);
         assert_eq!(app.test_composer_text().as_deref(), Some("half a thought"));
         // Emptying it and Esc forgets it.
-        // Select all is Cmd+A on macOS (Ctrl+A goes to the line's start there).
-        let primary = if cfg!(target_os = "macos") {
-            KeyModifiers::SUPER
-        } else {
-            KeyModifiers::CONTROL
-        };
-        app.press(KeyCode::Char('a'), primary);
+        app.press_field_key(Command::SelectAll);
         app.press(KeyCode::Backspace, KeyModifiers::NONE);
         app.press(KeyCode::Esc, KeyModifiers::NONE);
         assert!(app.settle(|_| !store_text(&state).contains("half a thought")).await);

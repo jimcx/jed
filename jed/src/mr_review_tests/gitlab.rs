@@ -171,7 +171,7 @@ async fn mr_review_gitlab_shows_a_multi_line_discussion_and_submits_in_gitlab_sh
     };
     app.test_execute(Command::ReviewComment);
     app.type_text("Please rename");
-    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    app.press_bound(Command::ReviewSaveComment);
     app.test_submit(Command::ReviewSubmitApprove);
     assert!(
         app.settle(|a| a.review.draft_rows().is_empty() && !a.review.writing)

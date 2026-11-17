@@ -126,7 +126,7 @@ async fn mr_review_a_draft_follows_lines_typed_above_and_new_ones_count_in_the_h
     select(&mut app, true, 1, 2);
     app.test_execute(Command::ReviewComment);
     app.type_text("Check this");
-    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    app.press_bound(Command::ReviewSaveComment);
     assert_eq!(app.test_composer_text(), None);
     open_text(&mut app, &root).await;
     lines_above(&mut app, 1).await;
@@ -139,7 +139,7 @@ async fn mr_review_a_draft_follows_lines_typed_above_and_new_ones_count_in_the_h
     select(&mut app, true, 3, 3);
     app.test_execute(Command::ReviewComment);
     app.type_text("And this");
-    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    app.press_bound(Command::ReviewSaveComment);
     assert_eq!(app.test_composer_text(), None);
     let rows = app.review.draft_rows();
     let new = rows.iter().find(|r| r.draft.body == "And this").unwrap();
@@ -184,7 +184,7 @@ async fn mr_review_the_floating_comment_button_comments_on_the_selected_lines() 
     draw_wide(&mut app, 120);
     assert_eq!(comment_button(&app), None);
     app.type_text("From the button");
-    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    app.press_bound(Command::ReviewSaveComment);
     let rows = app.review.draft_rows();
     let d = &rows.iter().find(|r| r.draft.body == "From the button").unwrap().draft;
     assert_eq!((d.start, d.end, d.right), (2, 3, true));
@@ -239,7 +239,7 @@ async fn mr_review_gutter_bars_mark_the_lines_of_threads_and_drafts() {
     select(&mut app, true, 0, 1);
     app.test_execute(Command::ReviewComment);
     app.type_text("Both lines");
-    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    app.press_bound(Command::ReviewSaveComment);
     assert!(app.review.draft_rows().iter().any(|r| r.draft.body == "Both lines"));
     let rows = marked_rows(&mut app);
     assert_eq!(bar(&rows, "m1"), draft);

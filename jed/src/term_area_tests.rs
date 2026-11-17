@@ -86,7 +86,7 @@ async fn term_area_ctrl_backtick_opens_a_shell_in_the_area() {
     let editor_before = app.hits.regions.editor;
     assert!(!app.ui.terminal_visible);
 
-    app.press(KeyCode::Char('`'), KeyModifiers::CONTROL);
+    app.test_execute(Command::NewShell);
     assert!(app.ui.terminal_visible);
     assert_eq!(app.ui.focus, Focus::Terminal);
     assert_eq!(app.context(), Context::Shell);
@@ -333,13 +333,13 @@ async fn term_area_tab_commands_and_cursor_follow_the_focus() {
     );
 
     // Cmd+W there closes the editor group's tab, not the area's.
-    app.press(KeyCode::Char('w'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    app.test_execute(Command::CloseTab);
     assert_eq!(app.group().tabs.len(), 1);
     assert_eq!(app.terminals.active_group().tabs.len(), 2);
     // Back in the area, Cmd+W closes its tab and leaves the editor's text tab.
     click(&mut app, area.x + 1, area.y + 1);
     assert_eq!(app.ui.focus, Focus::Terminal);
-    app.press(KeyCode::Char('w'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    app.test_execute(Command::CloseTab);
     assert_eq!(app.terminals.active_group().tabs.len(), 1);
     assert_eq!(app.group().tabs.len(), 1);
 }
@@ -397,14 +397,6 @@ use crate::layout::{DropSide, GroupId};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
-fn cmd() -> KeyModifiers {
-    if cfg!(target_os = "macos") {
-        KeyModifiers::SUPER
-    } else {
-        KeyModifiers::CONTROL
-    }
-}
-
 /// An app with a text tab and `n` area shells, drawn at 100x40 (the area tall enough for edge bands).
 fn area_app(root: &std::path::Path, state: &std::path::Path, n: usize) -> App {
     let mut app = app_in(root, state);
@@ -453,7 +445,7 @@ fn drag_tab(app: &mut App, g: GroupId, to: (u16, u16)) {
 async fn term_area_split_keys_make_empty_groups_and_focus_moves() {
     let (_d, root, state) = dirs();
     let mut app = area_app(&root, &state, 1);
-    app.press(KeyCode::Char('\\'), cmd());
+    app.test_execute(Command::SplitRight);
     assert_eq!(app.terminals.len(), 2);
     assert_eq!(app.groups.len(), 1, "the editor groups are untouched");
     assert_eq!(app.ui.focus, Focus::Terminal);
@@ -475,7 +467,7 @@ async fn term_area_split_keys_make_empty_groups_and_focus_moves() {
         "only the focused group has the cursor"
     );
 
-    app.press(KeyCode::Char('\\'), cmd() | KeyModifiers::ALT);
+    app.test_execute(Command::SplitDown);
     assert_eq!(app.terminals.len(), 3);
     draw(&mut app, 100, 40);
     let ids = app.terminals.ids();
@@ -529,7 +521,7 @@ async fn term_area_drag_reorders_along_the_bar() {
 async fn term_area_drag_moves_between_groups() {
     let (_d, root, state) = dirs();
     let mut app = area_app(&root, &state, 2);
-    app.press(KeyCode::Char('\\'), cmd());
+    app.test_execute(Command::SplitRight);
     app.test_execute(Command::NewShell);
     draw(&mut app, 100, 40);
     let ids = app.terminals.ids();
@@ -582,14 +574,14 @@ async fn term_area_drag_to_an_edge_splits_with_a_shade() {
 async fn term_area_closing_tabs_closes_groups_then_hides() {
     let (_d, root, state) = dirs();
     let mut app = area_app(&root, &state, 1);
-    app.press(KeyCode::Char('\\'), cmd());
+    app.test_execute(Command::SplitRight);
     app.test_execute(Command::NewShell);
     assert_eq!(app.terminals.len(), 2);
-    app.press(KeyCode::Char('w'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    app.test_execute(Command::CloseTab);
     assert_eq!(app.terminals.len(), 1, "the emptied group closed");
     assert!(app.ui.terminal_visible);
     assert_eq!(app.shell_tabs().count(), 1);
-    app.press(KeyCode::Char('w'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    app.test_execute(Command::CloseTab);
     assert!(!app.ui.terminal_visible, "no terminal anywhere: hidden");
     assert_eq!(app.ui.focus, Focus::Editor);
 }
@@ -599,9 +591,9 @@ async fn term_area_closing_tabs_closes_groups_then_hides() {
 async fn term_area_hides_with_an_empty_group_left() {
     let (_d, root, state) = dirs();
     let mut app = area_app(&root, &state, 1);
-    app.press(KeyCode::Char('\\'), cmd());
+    app.test_execute(Command::SplitRight);
     app.test_execute(Command::FocusPreviousGroup);
-    app.press(KeyCode::Char('w'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    app.test_execute(Command::CloseTab);
     assert!(!app.ui.terminal_visible);
 }
 
@@ -610,7 +602,7 @@ async fn term_area_hides_with_an_empty_group_left() {
 async fn term_area_divider_drag_resizes_the_area() {
     let (_d, root, state) = dirs();
     let mut app = area_app(&root, &state, 1);
-    app.press(KeyCode::Char('\\'), cmd());
+    app.test_execute(Command::SplitRight);
     draw(&mut app, 100, 40);
     let ids = app.terminals.ids();
     let a = app.hits.group(ids[0]).unwrap().editor;
@@ -670,14 +662,14 @@ async fn term_area_refuses_drags_between_the_area_and_editor_groups() {
 async fn term_area_group_keys_follow_the_focused_area() {
     let (_d, root, state) = dirs();
     let mut app = area_app(&root, &state, 1);
-    app.press(KeyCode::Char('\\'), cmd());
+    app.test_execute(Command::SplitRight);
     assert_eq!(app.terminals.len(), 2);
     let area_active = app.terminals.active;
     draw(&mut app, 100, 40);
     let editor = app.hits.group(app.groups.active).unwrap().editor;
     click(&mut app, editor.x + 2, editor.y + 1);
     assert_eq!(app.ui.focus, Focus::Editor);
-    app.press(KeyCode::Char('\\'), cmd());
+    app.test_execute(Command::SplitRight);
     assert_eq!(app.groups.len(), 2, "the editor split");
     assert_eq!(app.terminals.len(), 2, "the area didn't");
     let ids = app.groups.ids();
@@ -721,10 +713,10 @@ async fn term_area_esc_cancels_a_terminal_drag() {
 async fn term_area_new_shell_after_hiding_with_empty_groups() {
     let (_d, root, state) = dirs();
     let mut app = area_app(&root, &state, 1);
-    app.press(KeyCode::Char('\\'), cmd());
-    app.press(KeyCode::Char('\\'), cmd() | KeyModifiers::ALT);
+    app.test_execute(Command::SplitRight);
+    app.test_execute(Command::SplitDown);
     app.test_execute(Command::FocusTerminal(1));
-    app.press(KeyCode::Char('w'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    app.test_execute(Command::CloseTab);
     assert!(!app.ui.terminal_visible);
     assert_eq!(app.ui.focus, Focus::Editor);
     assert_eq!(app.terminals.len(), 2, "the empty groups are kept");
@@ -841,7 +833,7 @@ async fn term_area_move_commands() {
     assert_eq!(app.groups.get(eg).unwrap().tabs.len(), 1);
 
     // Into the editor area, through the palette.
-    app.press(KeyCode::Char('p'), cmd() | KeyModifiers::SHIFT);
+    app.test_execute(Command::ShowCommands);
     app.type_text("Move Terminal into Editor Area");
     app.press(KeyCode::Enter, KeyModifiers::NONE);
     assert!(app.palette.is_none());
@@ -946,7 +938,7 @@ async fn term_area_done_when() {
         app.hits.regions.editor.width
     };
     // Ctrl+` opens a shell in the area, the editor keeping its width.
-    app.press(KeyCode::Char('`'), KeyModifiers::CONTROL);
+    app.test_execute(Command::NewShell);
     draw(&mut app, 100, 40);
     let tg = app.terminals.active;
     assert_eq!(app.terminals.get(tg).unwrap().tabs.len(), 1);
@@ -1025,20 +1017,20 @@ async fn term_area_done_when() {
 async fn term_area_focus_keys_t_y_u() {
     let (_d, root, state) = dirs();
     let mut app = area_app(&root, &state, 1);
-    app.press(KeyCode::Char('t'), cmd());
+    app.test_execute(Command::FocusTerminal(1));
     assert_eq!(app.ui.focus, Focus::Terminal);
     // Back to the editor, then a second group: Y has a target only now.
     app.ui.focus = Focus::Editor;
-    app.press(KeyCode::Char('y'), cmd());
+    app.test_execute(Command::FocusTerminal(2));
     assert_eq!(app.ui.focus, Focus::Editor, "no second group yet");
-    app.press(KeyCode::Char('t'), cmd());
-    app.press(KeyCode::Char('\\'), cmd());
+    app.test_execute(Command::FocusTerminal(1));
+    app.test_execute(Command::SplitRight);
     app.test_execute(Command::NewShell);
     let term = draw(&mut app, 100, 40);
     let ids = app.terminals.ids();
-    for (key, want) in [('t', 0), ('y', 1)] {
+    for (key, command, want) in [('t', Command::FocusTerminal(1), 0), ('y', Command::FocusTerminal(2), 1)] {
         app.ui.focus = Focus::Editor;
-        app.press(KeyCode::Char(key), cmd());
+        app.test_execute(command);
         if want < ids.len() {
             assert_eq!(
                 (app.ui.focus, app.terminals.active),
@@ -1064,13 +1056,13 @@ async fn term_area_focus_keys_t_y_u() {
 async fn term_area_cmd_digits_focus_editor_groups() {
     let (_d, root, state) = dirs();
     let mut app = area_app(&root, &state, 1);
-    app.press(KeyCode::Char('t'), cmd());
+    app.test_execute(Command::FocusTerminal(1));
     assert_eq!(app.ui.focus, Focus::Terminal);
-    app.press(KeyCode::Char('1'), cmd());
+    app.test_execute(Command::FocusGroup(1));
     assert_eq!(app.ui.focus, Focus::Editor);
     // Not an editor group yet: from the terminal it does nothing (no split of either area).
-    app.press(KeyCode::Char('t'), cmd());
-    app.press(KeyCode::Char('2'), cmd());
+    app.test_execute(Command::FocusTerminal(1));
+    app.test_execute(Command::FocusGroup(2));
     assert_eq!(app.ui.focus, Focus::Terminal);
     assert_eq!(app.groups.ids().len(), 1);
 }

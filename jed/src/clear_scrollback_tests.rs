@@ -23,14 +23,6 @@ use crate::shell_tests::{
 use crate::tasks::RunId;
 use crate::tasks::select::Selection;
 
-fn cmd() -> KeyModifiers {
-    if cfg!(target_os = "macos") {
-        KeyModifiers::SUPER
-    } else {
-        KeyModifiers::CONTROL
-    }
-}
-
 fn shell_text(app: &App) -> String {
     app.group().active_shell().unwrap().run.screen().screen().contents()
 }
@@ -93,7 +85,7 @@ async fn clear_scrollback_shell_blanks_screen_and_scrollback() {
         head: (2, 3),
     });
 
-    app.press(KeyCode::Char('k'), cmd());
+    app.test_execute(Command::Shell(ShellCommand::Clear));
 
     let run = &app.group().active_shell().unwrap().run;
     assert_eq!(run.scrollbar_extent().0, 0);
@@ -101,14 +93,12 @@ async fn clear_scrollback_shell_blanks_screen_and_scrollback() {
     assert!(run.selection().is_none(), "the selection is dropped");
     assert_eq!(run.screen().screen().contents().trim(), "", "a blank screen");
     assert_eq!(run.screen().screen().cursor_position(), (0, 0));
-    for (key, mods) in [
-        (KeyCode::PageUp, KeyModifiers::SHIFT),
-        (KeyCode::Up, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
-        (KeyCode::Home, KeyModifiers::CONTROL),
-    ] {
-        app.press(key, mods);
-        assert_eq!(scrollback(&app), 0, "nothing to go back to");
-    }
+    app.press_bound(Command::Shell(ShellCommand::PageUp));
+    assert_eq!(scrollback(&app), 0, "nothing to go back to");
+    app.press_bound(Command::Shell(ShellCommand::ScrollUp));
+    assert_eq!(scrollback(&app), 0, "nothing to go back to");
+    app.press_bound(Command::Shell(ShellCommand::Top));
+    assert_eq!(scrollback(&app), 0, "nothing to go back to");
     draw(&mut app, 80, 20);
     let editor = app.hits.group(app.groups.active).unwrap().editor;
     app.mouse(crossterm::event::MouseEventKind::ScrollUp, editor.x + 1, editor.y + 1);
@@ -136,7 +126,7 @@ async fn clear_scrollback_shell_program_is_untouched() {
         shell_text(&app)
     );
 
-    app.press(KeyCode::Char('k'), cmd());
+    app.test_execute(Command::Shell(ShellCommand::Clear));
     // Nothing was sent to the program: it still runs and its next output lands at the top.
     app.group().active_shell().unwrap().run.write(b"after\n");
     assert!(
@@ -174,7 +164,7 @@ async fn clear_scrollback_task_blanks_screen_and_scrollback() {
     });
     app.press(KeyCode::PageUp, KeyModifiers::SHIFT);
 
-    app.press(KeyCode::Char('k'), cmd());
+    app.press_bound(Command::Task(TaskCommand::Clear));
 
     let run = app.tasks.get(id).unwrap();
     assert_eq!(run.scrollbar_extent().0, 0);
@@ -182,7 +172,7 @@ async fn clear_scrollback_task_blanks_screen_and_scrollback() {
     assert!(run.selection().is_none());
     assert_eq!(run.screen().screen().contents().trim(), "");
     assert_eq!(run.screen().screen().cursor_position(), (0, 0));
-    app.press(KeyCode::Home, KeyModifiers::CONTROL);
+    app.press_bound(Command::Task(TaskCommand::Top));
     assert_eq!(app.tasks.get(id).unwrap().scrollbar_extent().0, 0);
 
     // The program is untouched: cat still runs and echoes what it is sent, from the top, and the
@@ -207,7 +197,7 @@ async fn clear_scrollback_setting_still_caps_after_a_clear() {
     std::fs::write(root.join(".workspace"), "[settings]\nscrollback = 50\n").unwrap();
     let mut app = shell_with_output(&root, &state).await;
     assert_eq!(shell_extent(&app).1, 50);
-    app.press(KeyCode::Char('k'), cmd());
+    app.test_execute(Command::Shell(ShellCommand::Clear));
     assert_eq!(shell_extent(&app).1, 0);
     app.group()
         .active_shell()
@@ -273,7 +263,7 @@ async fn clear_scrollback_on_the_alternate_screen_leaves_the_main_one() {
     };
     assert!(app.settle(|a| alt(a) && shell_text(a).contains("ALT")).await);
 
-    app.press(KeyCode::Char('k'), cmd());
+    app.test_execute(Command::Shell(ShellCommand::Clear));
     assert!(alt(&app), "the program is still on its screen");
     assert_eq!(shell_text(&app).trim(), "", "its screen is blank");
     assert_eq!(shell_extent(&app).0, 0);
@@ -409,7 +399,7 @@ async fn clear_scrollback_bash_keeps_the_whole_prompt() {
     run_and_wait(&mut app, COUNT_TO_200, "199").await;
     assert!(shell_extent(&app).1 > 0, "output went into the scrollback");
 
-    app.press(KeyCode::Char('k'), cmd());
+    app.test_execute(Command::Shell(ShellCommand::Clear));
     assert_whole_prompt_kept(&app);
 
     run_in_shell(&mut app, "echo after");
@@ -442,7 +432,7 @@ async fn clear_scrollback_bash_keeps_the_users_prompt_command() {
         std::fs::read_to_string(&log)
     );
     assert!(app.settle(at_prompt).await);
-    app.press(KeyCode::Char('k'), cmd());
+    app.test_execute(Command::Shell(ShellCommand::Clear));
     assert_whole_prompt_kept(&app);
 }
 
@@ -457,7 +447,7 @@ async fn clear_scrollback_zsh_keeps_the_whole_prompt() {
     let mut app = integrated_shell(&root, &state, &sockets, &zsh, "-f", "zsh", "").await;
     run_and_wait(&mut app, "seq 1 200", "200").await;
     assert!(shell_extent(&app).1 > 0);
-    app.press(KeyCode::Char('k'), cmd());
+    app.test_execute(Command::Shell(ShellCommand::Clear));
     assert_whole_prompt_kept(&app);
 }
 
@@ -477,7 +467,7 @@ async fn clear_scrollback_running_command_is_the_full_clear() {
         "the output ran past the prompt:\n{}",
         shell_text(&app)
     );
-    app.press(KeyCode::Char('k'), cmd());
+    app.test_execute(Command::Shell(ShellCommand::Clear));
     assert_eq!(shell_extent(&app).1, 0, "nothing to scroll back to");
     assert_eq!(shell_text(&app).trim(), "", "a blank screen");
     let run = &app.group().active_shell().unwrap().run;
@@ -493,7 +483,7 @@ async fn clear_scrollback_running_command_is_the_full_clear() {
     app.group().active_shell().unwrap().run.write(b"\x04");
     // Back at the prompt, a Clear keeps it again.
     assert!(app.settle(at_prompt).await, "{}", shell_text(&app));
-    app.press(KeyCode::Char('k'), cmd());
+    app.test_execute(Command::Shell(ShellCommand::Clear));
     assert_whole_prompt_kept(&app);
 }
 
@@ -509,7 +499,7 @@ async fn clear_scrollback_bash_prompt_command_rebuilding_ps1() {
     let before = "myps() { PS1=$'P1\\nP2> '; }; PROMPT_COMMAND='myps;'";
     let mut app = integrated_shell(&root, &state, &sockets, &bash, "--norc --noprofile", "bash", before).await;
     run_and_wait(&mut app, COUNT_TO_200, "199").await;
-    app.press(KeyCode::Char('k'), cmd());
+    app.test_execute(Command::Shell(ShellCommand::Clear));
     assert_whole_prompt_kept(&app);
 }
 
@@ -543,7 +533,7 @@ async fn clear_scrollback_bash_array_prompt_command() {
         std::fs::read_to_string(&log)
     );
     assert!(app.settle(at_prompt).await);
-    app.press(KeyCode::Char('k'), cmd());
+    app.test_execute(Command::Shell(ShellCommand::Clear));
     assert_whole_prompt_kept(&app);
 }
 
@@ -552,7 +542,7 @@ async fn clear_scrollback_bash_array_prompt_command() {
 async fn clear_scrollback_without_a_mark_is_the_full_clear() {
     let (_d, root, state) = dirs();
     let mut app = shell_with_output(&root, &state).await;
-    app.press(KeyCode::Char('k'), cmd());
+    app.test_execute(Command::Shell(ShellCommand::Clear));
     assert_eq!(shell_extent(&app).1, 0);
     assert!(
         shell_text(&app).lines().filter(|l| !l.trim().is_empty()).count() <= 1,
@@ -599,7 +589,7 @@ async fn clear_scrollback_terminal_area_shell_clears() {
     let run = &app.terminals.active_group().active_shell().unwrap().run;
     assert!(run.scrollbar_extent().1 > 100, "output scrolled off the top");
 
-    app.press(KeyCode::Char('k'), cmd());
+    app.test_execute(Command::Shell(ShellCommand::Clear));
 
     let run = &app.terminals.active_group().active_shell().unwrap().run;
     assert_eq!(run.scrollbar_extent().1, 0, "no kept lines");

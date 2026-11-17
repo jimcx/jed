@@ -462,14 +462,6 @@ async fn tools_a_write_error_is_reported_once() {
 
 // ---- tools-b: read-only log tabs ----
 
-fn cmd() -> KeyModifiers {
-    if cfg!(target_os = "macos") {
-        KeyModifiers::SUPER
-    } else {
-        KeyModifiers::CONTROL
-    }
-}
-
 fn demo() -> Tool {
     Tool::Server("demo".into())
 }
@@ -483,7 +475,7 @@ fn push_lines(app: &App, tool: &Tool, from: usize, n: usize) {
 
 /// "Tools: Open Log" through the palette, picking `name`: returns the picker's labels.
 fn open_log(app: &mut App, name: &str) -> Vec<String> {
-    app.press(KeyCode::Char('p'), cmd() | KeyModifiers::SHIFT);
+    app.test_execute(Command::ShowCommands);
     app.type_text("Tools: Open Log");
     let p = app.palette.as_ref().unwrap();
     assert_eq!(p.rows[p.selected].label, "Tools: Open Log");
@@ -500,7 +492,7 @@ fn open_log(app: &mut App, name: &str) -> Vec<String> {
 }
 
 fn run_command(app: &mut App, title: &str) {
-    app.press(KeyCode::Char('p'), cmd() | KeyModifiers::SHIFT);
+    app.test_execute(Command::ShowCommands);
     app.type_text(title);
     let p = app.palette.as_ref().unwrap();
     assert_eq!(p.rows[p.selected].label, title);
@@ -682,9 +674,9 @@ async fn tools_a_log_tab_is_read_only_and_never_dirty() {
     app.press(KeyCode::Enter, KeyModifiers::NONE);
     app.press(KeyCode::Backspace, KeyModifiers::NONE);
     app.handle_test_event(Event::Paste("pasted".into()));
-    app.press(KeyCode::Char('a'), cmd());
-    app.press(KeyCode::Char('x'), cmd());
-    app.press(KeyCode::Char('z'), cmd());
+    app.test_execute(Command::SelectAll);
+    app.test_execute(Command::Cut);
+    app.test_execute(Command::Undo);
     app.test_execute(crate::command::Command::Paste);
     app.test_execute(crate::command::Command::Redo);
     let buf = app.active_buffer().unwrap();
@@ -698,11 +690,11 @@ async fn tools_a_log_tab_is_read_only_and_never_dirty() {
         app.message.as_ref().map(|m| &m.text)
     );
     // Copy (the selection from Cmd+A is still there).
-    app.press(KeyCode::Char('c'), cmd());
+    app.test_execute(Command::Copy);
     assert_eq!(app.clipboard.read().unwrap(), text);
 
     // Save: nothing written anywhere, no save started.
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     app.pump();
     assert!(!app.active_buffer().unwrap().save_in_flight());
     assert_eq!(files(&root), before);
@@ -724,7 +716,7 @@ async fn tools_find_works_in_a_log_tab() {
     app.logs.push(&demo(), Level::Warn, "hay");
     app.logs.push(&demo(), Level::Info, "another needle");
     open_log(&mut app, "demo");
-    app.press(KeyCode::Char('f'), cmd());
+    app.test_execute(Command::OpenFind);
     app.type_text("needle");
     assert_eq!(app.find.matches().len(), 2);
     // A new line with a match: the count follows.
@@ -749,7 +741,7 @@ async fn tools_a_log_tab_is_reused_and_splits_show_it() {
     let logs = app.buffers.iter().filter(|(_, b)| b.log.is_some()).count();
     assert_eq!(logs, 1);
 
-    app.press(KeyCode::Char('\\'), cmd());
+    app.test_execute(Command::SplitRight);
     assert_eq!(app.groups.len(), 2);
     assert_eq!(app.active_buffer().unwrap().name(), "demo (log)");
     push_lines(&app, &demo(), 3, 2);
@@ -785,7 +777,7 @@ async fn tools_a_log_tab_is_reused_and_splits_show_it() {
     let log = app.groups.get(first).unwrap().active_tab().unwrap().buffer;
     let index = app.group().find(log).unwrap();
     app.group_mut().active = index;
-    app.press(KeyCode::Char('w'), cmd());
+    app.test_execute(Command::CloseTab);
     assert_eq!(app.group().tabs.len(), 1);
     open_log(&mut app, "demo");
     assert_eq!(app.group().active_tab().unwrap().buffer, log, "the same buffer");
@@ -806,7 +798,7 @@ async fn tools_clear_log_empties_the_tab() {
     push_lines(&app, &demo(), 3, 1);
     assert!(app.settle(|a| tab_lines(a) == ["line 3"]).await);
     // Undo doesn't bring the cleared lines back.
-    app.press(KeyCode::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(tab_lines(&app), ["line 3"]);
 
     app.test_open(Buffer::open(&root.join("a.cpp")).unwrap());
@@ -874,7 +866,7 @@ async fn tools_sessions_never_restore_a_log_tab() {
     app.test_open(Buffer::open(&root.join("a.cpp")).unwrap());
     push_lines(&app, &demo(), 0, 3);
     open_log(&mut app, "demo");
-    app.press(KeyCode::Char('\\'), cmd());
+    app.test_execute(Command::SplitRight);
     assert_eq!(app.groups.len(), 2);
     app.test_execute(crate::command::Command::Quit);
     assert!(app.quitting());
@@ -1227,7 +1219,7 @@ async fn tools_view_lists_servers_tasks_and_jed_with_their_states() {
     with_clangd(&mut app, &root).await;
     let ok = run_ended(&mut app, "ok").await;
     let bad = run_ended(&mut app, "bad").await;
-    app.press(KeyCode::Char('u'), cmd() | KeyModifiers::SHIFT);
+    app.test_execute(Command::ShowTools);
     assert!(app.ui.side_visible && app.ui.side_panel == SidePanel::Tools);
     assert_eq!(app.ui.focus, Focus::SidePanel);
     assert_eq!(

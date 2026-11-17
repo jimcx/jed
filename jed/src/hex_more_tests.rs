@@ -1423,7 +1423,10 @@ mod done_when {
                 .iter()
                 .any(|r| r.starts_with("000000010  4d 41 52 4b 30"))
         );
-        app.press_file_end();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocEnd,
+            select: false,
+        });
         assert_eq!(hex(&app).cursor as u64, LEN - 1);
         let term = draw(&mut app);
         assert!(
@@ -1437,7 +1440,10 @@ mod done_when {
                 .any(|r| r.starts_with(&format!("{:09x}  ", LAST & !0xf)) && r.contains("4d 41 52 4b 45"))
         );
         cache_ok(&app);
-        app.press_file_start();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocStart,
+            select: false,
+        });
         assert_eq!(hex(&app).cursor, 0);
         draw_loaded(&mut app).await;
         for _ in 0..4 {
@@ -1521,7 +1527,10 @@ mod done_when {
         assert!(said(&app).starts_with("Selection too big to copy"), "{}", said(&app));
 
         // Truncated on disk while open (to 4 GiB and a bit): the cursor clamps, no stale bytes.
-        app.press_file_end();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocEnd,
+            select: false,
+        });
         draw_loaded(&mut app).await;
         let cut = 4 * GIB + 0x100;
         let f = fs::File::options().write(true).open(root.join("big.bin")).unwrap();
@@ -1573,7 +1582,10 @@ mod done_when {
             assert_eq!(shown(&app, &term, label), "\u{2014}", "{label}");
         }
         // Grouping 4: `04030201` little-endian, `01020304` big; a click on the 02 digits is offset 1.
-        app.press_file_start();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocStart,
+            select: false,
+        });
         app.hex_group = Some(4);
         assert!(first_row(&mut app).contains("04030201"));
         let col = first_row(&mut app).find("04030201").unwrap() + 4;
@@ -1664,11 +1676,21 @@ mod done_when {
         note(timed(&mut app, "open", |a| a.press(KeyCode::Enter, M::NONE)));
         assert!(app.settle(|a| a.active_hex().is_some()).await);
         draw_loaded(&mut app).await;
-        note(timed(&mut app, "Cmd+Down", |a| a.press_file_end()));
+        note(timed(&mut app, "Move DocEnd", |a| {
+            a.test_execute(crate::command::Command::Move {
+                motion: crate::command::Motion::DocEnd,
+                select: false,
+            })
+        }));
         draw_loaded(&mut app).await;
         note(timed(&mut app, "PageUp", |a| a.press(KeyCode::PageUp, M::NONE)));
         draw_loaded(&mut app).await;
-        note(timed(&mut app, "Cmd+Up", |a| a.press_file_start()));
+        note(timed(&mut app, "Move DocStart", |a| {
+            a.test_execute(crate::command::Command::Move {
+                motion: crate::command::Motion::DocStart,
+                select: false,
+            })
+        }));
         draw_loaded(&mut app).await;
         note(timed(&mut app, "Ctrl+G past 4 GiB", |a| {
             go_to_offset(a, &offset_arg(ABOVE))

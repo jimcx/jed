@@ -35,7 +35,7 @@ use ratatui::backend::TestBackend;
 
 use crate::app::{App, Focus, Level, Prompt};
 use crate::buffer::Buffer;
-use crate::command::Command;
+use crate::command::{Command, ShellCommand};
 use crate::syntax::Language;
 use crate::tasks::{SHUTDOWN_TIMEOUT, Source, Status, Task, Template};
 use crate::workspace::Workspace;
@@ -43,15 +43,6 @@ use crate::workspace::trust::TrustStore;
 
 /// A command printing 0 to 199, one per line, in the shell (`seq` is missing on macOS).
 pub(crate) const COUNT_TO_200: &str = "i=0; while [ $i -lt 200 ]; do echo $i; i=$((i+1)); done";
-
-/// The platform's Cmd (Super on macOS, Ctrl on Linux).
-fn cmd() -> KeyModifiers {
-    if cfg!(target_os = "macos") {
-        KeyModifiers::SUPER
-    } else {
-        KeyModifiers::CONTROL
-    }
-}
 
 /// A workspace app on `root`, its trust store in `state`.
 pub(crate) fn shell_app(root: &Path, state: &Path) -> App {
@@ -1011,7 +1002,7 @@ async fn shell_keys_and_pastes_go_to_the_shell() {
     );
 
     // jed's global keys still work from a shell tab: the palette opens.
-    app.press(KeyCode::Char('p'), cmd() | KeyModifiers::SHIFT);
+    app.press_bound(Command::ShowCommands);
     assert!(app.palette.is_some(), "the palette opens from a shell tab");
 }
 
@@ -1122,25 +1113,25 @@ async fn shell_scrollback_keys_and_wheel_scroll() {
     assert_eq!(scrollback(&app), 0, "Shift+PageDown is back on the live screen");
     app.press(KeyCode::PageUp, KeyModifiers::SHIFT);
     assert!(scrollback(&app) > 0);
-    app.press(KeyCode::End, KeyModifiers::CONTROL);
+    app.press_bound(Command::Shell(ShellCommand::Bottom));
     assert_eq!(scrollback(&app), 0, "Ctrl+End is the live screen");
-    app.press(KeyCode::Home, KeyModifiers::CONTROL);
+    app.press_bound(Command::Shell(ShellCommand::Top));
     let top = scrollback(&app);
     assert!(top > 100, "Ctrl+Home is the oldest output kept");
-    app.press(KeyCode::Down, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    app.press_bound(Command::Shell(ShellCommand::ScrollDown));
     assert_eq!(
         scrollback(&app),
         top - 1,
         "Ctrl+Shift+Down is a line towards the live screen"
     );
-    app.press(KeyCode::End, KeyModifiers::CONTROL);
-    app.press(KeyCode::Up, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    app.press_bound(Command::Shell(ShellCommand::Bottom));
+    app.press_bound(Command::Shell(ShellCommand::ScrollUp));
     assert!(scrollback(&app) > 0, "Ctrl+Shift+Up goes back a line");
-    app.press(KeyCode::Down, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    app.press_bound(Command::Shell(ShellCommand::ScrollDown));
     assert_eq!(scrollback(&app), 0);
 
     // The wheel over the editor area scrolls it too.
-    app.press(KeyCode::End, KeyModifiers::CONTROL);
+    app.press_bound(Command::Shell(ShellCommand::Bottom));
     draw(&mut app, 100, 30);
     let editor = app.hits.group(app.groups.active).unwrap().editor;
     app.mouse(MouseEventKind::ScrollUp, editor.x + 1, editor.y + 1);
@@ -1327,11 +1318,11 @@ async fn shell_draws_colours_and_the_cursor() {
         "the command's output arrived:\n{}",
         screen_text(&app)
     );
-    app.press(KeyCode::Home, KeyModifiers::CONTROL);
+    app.test_execute(Command::Shell(ShellCommand::Top));
     assert!(scrollback(&app) > 0);
     let term = draw(&mut app, 100, 30);
     assert!(!term.backend().cursor_visible(), "no cursor over the scrollback");
-    app.press(KeyCode::End, KeyModifiers::CONTROL);
+    app.test_execute(Command::Shell(ShellCommand::Bottom));
     let term = draw(&mut app, 100, 30);
     assert!(
         term.backend().cursor_visible(),
@@ -1474,7 +1465,7 @@ async fn shell_close_kills_the_shell() {
     );
     let pid = app.group().active_shell().unwrap().run.pid().unwrap();
 
-    app.press(KeyCode::Char('w'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    app.test_execute(Command::CloseTab);
     assert!(app.prompt.is_none(), "no prompt for a shell");
     assert!(app.group().active_shell().is_none(), "the tab closed");
     assert!(app.settle(|_| group_gone(pid)).await, "the shell process group is gone");
@@ -1721,13 +1712,13 @@ async fn shell_git_commit_opens_its_message_here() {
     assert_eq!(app.active_buffer().unwrap().syntax.language(), Language::GitCommit);
 
     app.type_text(message);
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     assert!(
         app.settle(|a| a.active_buffer().is_some_and(|b| !b.is_dirty())).await,
         "FLAKE shell_git_commit_opens_its_message_here: the message saved; loadavg {}",
         loadavg()
     );
-    app.press(KeyCode::Char('w'), cmd());
+    app.test_execute(Command::CloseTab);
     let committed = app.settle(|a| screen_has(a, "COMMITTED=0")).await;
     assert!(
         committed,

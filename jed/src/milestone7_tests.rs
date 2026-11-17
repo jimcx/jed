@@ -1101,7 +1101,10 @@ mod navigate {
         centred(&term);
 
         // Scrolled away, then back to it with the file open.
-        app.press_file_start();
+        app.test_execute(crate::command::Command::Move {
+            motion: crate::command::Motion::DocStart,
+            select: false,
+        });
         draw(&mut term, &mut app);
         assert_eq!(shown(&term), None);
         app.press(K::F(4), M::NONE); // wraps to a.txt

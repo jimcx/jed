@@ -84,7 +84,10 @@ async fn semantic_tokens_full_request_after_open_then_delta_after_an_edit() {
         DELTA,
         json!({ "resultId": "2", "edits": [{ "start": 5, "deleteCount": 5, "data": [1, 0, 3, 1, 0] }] }),
     );
-    app.press_file_end();
+    app.test_execute(crate::command::Command::Move {
+        motion: crate::command::Motion::DocEnd,
+        select: false,
+    });
     app.type_text("// c");
     assert!(app.settle(|_| !fake.requests(DELTA).is_empty()).await);
     assert_eq!(fake.requests(FULL).len(), 1, "no second full request");
@@ -114,7 +117,10 @@ async fn semantic_tokens_a_stale_answer_still_applies_mapped_through_the_edits()
     assert!(app.settle(|_| !fake.requests(FULL).is_empty()).await);
 
     // Typed before the answer: the answer is for version 1.
-    app.press_file_start();
+    app.test_execute(crate::command::Command::Move {
+        motion: crate::command::Motion::DocStart,
+        select: false,
+    });
     app.type_text("ab");
     assert!(
         app.settle(|a| a
@@ -227,7 +233,10 @@ async fn semantic_tokens_nothing_is_asked_without_a_provider() {
     });
     let mut app = open_app(&root, fake.clone());
     open_synced(&mut app, &fake, &root.join("a.cpp")).await;
-    app.press_file_end();
+    app.test_execute(crate::command::Command::Move {
+        motion: crate::command::Motion::DocEnd,
+        select: false,
+    });
     app.type_text("x");
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     assert!(app.settle(|_| true).await);
@@ -316,7 +325,10 @@ async fn semantic_tokens_are_drawn_over_tree_sitter_and_off_returns_to_it() {
     // Typing before the token: it moves with the text, with no answer yet (no flicker).
     app.settings.semantic_highlighting = SemanticHighlighting::On;
     fake.hold(DELTA, true);
-    app.press_file_start();
+    app.test_execute(crate::command::Command::Move {
+        motion: crate::command::Motion::DocStart,
+        select: false,
+    });
     app.type_text("  ");
     draw(&mut term, &mut app);
     assert_eq!(fgs(&term, "foo"), vec![ctor; 3], "the colour follows the edit");

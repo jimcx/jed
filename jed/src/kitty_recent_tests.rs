@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use tracing_subscriber::EnvFilter;
 
 use crate::app::App;
+use crate::command::Command;
 use crate::logs::{Logs, Tool};
 use crate::termctl::Env;
 use crate::termctl::kitty::fake::{Mode, serve, short_dir};
@@ -100,7 +101,7 @@ fn unix(path: &Path) -> Option<String> {
 
 /// Ctrl+R and waits: the rows as (label, keys).
 async fn ctrl_r(app: &mut App) -> Vec<(String, Option<String>)> {
-    app.press(KeyCode::Char('r'), KeyModifiers::CONTROL);
+    app.test_execute(Command::OpenRecentWorkspace);
     assert!(app.settle(|a| a.recent.listing_running == 0).await, "listed");
     let p = app.palette.as_ref().expect("picker");
     p.rows.iter().map(|r| (r.label.clone(), r.keys.clone())).collect()
@@ -220,7 +221,7 @@ async fn kitty_recent_a_silent_kitty_does_not_block_the_ui() {
     let (sock, _log) = serve(Mode::Silent, ls(&[]));
     let mut app = started(&s, unix(&sock)).await;
     let t = Instant::now();
-    app.press(KeyCode::Char('r'), KeyModifiers::CONTROL);
+    app.test_execute(Command::OpenRecentWorkspace);
     // The listing waits on kitty for up to 2 s; keys are handled meanwhile.
     app.type_text("x");
     assert!(app.recent.listing_running == 1, "still waiting on kitty");

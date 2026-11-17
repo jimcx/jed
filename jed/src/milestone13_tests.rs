@@ -1258,7 +1258,10 @@ async fn milestone_13_done_when_quit_and_reopen_gives_back_the_same_screen() {
     // Group 2, right: README.md near its end, "Paragraph" and its next match selected with Cmd+D.
     app.test_execute(Command::SplitRight);
     quick_open(&mut app, "README.md").await;
-    app.press_file_end();
+    app.test_execute(crate::command::Command::Move {
+        motion: crate::command::Motion::DocEnd,
+        select: false,
+    });
     app.test_execute(Command::GoToLine);
     app.type_text("101:3");
     app.press(KeyCode::Enter, KeyModifiers::NONE);

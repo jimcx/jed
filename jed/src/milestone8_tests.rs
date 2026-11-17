@@ -413,7 +413,10 @@ async fn milestone_8_typing_in_a_one_mb_cpp_file() {
     // `/*` at the top comments out the whole file: the UI thread gives up on the re-parse after
     // `INLINE_TIME` and it finishes in the background. A fast machine lexes the one big comment
     // within that time, so the tree may already be current: either way the key stays quick.
-    app.press_file_start();
+    app.test_execute(crate::command::Command::Move {
+        motion: crate::command::Motion::DocStart,
+        select: false,
+    });
     let t = Instant::now();
     app.type_text("/*");
     app.pump();
@@ -604,7 +607,10 @@ async fn milestone_8_highlighting() {
 
     // An unclosed `/*` at the top (tree-sitter's error recovery doesn't make it a comment), then
     // closed further down: the text between is a comment.
-    app.press_file_start();
+    app.test_execute(crate::command::Command::Move {
+        motion: crate::command::Motion::DocStart,
+        select: false,
+    });
     app.type_text("/*");
     app.pump();
     draw(&mut term, &mut app);
@@ -774,7 +780,10 @@ async fn milestone_8_highlighted_one_mb_cpp_file_frames() {
     );
 
     // Paging down from the top (each page a new highlight query past the margin).
-    app.press_file_start();
+    app.test_execute(crate::command::Command::Move {
+        motion: crate::command::Motion::DocStart,
+        select: false,
+    });
     app.pump();
     draw(&mut term, &mut app);
     let mut worst_page = Duration::ZERO;
@@ -1313,7 +1322,10 @@ async fn milestone_8_auto_indent_cpp_and_python() {
         "def f(x):\n    if x:  # yes\n        return 1\n    y = 2\n    else:"
     );
     let (mut app, _) = open_app(&dir, "", "b.py", "def f(x):\n    if x:\n        y = 1\n");
-    app.press_file_end();
+    app.test_execute(crate::command::Command::Move {
+        motion: crate::command::Motion::DocEnd,
+        select: false,
+    });
     app.type_text("        else:");
     assert_eq!(text(&app), "def f(x):\n    if x:\n        y = 1\n    else:");
 }

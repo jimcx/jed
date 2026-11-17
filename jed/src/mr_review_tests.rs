@@ -721,15 +721,6 @@ mod lsp {
     use crate::milestone9_tests::{draw, find_cells, idle, location, popup_rows, terminal, uri};
     use serde_json::json;
 
-    // Moved here from milestone9_tests; subtask d migrates this file's presses and removes it.
-    fn cmd() -> KeyModifiers {
-        if cfg!(target_os = "macos") {
-            KeyModifiers::SUPER
-        } else {
-            KeyModifiers::CONTROL
-        }
-    }
-
     /// `main` with `a.cpp` / `b.cpp`, then `feature` renaming `value` to `target` in `a.cpp`.
     fn make_cpp_repo(base: &Path) -> (PathBuf, String) {
         let root = base.join("proj");
@@ -869,14 +860,14 @@ mod lsp {
         let (mut app, fake, _a, _server) = review_app(dir.path()).await;
         caret_at(&mut app, false, 2, 5);
         assert!(!diff(&app).caret.right);
-        for keys in [
-            (KeyCode::F(12), KeyModifiers::NONE),
-            (KeyCode::F(12), KeyModifiers::SHIFT),
-            (KeyCode::Char('i'), cmd() | KeyModifiers::ALT),
-        ] {
+        for step in 0..3 {
             app.message = None;
-            app.press(keys.0, keys.1);
-            assert_eq!(message(&app), "Deleted lines have no language server", "{keys:?}");
+            match step {
+                0 => app.press(KeyCode::F(12), KeyModifiers::NONE),
+                1 => app.press(KeyCode::F(12), KeyModifiers::SHIFT),
+                _ => app.test_execute(Command::ShowHover),
+            }
+            assert_eq!(message(&app), "Deleted lines have no language server", "step {step}");
         }
         idle(&mut app).await;
         for m in [
@@ -914,7 +905,7 @@ mod lsp {
             json!({ "contents": { "kind": "plaintext", "value": "int target" }, "range": range }),
         );
         caret_at(&mut app, true, 1, 12);
-        app.press(KeyCode::Char('i'), cmd() | KeyModifiers::ALT);
+        app.test_execute(Command::ShowHover);
         assert!(app.settle(|a| a.hover.popup.is_some()).await, "{}", message(&app));
         app.hover.popup = None;
         caret_at(&mut app, false, 2, 5);
@@ -936,7 +927,7 @@ mod lsp {
         caret_at(&mut app, true, 1, 12);
         draw(&mut term, &mut app);
         let (x, y) = find_cells(&term, "use = target;").unwrap();
-        app.press(KeyCode::Char('i'), cmd() | KeyModifiers::ALT);
+        app.test_execute(Command::ShowHover);
         assert!(app.settle(|a| a.hover.popup.is_some()).await, "{}", message(&app));
         assert_eq!(position(&fake, "textDocument/hover"), (1, 12));
         draw(&mut term, &mut app);
@@ -980,7 +971,7 @@ mod lsp {
             crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
             x + 7,
             y,
-            cmd(),
+            KeyModifiers::CONTROL,
         );
         assert!(
             app.settle(|_| !fake.requests("textDocument/definition").is_empty())
@@ -1043,7 +1034,7 @@ mod lsp {
             crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
             x + 7,
             y,
-            cmd(),
+            KeyModifiers::CONTROL,
         );
         assert!(
             app.settle(|a| a.group().active_tab().is_some()).await,
@@ -1061,7 +1052,7 @@ mod lsp {
         assert!(app.settle(|a| a.diffs_settled()).await);
         app.message = None;
         app.press(KeyCode::F(12), KeyModifiers::NONE);
-        app.press(KeyCode::Char('i'), cmd() | KeyModifiers::ALT);
+        app.test_execute(Command::ShowHover);
         idle(&mut app).await;
         assert!(fake.requests("textDocument/definition").is_empty());
         assert!(fake.requests("textDocument/hover").is_empty());
@@ -1989,7 +1980,7 @@ mod drafts {
         select(app, true, 1, 2, 2);
         app.test_execute(Command::ReviewComment);
         app.type_text(text);
-        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        app.press_bound(Command::ReviewSaveComment);
     }
 
     fn store_text(state: &Path) -> String {
@@ -2080,7 +2071,7 @@ mod drafts {
         select(&mut app, false, 1, 1, 2);
         app.test_execute(Command::ReviewComment);
         app.type_text("Why remove this?");
-        app.press(KeyCode::Enter, KeyModifiers::ALT);
+        app.press_bound(Command::ReviewSaveComment);
         let rows = app.review.draft_rows();
         let d = &rows[0].draft;
         assert_eq!(
@@ -2102,7 +2093,7 @@ mod drafts {
         select(&mut app, true, 0, 2, 0);
         app.test_execute(Command::ReviewComment);
         app.type_text("x");
-        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        app.press_bound(Command::ReviewSaveComment);
         let d = app.review.draft_rows()[0].draft.clone();
         assert_eq!((d.start, d.end), (1, 2));
     }
@@ -2114,7 +2105,7 @@ mod drafts {
         let mut app = boot(&root, &server, None).await;
         select(&mut app, true, 1, 1, 0);
         app.test_execute(Command::ReviewComment);
-        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        app.press_bound(Command::ReviewSaveComment);
         assert!(app.test_composer_text().is_some(), "still open");
         assert!(message(&app).contains("empty"), "{}", message(&app));
         app.press(KeyCode::Esc, KeyModifiers::NONE);
@@ -2342,7 +2333,7 @@ mod drafts {
         assert_eq!(app.review.draft_rows()[0].draft.body, "first");
         app.test_execute(Command::ReviewEditDraft);
         app.type_text(" and more");
-        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        app.press_bound(Command::ReviewSaveComment);
         let rows = app.review.draft_rows();
         assert_eq!(rows.len(), 1);
         assert_eq!(
@@ -2529,7 +2520,7 @@ pub(crate) mod write {
         select(app, true, first, last);
         app.test_execute(Command::ReviewComment);
         app.type_text(text);
-        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        app.press_bound(Command::ReviewSaveComment);
     }
 
     pub(crate) fn requests(server: &FakeServer, method: &str) -> Vec<crate::forge::fake::Request> {
@@ -2638,7 +2629,7 @@ pub(crate) mod write {
             .clone();
         app.test_execute(Command::ReviewSubmitRequestChanges);
         app.review.drafts.live.insert(held, Some("the lines changed".into()));
-        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        app.press_bound(Command::ReviewSaveComment);
         assert!(
             app.settle(|a| !a.review.writing && a.review.draft_rows().len() == 1)
                 .await
@@ -2653,7 +2644,7 @@ pub(crate) mod write {
         let left = app.review.draft_rows()[0].draft.id.clone();
         app.test_execute(Command::ReviewSubmitComment);
         app.review.drafts.live.insert(left, Some("the lines changed".into()));
-        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        app.press_bound(Command::ReviewSaveComment);
         assert!(message(&app).contains("held back"), "{}", message(&app));
         assert_eq!(
             requests(&server, "POST").iter().filter(|r| r.target == REVIEWS).count(),
@@ -2692,7 +2683,7 @@ pub(crate) mod write {
         let l = lines(&mut app, 120, 30).join("\n");
         assert!(l.contains("Reply (posted at once)"), "{l}");
         let before = lookups(&server);
-        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        app.press_bound(Command::ReviewSaveComment);
         assert!(
             app.settle(|a| a.test_composer_text().is_none() && !a.review.writing)
                 .await
@@ -2743,7 +2734,7 @@ pub(crate) mod write {
         app.test_execute(Command::ReviewEditComment);
         assert_eq!(app.test_composer_text().as_deref(), Some("Can this overflow"));
         app.type_text("?");
-        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        app.press_bound(Command::ReviewSaveComment);
         assert!(
             app.settle(|a| a.test_composer_text().is_none() && !a.review.writing)
                 .await
@@ -2794,7 +2785,7 @@ pub(crate) mod write {
         select(&mut app, false, 1, 1);
         app.test_execute(Command::ReviewReply);
         app.type_text("hello");
-        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        app.press_bound(Command::ReviewSaveComment);
         assert!(app.settle(|a| a.review.error.is_some()).await);
         assert_eq!(app.test_composer_text().as_deref(), Some("hello"), "the text is kept");
         assert!(message(&app).contains("404"), "{}", message(&app));

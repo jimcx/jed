@@ -677,7 +677,7 @@ impl App {
 #[cfg(test)]
 mod matched_tests {
     use crate::buffer::Buffer;
-    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+    use crate::command::Command;
 
     /// A query typed after the walk finished is answered only by the matcher's wake-up
     /// (`FileEvent::Matched`): the walk's own event is long handled.
@@ -690,12 +690,7 @@ mod matched_tests {
         }
         let mut app = crate::milestone_tests::test_app(&root, Buffer::open(&root.join("alpha.txt")).unwrap());
         app.test_start();
-        let cmd = if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        };
-        app.press(K::Char('p'), cmd);
+        app.test_execute(Command::QuickOpen);
         assert!(app.settle(|a| a.files_settled()).await, "walk done");
         app.type_text("gamma");
         assert!(

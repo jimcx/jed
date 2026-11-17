@@ -185,7 +185,7 @@ async fn walk(
     };
     app.test_execute(Command::ReviewComment);
     app.type_text("Walk draft");
-    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    app.press_bound(Command::ReviewSaveComment);
     assert!(app.settle(|_| store_text(&state).contains("Walk draft")).await);
     app.test_submit(Command::ReviewSubmitComment);
     assert!(

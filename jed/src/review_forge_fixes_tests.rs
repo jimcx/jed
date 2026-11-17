@@ -13,7 +13,6 @@ mod gitlab_suggestions {
     use crate::git::test_repo::git;
     use crate::mr_review_tests::gitlab::{boot, server_with_note};
     use crate::mr_review_tests::make_repo;
-    use crossterm::event::{KeyCode, KeyModifiers};
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
@@ -75,7 +74,7 @@ mod gitlab_suggestions {
         on_thread(&mut app);
         app.test_execute(Command::ReviewReply);
         app.type_text("```suggestion\nX\n```");
-        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        app.press_bound(Command::ReviewSaveComment);
         assert!(
             app.settle(|a| a.test_composer_text().is_none() && !a.review.writing)
                 .await
@@ -92,7 +91,7 @@ mod gitlab_suggestions {
         app.test_execute(Command::ReviewEditComment);
         assert_eq!(app.test_composer_text().as_deref(), Some("mine"));
         app.type_text("\n```suggestion\nY\n```");
-        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        app.press_bound(Command::ReviewSaveComment);
         assert!(
             app.settle(|a| a.test_composer_text().is_none() && !a.review.writing)
                 .await
@@ -269,7 +268,6 @@ mod placement {
     use crate::mr_review_tests::github::{boot_github, server as github_server};
     use crate::mr_review_tests::suggest::{boot, server as gitea_server};
     use crate::mr_review_tests::{draw_wide, make_repo, open_file, threads};
-    use crossterm::event::{KeyCode, KeyModifiers};
     use ratatui::{Terminal, backend::TestBackend};
 
     fn screen(app: &mut App) -> String {
@@ -373,13 +371,13 @@ mod placement {
             "the box says so: {text}"
         );
         app.type_text("outside");
-        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        app.press_bound(Command::ReviewSaveComment);
         select(&mut app, 6);
         app.test_execute(Command::ReviewComment);
         let text = screen(&mut app);
         assert!(!text.contains("not in the merge request's diff"), "{text}");
         app.type_text("inside");
-        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        app.press_bound(Command::ReviewSaveComment);
         let rows = app.review.draft_rows();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].held, Some("not in the merge request's diff"));
@@ -414,7 +412,7 @@ mod placement {
         select(&mut app, 1);
         app.test_execute(Command::ReviewComment);
         app.type_text("outside");
-        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        app.press_bound(Command::ReviewSaveComment);
         let rows = app.review.draft_rows();
         assert_eq!(rows[0].held, Some("not in the merge request's diff"));
         let id = rows[0].draft.id.clone();
@@ -436,7 +434,7 @@ mod placement {
         let text = screen(&mut app);
         assert!(!text.contains("not in the merge request's diff"), "{text}");
         app.type_text("outside");
-        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        app.press_bound(Command::ReviewSaveComment);
         assert_eq!(app.review.draft_rows()[0].held, None);
         app.test_submit(Command::ReviewSubmitComment);
         assert!(

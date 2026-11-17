@@ -11,14 +11,6 @@ use crate::buffer::pos;
 use crate::command::Command;
 use crate::shell_tests::{dirs, draw, screen_text, shell_app};
 
-fn cmd() -> KeyModifiers {
-    if cfg!(target_os = "macos") {
-        KeyModifiers::SUPER
-    } else {
-        KeyModifiers::CONTROL
-    }
-}
-
 /// Prints `line` in a fresh shell and returns the screen cell `(x, y)` of the first character
 /// of `needle` in it.
 async fn show(app: &mut App, line: &str, needle: &str) -> (u16, u16) {
@@ -42,8 +34,8 @@ async fn show(app: &mut App, line: &str, needle: &str) -> (u16, u16) {
 }
 
 fn link_click(app: &mut App, (x, y): (u16, u16)) {
-    app.mouse_with(MouseEventKind::Down(MouseButton::Left), x, y, cmd());
-    app.mouse_with(MouseEventKind::Up(MouseButton::Left), x, y, cmd());
+    app.mouse_with(MouseEventKind::Down(MouseButton::Left), x, y, KeyModifiers::CONTROL);
+    app.mouse_with(MouseEventKind::Up(MouseButton::Left), x, y, KeyModifiers::CONTROL);
 }
 
 #[tokio::test(flavor = "multi_thread")]

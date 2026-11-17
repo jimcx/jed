@@ -377,7 +377,7 @@ mod thread_tab {
             Some("Can this overflow on a narrow terminal")
         );
         app.type_text("?");
-        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        app.press_bound(Command::ReviewSaveComment);
         assert!(
             app.settle(|a| a.test_composer_text().is_none() && !a.review.writing)
                 .await
@@ -434,7 +434,7 @@ mod thread_tab {
         app.type_text("Fixed it");
         let text = wide(&mut app);
         assert!(text.contains("Reply (posted at once)"), "{text}");
-        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        app.press_bound(Command::ReviewSaveComment);
         assert!(
             app.settle(|a| a.test_composer_text().is_none() && !a.review.writing)
                 .await

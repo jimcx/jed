@@ -348,7 +348,6 @@ impl App {
 mod tests {
     use std::fs;
 
-    use crossterm::event::{KeyCode, KeyModifiers as M};
     use ropey::Rope;
 
     use super::*;
@@ -357,14 +356,6 @@ mod tests {
     use crate::buffer::file::{self, Stamp};
     use crate::workspace::trust::TrustStore;
     use crate::workspace::{self, Workspace};
-
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
-    }
 
     /// An app on `a.txt` holding `text`, not started (no watcher): the tests hand it the
     /// checks' results themselves, as a check racing a save or an edit would report them.
@@ -396,7 +387,7 @@ mod tests {
         app.type_text("x");
         let buf = app.active_buffer().unwrap();
         let (revision, epoch) = (buf.revision(), buf.save_epoch());
-        app.press(KeyCode::Char('s'), cmd());
+        app.test_execute(crate::command::Command::Save);
         assert!(app.settle(|a| !a.active_buffer().unwrap().save_in_flight()).await);
         app.type_text("y");
         app.disk_checked(Checked {

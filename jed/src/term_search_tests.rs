@@ -6,15 +6,8 @@
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
+use crate::command::{Command, TermSearchCommand};
 use crate::shell_tests::{COUNT_TO_200, dirs, draw, screen_text, scrollback, shell_app};
-
-fn find_mods() -> KeyModifiers {
-    if cfg!(target_os = "macos") {
-        KeyModifiers::SUPER
-    } else {
-        KeyModifiers::CONTROL | KeyModifiers::SHIFT
-    }
-}
 
 fn label(app: &crate::app::App) -> String {
     app.term_search.as_ref().map(|s| s.label()).unwrap_or_default()
@@ -39,7 +32,7 @@ async fn term_search_finds_in_the_scrollback_and_steps() {
     );
     assert_eq!(scrollback(&app), 0);
 
-    app.press(KeyCode::Char('f'), find_mods());
+    app.test_execute(Command::TermSearch(TermSearchCommand::Open));
     assert!(app.term_search.is_some(), "the bar opened");
     app.type_text("17");
     // 17, 117 and 170..179
@@ -104,7 +97,7 @@ async fn term_search_finds_lines_in_compressed_scrollback() {
         );
     }
 
-    app.press(KeyCode::Char('f'), find_mods());
+    app.test_execute(Command::TermSearch(TermSearchCommand::Open));
     app.type_text("1234");
     assert_eq!(label(&app), "1 of 1");
     assert!(screen_text(&app).lines().any(|l| l.trim_end() == "1234"));

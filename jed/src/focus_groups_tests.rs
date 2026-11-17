@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+use crossterm::event::{MouseButton, MouseEventKind};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
@@ -268,15 +268,14 @@ async fn focus_groups_next_and_previous_cycle_in_reading_order_and_wrap() {
         assert_eq!(app.groups.active, expected);
     }
 
-    // The keys: Ctrl+Shift+. / Ctrl+Shift+,; a terminal may report the shifted keys as `>` / `<`.
-    let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
-    app.press(KeyCode::Char('.'), ctrl_shift);
+    // The keys (the keymap's tests cover a terminal reporting the shifted `>` / `<`).
+    app.press_bound(Command::FocusNextGroup);
     assert_eq!(app.groups.active, ids[1]);
-    app.press(KeyCode::Char('>'), ctrl_shift);
+    app.press_bound(Command::FocusNextGroup);
     assert_eq!(app.groups.active, ids[2]);
-    app.press(KeyCode::Char(','), ctrl_shift);
+    app.press_bound(Command::FocusPreviousGroup);
     assert_eq!(app.groups.active, ids[1]);
-    app.press(KeyCode::Char('<'), ctrl_shift);
+    app.press_bound(Command::FocusPreviousGroup);
     assert_eq!(app.groups.active, ids[0]);
 }
 

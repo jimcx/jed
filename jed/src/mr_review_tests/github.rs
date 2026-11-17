@@ -259,7 +259,7 @@ async fn mr_review_github_shows_a_multi_line_thread_and_submits_in_github_shape(
     };
     app.test_execute(Command::ReviewComment);
     app.type_text("Please rename");
-    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    app.press_bound(Command::ReviewSaveComment);
     app.test_submit(Command::ReviewSubmitApprove);
     assert!(
         app.settle(|a| a.review.draft_rows().is_empty() && !a.review.writing)

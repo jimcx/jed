@@ -203,7 +203,10 @@ async fn hex_rows_are_hexdumps_and_resizing_keeps_a_power_of_two() {
         assert_eq!(rows[..], dump[..rows.len()]);
     }
     // The end of the file: its last rows and the end offset, as hexdump ends.
-    app.press_file_end();
+    app.test_execute(crate::command::Command::Move {
+        motion: crate::command::Motion::DocEnd,
+        select: false,
+    });
     let term = draw(&mut app, 100, 30);
     let rows = drawn_rows(&term, rect);
     assert_eq!(rows.last().unwrap(), &format!("{:08x}", data().len()));
@@ -253,7 +256,10 @@ async fn hex_rows_are_hexdumps_and_resizing_keeps_a_power_of_two() {
         }
     }
     // A non-printable byte (0x00 at 7) dimmed in both columns.
-    app.press_file_start();
+    app.test_execute(crate::command::Command::Move {
+        motion: crate::command::Motion::DocStart,
+        select: false,
+    });
     let term = draw(&mut app, 100, 12);
     let buf = term.backend().buffer();
     let rect = rows_rect(&app);
@@ -292,11 +298,17 @@ async fn hex_keys_move_select_and_switch_columns() {
     app.press(KeyCode::PageDown, M::NONE);
     assert_eq!(hex(&app).cursor, 34 + (height - 1) * 16);
     assert_eq!(hex(&app).top_row(), height - 1);
-    app.press_file_end();
+    app.test_execute(crate::command::Command::Move {
+        motion: crate::command::Motion::DocEnd,
+        select: false,
+    });
     assert_eq!(at(&app), (data().len() - 1, None));
     draw(&mut app, 100, 12);
     assert!(hex(&app).top_row() > 0);
-    app.press_file_start();
+    app.test_execute(crate::command::Command::Move {
+        motion: crate::command::Motion::DocStart,
+        select: false,
+    });
     assert_eq!(at(&app), (0, None));
     app.test_execute(Command::SelectAll);
     assert_eq!(at(&app), (data().len() - 1, Some(0..data().len())));
@@ -304,7 +316,10 @@ async fn hex_keys_move_select_and_switch_columns() {
     assert!(status_bar(&term).contains(&format!("{} bytes selected", data().len())));
 
     // Tab: the other column (where the terminal cursor goes); Shift+Tab back.
-    app.press_file_start();
+    app.test_execute(crate::command::Command::Move {
+        motion: crate::command::Motion::DocStart,
+        select: false,
+    });
     app.press(KeyCode::Right, M::NONE);
     assert_eq!(hex(&app).column, Column::Hex);
     app.press(KeyCode::Tab, M::NONE);
@@ -1609,7 +1624,10 @@ async fn hex_done_when() {
     assert_eq!(hex(&app).layout.bytes_per_row(), 16);
     let start = drawn_rows(&term, rect);
     assert_eq!(start.len(), rect.height as usize);
-    app.press_file_end();
+    app.test_execute(crate::command::Command::Move {
+        motion: crate::command::Motion::DocEnd,
+        select: false,
+    });
     let term = draw(&mut app, 100, 30);
     let end = drawn_rows(&term, rect);
     assert_eq!(
@@ -1646,7 +1664,10 @@ async fn hex_done_when() {
     assert!(status.contains("Offset 0x100 (256)   0xf8 248"), "{status}");
 
     // Cmd+F `ELF` (ASCII) and `45 4c 46` (hex) find the same match; the toggle converts.
-    app.press_file_start();
+    app.test_execute(crate::command::Command::Move {
+        motion: crate::command::Motion::DocStart,
+        select: false,
+    });
     find(&mut app, "ELF");
     assert!(!app.find_options.hex);
     assert_eq!(hex(&app).selection(), Some(1..4));
@@ -1751,7 +1772,10 @@ async fn hex_disk_changes_reach_every_tab_of_the_file() {
     let path = root.join("bin.dat");
     open_bin(&mut app).await;
     app.test_execute(Command::SplitRight);
-    app.press_file_end();
+    app.test_execute(crate::command::Command::Move {
+        motion: crate::command::Motion::DocEnd,
+        select: false,
+    });
     draw(&mut app, 200, 12);
     assert_eq!(tabs_of(&app, &path).len(), 2);
 
