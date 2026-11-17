@@ -56,6 +56,7 @@ use ratatui::style::Modifier;
 
 use crate::app::{App, InitialFile};
 use crate::buffer::Buffer;
+use crate::command::{Command, Motion};
 use crate::disk::BannerAction;
 use crate::git::test_repo::{commit_all, git, git_with_input, init};
 use crate::git::{Change, Decoration};
@@ -271,14 +272,6 @@ async fn milestone_10_workspace_in_a_subdirectory_of_the_work_tree() {
     );
 }
 
-fn cmd() -> M {
-    if cfg!(target_os = "macos") {
-        M::SUPER
-    } else {
-        M::CONTROL
-    }
-}
-
 /// The app with `file` (in `root`) open in the editor.
 pub(crate) fn open_file_app(root: &Path, state: &Path, file: &str) -> App {
     let ws = Workspace::load(root.to_path_buf());
@@ -315,7 +308,7 @@ async fn milestone_10_clean_file_reloads_when_changed_on_disk() {
     app.press(KeyCode::Right, M::NONE);
     app.press(KeyCode::Right, M::NONE);
     assert_eq!(head(&app), 10);
-    app.press(KeyCode::Char('\\'), cmd());
+    app.test_execute(Command::SplitRight);
     assert_eq!(app.groups.len(), 2, "split");
     app.press(KeyCode::Up, M::NONE);
     let other = app.groups.active;
@@ -346,10 +339,10 @@ async fn milestone_10_clean_file_reloads_when_changed_on_disk() {
     assert_eq!(view(&app, other), 11, "the other view still on \"two\"");
 
     // Undo brings the old text back (dirty: it's not the file's); redo is clean again.
-    app.press(KeyCode::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), "one\ntwo\nthree\n");
     assert!(app.active_buffer().unwrap().is_dirty());
-    app.press(KeyCode::Char('z'), cmd() | M::SHIFT);
+    app.test_execute(Command::Redo);
     assert!(!app.active_buffer().unwrap().is_dirty());
 
     // Not text any more: not reloaded, said so, and the banner offers the choice.
@@ -374,7 +367,7 @@ async fn milestone_10_own_saves_are_not_changes_on_disk() {
     let mut app = open_file_app(&root, &state, "a.txt");
     app.type_text("x");
     let checked = app.disk.checked;
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     assert!(
         app.settle(|a| !a.active_buffer().unwrap().save_in_flight()).await,
         "saved"
@@ -391,15 +384,15 @@ async fn milestone_10_own_saves_are_not_changes_on_disk() {
     assert_eq!(text(&app), "xzone\n");
     assert!(!lines(&draw(&mut app)).iter().any(|r| r.contains("has changed on disk")));
     assert_eq!(fs::read_to_string(&path).unwrap(), "xone\n");
-    app.press(KeyCode::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert!(!app.active_buffer().unwrap().is_dirty(), "back to what was saved");
-    app.press(KeyCode::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), "one\n", "undo history untouched");
-    app.press(KeyCode::Char('z'), cmd() | M::SHIFT);
+    app.test_execute(Command::Redo);
 
     // An external write right after a save (its events not handled yet) is still noticed.
     app.type_text("y");
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     assert!(app.settle(|a| !a.active_buffer().unwrap().is_dirty()).await, "saved");
     fs::write(&path, "theirs\n").unwrap();
     assert!(
@@ -437,7 +430,7 @@ async fn milestone_10_dirty_file_changed_on_disk_shows_the_banner() {
     assert!(rows[2].contains("mine one"), "the text below the banner: {rows:#?}");
 
     // Saving now would lose their version: refused, the file untouched.
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     assert!(
         app.settle(|a| !a.active_buffer().unwrap().save_in_flight()).await,
         "save ended"
@@ -446,7 +439,7 @@ async fn milestone_10_dirty_file_changed_on_disk_shows_the_banner() {
     assert!(app.active_buffer().unwrap().is_dirty());
     assert!(app.message.as_ref().unwrap().text.contains("not saved"));
     // Nor does quitting through "Save" overwrite it, or quit.
-    app.press(KeyCode::Char('q'), cmd());
+    app.test_execute(Command::Quit);
     app.press(KeyCode::Char('s'), M::NONE);
     assert!(
         app.settle(|a| !a.active_buffer().unwrap().save_in_flight()).await,
@@ -466,7 +459,7 @@ async fn milestone_10_dirty_file_changed_on_disk_shows_the_banner() {
     let buf = app.active_buffer().unwrap();
     assert!(buf.disk_conflict.is_none() && buf.is_dirty());
     assert!(!lines(&draw(&mut app)).iter().any(|r| r.contains("has changed on disk")));
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     assert!(app.settle(|a| !a.active_buffer().unwrap().is_dirty()).await, "saved");
     assert_eq!(fs::read_to_string(&path).unwrap(), "mine one\n");
     assert!(!app.quitting(), "the refused quit isn't resumed by a later save");
@@ -488,7 +481,7 @@ async fn milestone_10_dirty_file_changed_on_disk_shows_the_banner() {
     );
     let buf = app.active_buffer().unwrap();
     assert!(!buf.is_dirty() && buf.disk_conflict.is_none());
-    app.press(KeyCode::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), "mine again one\n");
 }
 
@@ -508,7 +501,7 @@ async fn milestone_10_deleted_file_marks_the_tab_and_save_recreates_it() {
     let x = tab_bar[..x].chars().count() as u16;
     assert!(term.backend().buffer()[(x, 0)].modifier.contains(Modifier::CROSSED_OUT));
 
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     // The save itself clears the mark (not a later check of its events).
     assert!(
         app.settle(|a| !a.active_buffer().unwrap().save_in_flight()).await,
@@ -616,7 +609,7 @@ async fn milestone_10_reload_keeps_the_scroll_and_refuses_non_utf8() {
         screen.iter().any(|r| r.contains("a.txt has changed on disk and wasn")),
         "{screen:#?}"
     );
-    app.press(KeyCode::Char('p'), cmd() | M::SHIFT);
+    app.test_execute(Command::ShowCommands);
     app.type_text("Reload from Disk");
     app.press(KeyCode::Enter, M::NONE);
     assert!(app.settle(|a| text(a) == "caf\u{FFFD}\n").await, "{:?}", text(&app));
@@ -677,7 +670,7 @@ pub(crate) fn marker_colour(app: &App, key: &str) -> Option<Color> {
 
 /// Runs the palette command titled `title`.
 pub(crate) fn run_command(app: &mut App, title: &str) {
-    app.press(KeyCode::Char('p'), cmd() | M::SHIFT);
+    app.test_execute(Command::ShowCommands);
     app.type_text(title);
     let p = app.palette.as_ref().unwrap();
     assert_eq!(p.rows[p.selected].label, title);
@@ -706,7 +699,10 @@ fn copy_repo(root: &Path, name: &str) -> PathBuf {
 }
 
 fn place_cursor(app: &mut App, line: usize) {
-    app.press_file_start();
+    app.test_execute(Command::Move {
+        motion: Motion::DocStart,
+        select: false,
+    });
     for _ in 0..line {
         app.press(KeyCode::Down, M::NONE);
     }
@@ -772,8 +768,8 @@ async fn milestone_10_gutter_markers_follow_edits_and_the_index() {
     assert!(settle_markers(&mut app).await);
     assert_eq!(markers(&mut app), now);
     // Undone (the Backspace, then the Enter and the q): back as they were.
-    app.press(KeyCode::Char('z'), cmd());
-    app.press(KeyCode::Char('z'), cmd());
+    app.test_execute(Command::Undo);
+    app.test_execute(Command::Undo);
     assert_eq!(app.active_buffer().unwrap().rope.to_string(), changed);
     assert!(settle_markers(&mut app).await);
     assert_eq!(markers(&mut app), expected);
@@ -987,7 +983,7 @@ async fn milestone_10_staging_waits_for_a_save_in_flight() {
     app.type_text("y");
     assert!(settle_markers(&mut app).await);
     // Save, and stage before the save's result is handled: it waits, then stages from disk.
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     assert!(app.active_buffer().unwrap().save_in_flight());
     run_command(&mut app, "Git: Stage Change at Cursor");
     assert!(app.prompt.is_none(), "a save in flight isn't asked about");
@@ -1000,7 +996,7 @@ async fn milestone_10_staging_waits_for_a_save_in_flight() {
     git(&root, &["reset", "-q"]);
     assert!(settle_markers(&mut app).await);
     place_cursor(&mut app, 3);
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     run_command(&mut app, "Git: Stage Change at Cursor");
     assert!(app.message.as_ref().unwrap().text.contains("Waiting for the save"));
     place_cursor(&mut app, 0);
@@ -1032,7 +1028,7 @@ async fn milestone_10_staging_waits_for_a_save_in_flight() {
         text.replace("line 3\n", "yline 3\n").replace("line 20\n", "outside\n"),
     )
     .unwrap();
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     assert!(app.active_buffer().unwrap().save_in_flight());
     run_command(&mut app, "Git: Stage Change at Cursor");
     assert!(app.message.as_ref().unwrap().text.contains("Waiting for the save"));
@@ -1088,7 +1084,7 @@ async fn milestone_10_next_and_previous_change() {
     let mut app = open_file_app(&root, &state, "f.txt");
     assert!(settle_markers(&mut app).await);
     let next = |app: &mut App| {
-        app.press(KeyCode::F(5), M::ALT);
+        app.test_execute(Command::NextChange);
         cursor_line(app)
     };
     // Changes start on lines 3, 9 (the deletion, below line 9) and 20.
@@ -1096,17 +1092,10 @@ async fn milestone_10_next_and_previous_change() {
     assert_eq!(next(&mut app), 9);
     assert_eq!(next(&mut app), 20);
     assert_eq!(next(&mut app), 3, "wraps");
-    app.press(KeyCode::F(5), M::ALT | M::SHIFT);
+    app.test_execute(Command::PreviousChange);
     assert_eq!(cursor_line(&app), 20, "wraps back");
-    app.press(KeyCode::F(5), M::ALT | M::SHIFT);
+    app.test_execute(Command::PreviousChange);
     assert_eq!(cursor_line(&app), 9);
-    assert_eq!(
-        app.keymap
-            .binding_for(crate::command::Command::NextChange)
-            .map(|k| k.label())
-            .as_deref(),
-        Some("Alt+F5")
-    );
 }
 
 /// Typing at every one of 60k cursors in a 1 MB file with gutter markers: the markers follow
@@ -1147,7 +1136,7 @@ async fn milestone_10_typing_at_many_cursors_with_markers() {
     app.press(KeyCode::Right, M::NONE);
     app.press(KeyCode::Right, M::NONE);
     app.press(KeyCode::Right, M::NONE);
-    app.press(KeyCode::Char('l'), cmd() | M::SHIFT);
+    app.test_execute(Command::SelectAllMatches);
     let cursors = app.group().active_tab().unwrap().view.selections.len();
     assert!(cfg!(debug_assertions) || cursors > 50_000, "{cursors}");
     let n = 5u32;
@@ -1183,7 +1172,6 @@ async fn milestone_10_typing_at_many_cursors_with_markers() {
 // 10d: the diff view.
 
 use crate::app::Focus;
-use crate::command::Command;
 use crate::diff_view::{DiffTab, Pair};
 
 fn diff_tab(app: &App) -> &DiffTab {
@@ -1374,16 +1362,16 @@ async fn milestone_10_diff_view_next_previous_change_and_scrolling() {
     app.press(KeyCode::F(7), M::SHIFT);
     assert_eq!(cursor(&app), 21, "wraps back");
     // VS Code's Alt+F5 / Shift+Alt+F5 too.
-    app.press(KeyCode::F(5), M::ALT | M::SHIFT);
+    app.test_execute(Command::PreviousChange);
     assert_eq!(cursor(&app), 11);
-    app.press(KeyCode::F(5), M::ALT);
+    app.test_execute(Command::NextChange);
     assert_eq!(cursor(&app), 21);
     // F7 in a text editor is nothing (VS Code).
-    app.press(KeyCode::PageUp, M::CONTROL);
+    app.test_execute(Command::PrevTab);
     assert!(app.group().active_diff().is_none());
     app.press(KeyCode::F(7), M::NONE);
     assert_eq!(app.last_command, Some(Command::PrevTab), "unbound there");
-    app.press(KeyCode::PageDown, M::CONTROL);
+    app.test_execute(Command::NextTab);
 
     // Up / Down / PageDown / the ends move the cursor; drawing keeps it on screen.
     app.press(KeyCode::Down, M::NONE);
@@ -1471,10 +1459,10 @@ async fn milestone_10_stage_from_the_diff_view_like_add_p() {
 
     // A dirty buffer is saved first (asked), as from the gutter.
     assert!(settle_diffs(&mut app).await);
-    app.press(KeyCode::PageUp, M::CONTROL);
+    app.test_execute(Command::PrevTab);
     place_cursor(&mut app, 2);
     app.type_text("x");
-    app.press(KeyCode::PageDown, M::CONTROL);
+    app.test_execute(Command::NextTab);
     assert!(settle_diffs(&mut app).await);
     assert!(
         diff_tab(&app).doc.as_ref().unwrap().right.line(2).starts_with("xtwo"),
@@ -1495,12 +1483,12 @@ async fn milestone_10_stage_from_the_diff_view_like_add_p() {
 
     // Stage File from the diff tab of a dirty open file: saved first (asked), then all of it.
     assert!(settle_diffs(&mut app).await);
-    app.press(KeyCode::PageUp, M::CONTROL);
+    app.test_execute(Command::PrevTab);
     place_cursor(&mut app, 10);
     app.type_text("y");
     place_cursor(&mut app, 30);
     app.type_text("z");
-    app.press(KeyCode::PageDown, M::CONTROL);
+    app.test_execute(Command::NextTab);
     assert!(diff_tab(&app).pair == Pair::UNSTAGED);
     run_command(&mut app, "Git: Stage File");
     assert!(
@@ -1547,16 +1535,16 @@ async fn milestone_10_stage_from_the_diff_of_a_file_not_open() {
     assert_eq!(app.buffers.iter().count(), 0, "not opened in a buffer");
     // The diff tab is the only tab: Esc from the Search view and the Problems list goes back
     // to it.
-    app.press(KeyCode::Char('f'), cmd() | M::SHIFT);
+    app.test_execute(Command::FindInFiles);
     assert_eq!(app.ui.focus, Focus::SidePanel);
     app.press(KeyCode::Esc, M::NONE);
     assert_eq!(app.ui.focus, Focus::Editor, "Search view");
-    app.press(KeyCode::Char('m'), cmd() | M::SHIFT);
+    app.test_execute(Command::ToggleProblems);
     assert_eq!(app.ui.focus, Focus::Panel);
     app.press(KeyCode::Esc, M::NONE);
     assert_eq!(app.ui.focus, Focus::Editor, "Problems list");
-    app.press(KeyCode::Char('m'), cmd() | M::SHIFT);
-    app.press(KeyCode::Char('m'), cmd() | M::SHIFT);
+    app.test_execute(Command::ToggleProblems);
+    app.test_execute(Command::ToggleProblems);
     assert_eq!(app.ui.focus, Focus::Editor, "hiding the panel");
 
     // The file changed on disk since the diff was read: staging what's shown is refused.
@@ -1643,14 +1631,14 @@ async fn milestone_10_unstage_from_the_staged_view_like_reset_p() {
     assert!(settle_diffs(&mut app).await);
     assert_eq!(diff_tab(&app).doc.as_ref().unwrap().hunks.len(), 1);
     // Now it has unstaged changes too: Open Changes from the file shows those.
-    app.press(KeyCode::PageUp, M::CONTROL);
+    app.test_execute(Command::PrevTab);
     run_command(&mut app, "Git: Open Changes");
     assert!(settle_diffs(&mut app).await);
     assert_eq!(diff_tab(&app).pair, Pair::UNSTAGED);
     assert_eq!(app.group().tabs.len(), 3);
     // Asked again: the same tab.
-    app.press(KeyCode::PageUp, M::CONTROL);
-    app.press(KeyCode::PageUp, M::CONTROL);
+    app.test_execute(Command::PrevTab);
+    app.test_execute(Command::PrevTab);
     run_command(&mut app, "Git: Open Changes");
     assert_eq!(app.group().tabs.len(), 3);
     assert_eq!(diff_tab(&app).pair, Pair::UNSTAGED);
@@ -1687,13 +1675,13 @@ async fn milestone_10_diff_view_refreshes() {
     assert!(lines(&term)[1].contains("0 changes"), "{:?}", lines(&term)[1]);
 
     // The open file: its buffer's text shows, edits and all, without saving.
-    app.press(KeyCode::PageUp, M::CONTROL);
+    app.test_execute(Command::PrevTab);
     assert!(app.active_buffer().is_some());
     run_command(&mut app, "Git: Open Changes");
     assert!(settle_diffs(&mut app).await);
     let revision = |a: &App| a.buffers.iter().next().unwrap().1.revision();
     let loaded = diff_tab(&app).doc.clone().unwrap();
-    app.press(KeyCode::PageUp, M::CONTROL);
+    app.test_execute(Command::PrevTab);
     assert_eq!(app.active_buffer().unwrap().path, root.join("f.txt"));
     app.type_text("typed ");
     app.pump();
@@ -1702,7 +1690,7 @@ async fn milestone_10_diff_view_refreshes() {
     let before = revision(&app);
     assert!(settle_diffs(&mut app).await);
     assert_eq!(revision(&app), before);
-    app.press(KeyCode::PageDown, M::CONTROL);
+    app.test_execute(Command::NextTab);
     let d = diff_tab(&app);
     assert!(d.pair == Pair::UNSTAGED && d.path == root.join("f.txt"));
     let doc = d.doc.clone().unwrap();
@@ -1712,17 +1700,17 @@ async fn milestone_10_diff_view_refreshes() {
     assert!(app.active_buffer().is_none() && app.buffers.iter().next().unwrap().1.is_dirty());
 
     // Closing the diff tab of a dirty file asks nothing and leaves the buffer as it was.
-    app.press(KeyCode::Char('w'), cmd());
+    app.test_execute(Command::CloseTab);
     assert!(app.prompt.is_none());
     assert_eq!(app.group().tabs.len(), 2, "the file's tab and g.txt's diff");
     let buf = app.buffers.iter().next().unwrap().1;
     assert!(buf.is_dirty() && buf.rope.to_string().starts_with("typed line 0"));
     // Save from a diff tab saves its file's buffer.
-    app.press(KeyCode::PageUp, M::CONTROL);
+    app.test_execute(Command::PrevTab);
     assert_eq!(app.active_buffer().unwrap().path, root.join("f.txt"));
     run_command(&mut app, "Git: Open Changes");
     assert!(settle_diffs(&mut app).await);
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     assert!(app.settle(|a| !a.buffers.iter().next().unwrap().1.is_dirty()).await);
     assert!(
         fs::read_to_string(root.join("f.txt"))
@@ -1743,7 +1731,7 @@ async fn milestone_10_split_and_close_a_diff_tab() {
     assert!(settle_diffs(&mut app).await);
     app.press(KeyCode::F(7), M::NONE);
     let (first, cursor) = (diff_tab(&app).id, diff_tab(&app).cursor);
-    app.press(KeyCode::Char('\\'), cmd());
+    app.test_execute(Command::SplitRight);
     assert_eq!(app.groups.len(), 2);
     let d = diff_tab(&app);
     assert!(
@@ -1779,10 +1767,10 @@ async fn milestone_10_split_and_close_a_diff_tab() {
     // Moving in one leaves the other.
     app.press(KeyCode::Down, M::NONE);
     // Closing it closes its group; the other's close shows the file again.
-    app.press(KeyCode::Char('w'), cmd());
+    app.test_execute(Command::CloseTab);
     assert_eq!(app.groups.len(), 1);
     assert!(app.group().active_diff().is_some());
-    app.press(KeyCode::Char('w'), cmd());
+    app.test_execute(Command::CloseTab);
     assert!(app.prompt.is_none(), "no save prompt");
     assert_eq!(app.group().tabs.len(), 1);
     assert_eq!(app.active_buffer().unwrap().path, root.join("f.txt"));
@@ -2034,8 +2022,9 @@ async fn milestone_10_diff_of_a_big_file() {
 use crate::app::Prompt;
 use crate::scm::{RowKey, Section};
 
-pub(crate) fn ctrl_shift_g(app: &mut App) {
-    app.press(KeyCode::Char('g'), M::CONTROL | M::SHIFT);
+/// Focuses the Source Control view (the Source Control command).
+pub(crate) fn focus_scm(app: &mut App) {
+    app.test_execute(Command::FocusScm);
 }
 
 /// The Source Control list as drawn: each row's words (stage / unstage buttons left out).
@@ -2170,7 +2159,7 @@ async fn milestone_10_done_when_a_change_outside_jed_updates_gutter_panel_and_bu
     let original = numbered(10);
     repo_with(&root, &[("f.txt", &original)], &[]);
     let mut app = open_file_app(&root, &state, "f.txt");
-    ctrl_shift_g(&mut app);
+    focus_scm(&mut app);
     app.press(KeyCode::Esc, M::NONE);
     assert_eq!(app.ui.focus, Focus::Editor);
     assert!(settle_markers(&mut app).await);
@@ -2212,7 +2201,7 @@ async fn milestone_10_source_control_sections_counts_and_keys() {
     assert!(settle_git(&mut app, |s| s.entries.len() == 5).await);
     // The activity bar's icon shows it; Ctrl+Shift+G (both platforms) gives it the keys with
     // the first file selected.
-    ctrl_shift_g(&mut app);
+    focus_scm(&mut app);
     assert_eq!(
         (app.ui.focus, app.ui.side_panel),
         (Focus::SidePanel, crate::layout::SidePanel::SourceControl)
@@ -2280,7 +2269,7 @@ async fn milestone_10_source_control_sections_counts_and_keys() {
     app.press(KeyCode::Esc, M::NONE);
     assert_eq!(app.ui.focus, Focus::SidePanel, "no tab: the panel keeps the keys");
     app.test_open(Buffer::open(&root.join("a.txt")).unwrap());
-    ctrl_shift_g(&mut app);
+    focus_scm(&mut app);
     assert_eq!(app.ui.focus, Focus::SidePanel);
     app.press(KeyCode::Esc, M::NONE);
     assert_eq!(app.ui.focus, Focus::Editor);
@@ -2300,7 +2289,7 @@ async fn milestone_10_source_control_opens_diffs() {
     scm_repo(&root);
     let mut app = open_app(&root, &state);
     assert!(settle_git(&mut app, |s| s.entries.len() == 5).await);
-    ctrl_shift_g(&mut app);
+    focus_scm(&mut app);
     // Enter on a staged file: the staged diff (HEAD ↔ index), the editor focused.
     app.press(KeyCode::Down, M::NONE);
     app.press(KeyCode::Enter, M::NONE);
@@ -2310,7 +2299,7 @@ async fn milestone_10_source_control_opens_diffs() {
         (root.join("c.txt"), Pair::STAGED)
     );
     // Space on a Changes row: its unstaged diff, the keys staying in the list.
-    ctrl_shift_g(&mut app);
+    focus_scm(&mut app);
     let key = file(Section::Changes, "c.txt");
     let (x, y) = scm_row(&mut app, &key);
     app.mouse(MouseEventKind::Moved, x, y); // only shows the buttons
@@ -2351,7 +2340,7 @@ async fn milestone_10_source_control_opens_diffs() {
     assert_eq!(diff_tab(&app).path, root.join("d.txt"));
     // The same file again: its tab is shown, not another.
     let tabs = app.group().tabs.len();
-    ctrl_shift_g(&mut app);
+    focus_scm(&mut app);
     let e = scm_row(&mut app, &file(Section::Changes, "sub/e.txt"));
     click(&mut app, e);
     assert_eq!(app.group().tabs.len(), tabs);
@@ -2364,7 +2353,7 @@ async fn milestone_10_source_control_stages_and_unstages() {
     let mut app = open_app(&root, &state);
     assert!(settle_git(&mut app, |s| s.entries.len() == 5).await);
     let reference = copy_repo(&root, "reference");
-    ctrl_shift_g(&mut app);
+    focus_scm(&mut app);
 
     // The command on the selected file (a.txt in Changes): staged; the selection goes to the
     // next file in Changes.
@@ -2372,7 +2361,7 @@ async fn milestone_10_source_control_stages_and_unstages() {
     let (x, y) = scm_row(&mut app, &a);
     click(&mut app, (x, y));
     assert_eq!(selected_key(&app), Some(a));
-    ctrl_shift_g(&mut app);
+    focus_scm(&mut app);
     run_command(&mut app, "Git: Stage File");
     assert!(settle_stage(&mut app).await);
     assert_eq!(
@@ -2446,7 +2435,7 @@ async fn milestone_10_source_control_selection_kept_across_live_updates() {
     scm_repo(&root);
     let mut app = open_app(&root, &state);
     assert!(settle_git(&mut app, |s| s.entries.len() == 5).await);
-    ctrl_shift_g(&mut app);
+    focus_scm(&mut app);
     let c = file(Section::Changes, "c.txt");
     let at = scm_row(&mut app, &c);
     app.mouse(MouseEventKind::Down(MouseButton::Left), at.0, at.1);
@@ -2491,7 +2480,7 @@ async fn milestone_10_source_control_saves_dirty_files_before_staging() {
     app.type_text("x");
     assert!(app.active_buffer().unwrap().is_dirty());
     // Staging a.txt from the list: asked to save first; Cancel stages nothing.
-    ctrl_shift_g(&mut app);
+    focus_scm(&mut app);
     let a = file(Section::Changes, "a.txt");
     let b = scm_button(&mut app, &a);
     click(&mut app, b);
@@ -2523,7 +2512,7 @@ async fn milestone_10_source_control_saves_dirty_files_before_staging() {
         app.press(KeyCode::End, M::NONE);
         app.type_text(typed);
     }
-    ctrl_shift_g(&mut app);
+    focus_scm(&mut app);
     let b = scm_button(&mut app, &RowKey::Header(Section::Changes));
     click(&mut app, b);
     assert!(matches!(&app.prompt, Some(Prompt::SaveBeforeStageAll { buffers }) if buffers.len() == 2));
@@ -2577,7 +2566,7 @@ async fn milestone_10_source_control_stage_all_waits_for_a_save_in_flight() {
     app.press(KeyCode::End, M::NONE);
     app.type_text("x");
     // Saved, and Stage All before the save has ended: no prompt, it waits for the save.
-    app.press(KeyCode::Char('s'), cmd());
+    app.test_execute(Command::Save);
     assert!(app.active_buffer().unwrap().save_in_flight());
     run_command(&mut app, "Git: Stage All Changes");
     assert!(app.prompt.is_none());
@@ -2594,7 +2583,7 @@ async fn milestone_10_source_control_without_a_repository() {
     fs::write(root.join("a.txt"), "a\n").unwrap();
     let mut app = open_app(&root, &state);
     assert!(app.settle(|a| !a.git.running()).await);
-    ctrl_shift_g(&mut app);
+    focus_scm(&mut app);
     assert_eq!(app.ui.focus, Focus::SidePanel);
     let text = side_text(&mut app);
     assert!(text.contains("doesn't have a git repository"), "{text}");
@@ -2629,7 +2618,7 @@ async fn milestone_10_source_control_stages_a_deleted_file_with_its_tab_open() {
         .await
     );
     // The file's button: the deletion is staged, nothing asked, the file not recreated.
-    ctrl_shift_g(&mut app);
+    focus_scm(&mut app);
     let b = scm_button(&mut app, &file(Section::Changes, "d.txt"));
     click(&mut app, b);
     assert!(app.prompt.is_none(), "nothing asked");

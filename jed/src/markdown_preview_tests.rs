@@ -35,22 +35,6 @@ Some *emphasis* and `code` text.\n\n```rust\nfn main() {}\n```\n\n    indented b
 | Left | Right | Wide |\n|:-----|------:|:----:|\n| a | 1 | \u{4e2d}\u{6587} |\n| bb | 22 | x |\n\n\
 - [x] done\n- [ ] todo\n";
 
-fn mods() -> M {
-    if cfg!(target_os = "macos") {
-        M::SUPER | M::ALT
-    } else {
-        M::CONTROL | M::ALT
-    }
-}
-
-fn cmd() -> M {
-    if cfg!(target_os = "macos") {
-        M::SUPER
-    } else {
-        M::CONTROL
-    }
-}
-
 async fn md_app() -> (tempfile::TempDir, PathBuf, App) {
     let (dir, root, state) = dirs();
     fs::write(root.join("README.md"), README).unwrap();
@@ -68,7 +52,7 @@ async fn md_app() -> (tempfile::TempDir, PathBuf, App) {
 }
 
 async fn quick_open(app: &mut App, name: &str) {
-    app.press(KeyCode::Char('p'), cmd());
+    app.test_execute(Command::QuickOpen);
     app.type_text(name);
     let found = app
         .settle(|a| {
@@ -89,7 +73,7 @@ async fn quick_open(app: &mut App, name: &str) {
 async fn open_preview(app: &mut App) -> crate::layout::GroupId {
     quick_open(app, "README.md").await;
     let source = app.groups.active;
-    app.press(KeyCode::Char('v'), mods());
+    app.test_execute(Command::OpenMarkdownPreview);
     source
 }
 
@@ -152,12 +136,12 @@ async fn markdown_preview_opens_to_the_right_and_focuses_on_the_second_press() {
     assert_eq!(app.groups.active, source, "the source keeps the focus");
     assert_eq!(app.context(), crate::config::keymap::Context::Editor);
     // Pressing again focuses the preview: no second one.
-    app.press(KeyCode::Char('v'), mods());
+    app.test_execute(Command::OpenMarkdownPreview);
     assert_eq!(app.groups.active, g);
     assert_eq!(app.context(), crate::config::keymap::Context::Markdown);
     assert_eq!(app.groups.len(), 2);
     app.test_execute(Command::FocusGroup(1));
-    app.press(KeyCode::Char('v'), mods());
+    app.test_execute(Command::OpenMarkdownPreview);
     assert_eq!(app.groups.active, g);
     let n = app
         .groups
@@ -169,7 +153,7 @@ async fn markdown_preview_opens_to_the_right_and_focuses_on_the_second_press() {
     // Another source group to the right is reused: close the preview, open again.
     app.test_execute(Command::CloseTab);
     app.test_execute(Command::FocusGroup(1));
-    app.press(KeyCode::Char('v'), mods());
+    app.test_execute(Command::OpenMarkdownPreview);
     assert_eq!(app.groups.len(), 2, "the group on the right is reused");
     assert_eq!(preview(&app).title(), "Preview README.md");
 }
@@ -178,7 +162,7 @@ async fn markdown_preview_opens_to_the_right_and_focuses_on_the_second_press() {
 async fn markdown_preview_needs_a_markdown_tab() {
     let (_d, _root, mut app) = md_app().await;
     quick_open(&mut app, "notes.txt").await;
-    app.press(KeyCode::Char('v'), mods());
+    app.test_execute(Command::OpenMarkdownPreview);
     assert_eq!(app.groups.len(), 1);
     assert_eq!(app.group().tabs.len(), 1, "no new tab");
     let term = draw(&mut app, 200, 12);
@@ -251,18 +235,18 @@ async fn markdown_preview_draws_headings_code_and_table() {
 async fn markdown_preview_moves_selects_and_copies() {
     let (_d, _root, mut app) = md_app().await;
     open_preview(&mut app).await;
-    app.press(KeyCode::Char('v'), mods());
+    app.test_execute(Command::OpenMarkdownPreview);
     draw(&mut app, 100, 12);
     // Heading one is the first line.
     app.press(KeyCode::Right, M::SHIFT);
     app.press(KeyCode::Right, M::SHIFT);
     app.press(KeyCode::Right, M::SHIFT);
     assert_eq!(preview(&app).copy_text().as_deref(), Some("One"));
-    app.press(KeyCode::Char('c'), cmd());
+    app.test_execute(Command::Copy);
     assert_eq!(app.clipboard.read().unwrap(), "One");
     app.press(KeyCode::Left, M::NONE);
     assert!(preview(&app).selection().is_none());
-    app.press(KeyCode::Char('a'), cmd());
+    app.test_execute(Command::SelectAll);
     assert!(preview(&app).copy_text().unwrap().contains("fn main() {}"));
     // Page down / end scroll the view with the caret.
     app.press(KeyCode::Esc, M::NONE);
@@ -292,7 +276,7 @@ async fn markdown_preview_moves_selects_and_copies() {
 async fn markdown_preview_cannot_be_edited() {
     let (_d, _root, mut app) = md_app().await;
     open_preview(&mut app).await;
-    app.press(KeyCode::Char('v'), mods());
+    app.test_execute(Command::OpenMarkdownPreview);
     draw(&mut app, 100, 30);
     let source = source_id(&app);
     let before = app.buffers.get(source).unwrap().rope.to_string();
@@ -360,7 +344,7 @@ async fn markdown_preview_cannot_be_edited() {
 async fn markdown_preview_split_copy_closes_without_prompt_and_quit_is_clean() {
     let (_d, _root, mut app) = md_app().await;
     open_preview(&mut app).await;
-    app.press(KeyCode::Char('v'), mods());
+    app.test_execute(Command::OpenMarkdownPreview);
     app.test_execute(Command::SplitRight);
     assert!(app.group().active_markdown().is_some(), "the split holds a copy");
     let ids: Vec<u64> = app
@@ -403,8 +387,8 @@ async fn markdown_preview_wide_table_scrolls_sideways() {
     let row = (0..10).map(|i| format!("| {i}{i}{i}{i}{i} ")).collect::<String>() + "|\n";
     fs::write(root.join("wide.md"), format!("Intro\n\n{header}{rule}{row}")).unwrap();
     quick_open(&mut app, "wide.md").await;
-    app.press(KeyCode::Char('v'), mods());
-    app.press(KeyCode::Char('v'), mods());
+    app.test_execute(Command::OpenMarkdownPreview);
+    app.test_execute(Command::OpenMarkdownPreview);
     draw(&mut app, 100, 20);
     draw(&mut app, 100, 20);
     let (g, rect) = rows_rect(&app);
@@ -441,7 +425,7 @@ async fn markdown_preview_wide_table_scrolls_sideways() {
 async fn markdown_preview_status_bar_names_the_source() {
     let (_d, _root, mut app) = md_app().await;
     open_preview(&mut app).await;
-    app.press(KeyCode::Char('v'), mods());
+    app.test_execute(Command::OpenMarkdownPreview);
     let term = draw(&mut app, 120, 20);
     let area = term.backend().buffer().area;
     let bar: String = (0..area.width)
@@ -498,13 +482,13 @@ async fn markdown_preview_done_when() {
         assert!(widths.iter().all(|&w| w == widths[0]), "{width}: {widths:?}");
     }
     // Cannot be edited.
-    app.press(KeyCode::Char('v'), mods());
+    app.test_execute(Command::OpenMarkdownPreview);
     assert_eq!(app.context(), crate::config::keymap::Context::Markdown);
     let before = preview(&app).text.clone();
     app.type_text("zzz");
     app.press(KeyCode::Backspace, M::NONE);
-    app.press(KeyCode::Char('x'), cmd());
-    app.press(KeyCode::Char('v'), cmd());
+    app.test_execute(Command::Cut);
+    app.test_execute(Command::Paste);
     assert_eq!(preview(&app).text, before);
     let buf_id = app.groups.get(source).unwrap().tabs[0].buffer().unwrap();
     assert!(!app.buffers.get(buf_id).unwrap().is_dirty(), "the source is untouched");
@@ -533,7 +517,7 @@ async fn markdown_preview_debounces_edits_and_follows_undo() {
     assert!(deadline >= before + std::time::Duration::from_millis(150), "debounced");
     assert!(app.settle(|a| doc_has(a, "abcd")).await);
     assert_eq!(app.markdown.renders, renders + 1, "one render for the burst");
-    app.press(KeyCode::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert!(app.settle(|a| !doc_has(a, "abcd")).await, "undo reaches the preview");
 }
 
@@ -542,7 +526,7 @@ async fn markdown_preview_big_documents_render_in_the_background() {
     let (_d, root, mut app) = md_app().await;
     fs::write(root.join("big.md"), long_doc(6000)).unwrap();
     quick_open(&mut app, "big.md").await;
-    app.press(KeyCode::Char('v'), mods());
+    app.test_execute(Command::OpenMarkdownPreview);
     assert!(preview(&app).doc.lines.is_empty(), "not rendered on the UI thread");
     assert!(app.settle(|a| doc_has(a, "para 5999")).await);
     let id = preview(&app).id;
@@ -562,7 +546,7 @@ async fn markdown_preview_big_documents_render_in_the_background() {
     // A render done here since (the document shrunk under `SYNC_LIMIT`) makes a running one's
     // result stale, though no newer background render was asked for.
     let revision = preview(&app).revision;
-    app.press(KeyCode::Char('a'), cmd());
+    app.test_execute(Command::SelectAll);
     app.type_text("small doc");
     assert!(app.settle(|a| doc_has(a, "small doc")).await);
     let (generation, width) = (preview(&app).generation, preview(&app).width);
@@ -578,7 +562,7 @@ async fn markdown_preview_first_big_render_waits_and_survives_a_close() {
     let (_d, root, mut app) = md_app().await;
     fs::write(root.join("big.md"), long_doc(20000)).unwrap();
     quick_open(&mut app, "big.md").await;
-    app.press(KeyCode::Char('v'), mods());
+    app.test_execute(Command::OpenMarkdownPreview);
     app.pump();
     let id = preview(&app).id;
     assert_eq!(preview(&app).generation, 1, "the first render started");
@@ -609,7 +593,7 @@ async fn markdown_preview_scrolls_with_the_source_until_the_user_scrolls() {
     let (_d, root, mut app) = md_app().await;
     fs::write(root.join("long.md"), long_doc(300)).unwrap();
     quick_open(&mut app, "long.md").await;
-    app.press(KeyCode::Char('v'), mods());
+    app.test_execute(Command::OpenMarkdownPreview);
     draw(&mut app, 120, 20);
     assert_eq!(preview(&app).top, 0);
     for _ in 0..8 {
@@ -688,10 +672,10 @@ async fn markdown_preview_survives_a_restart() {
     app.ui.side_visible = false;
     app.ui.focus = Focus::Editor;
     quick_open(&mut app, "long.md").await;
-    app.press(KeyCode::Char('v'), mods());
+    app.test_execute(Command::OpenMarkdownPreview);
     draw(&mut app, 120, 20);
     assert!(app.settle(|a| doc_has(a, "para 0")).await);
-    app.press(KeyCode::Char('v'), mods());
+    app.test_execute(Command::OpenMarkdownPreview);
     app.press(KeyCode::PageDown, M::NONE);
     app.press(KeyCode::PageDown, M::NONE);
     draw(&mut app, 120, 20);
@@ -731,7 +715,7 @@ async fn markdown_preview_survives_a_restart() {
 async fn markdown_preview_is_a_back_forward_entry() {
     let (_d, _root, mut app) = md_app().await;
     open_preview(&mut app).await;
-    app.press(KeyCode::Char('v'), mods());
+    app.test_execute(Command::OpenMarkdownPreview);
     let g = app.groups.active;
     quick_open(&mut app, "notes.txt").await;
     app.test_execute(Command::NavBack);

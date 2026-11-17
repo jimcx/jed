@@ -34,14 +34,6 @@ use crate::diff_view::Source;
 use crate::workspace::trust::TrustStore;
 use crate::workspace::{self, Workspace};
 
-fn cmd() -> M {
-    if cfg!(target_os = "macos") {
-        M::SUPER
-    } else {
-        M::CONTROL
-    }
-}
-
 /// An app on a workspace with `a.txt` ("one\ntwo\n") and `b.txt` ("one\nthree\n"), nothing open.
 fn setup() -> (tempfile::TempDir, PathBuf, PathBuf, App) {
     setup_watching(false)
@@ -73,7 +65,7 @@ fn open(app: &mut App, path: &Path) -> BufferId {
 
 /// Cmd+N: a new untitled buffer with `text` typed into it.
 fn untitled(app: &mut App, text: &str) -> BufferId {
-    app.press(K::Char('n'), cmd());
+    app.test_execute(Command::NewUntitledFile);
     app.type_text(text);
     app.group().active_tab().unwrap().buffer
 }
@@ -247,7 +239,7 @@ async fn compare_files_follows_edits_in_either_buffer() {
     assert_eq!(d.title(), "a.txt ● ↔ b.txt ●");
 
     // Saving the left one clears its mark and keeps the text.
-    app.press(K::Char('s'), cmd());
+    app.test_execute(Command::Save);
     assert!(
         app.settle(|a| a.diffs_settled() && !a.buffers.get(a_id(a)).unwrap().save_in_flight())
             .await
@@ -272,7 +264,7 @@ async fn compare_files_a_closed_buffer_freezes_its_side() {
     // Close a.txt's (clean) tab, then b.txt's.
     let i = app.group().find(a).unwrap();
     app.test_activate_tab(i);
-    app.press(K::Char('w'), cmd());
+    app.test_execute(Command::CloseTab);
     assert!(app.buffers.get(a).is_none());
     assert_eq!(app.group().tabs.len(), tabs - 1, "only the buffer's tab closed");
     let i = app.group().tabs.iter().position(|t| t.diff().is_some()).unwrap();
@@ -291,7 +283,7 @@ async fn compare_files_a_closed_buffer_freezes_its_side() {
     assert_eq!(d.title(), "a.txt ↔ b.txt ●");
     fs::write(root.join("a.txt"), "one\nchanged\n").unwrap();
     fs::write(root.join("b.txt"), "one\nfour\n").unwrap();
-    app.press(K::Char('w'), cmd());
+    app.test_execute(Command::CloseTab);
     app.press(K::Char('d'), M::NONE);
     assert!(app.buffers.get(b).is_none());
     let i = app.group().tabs.iter().position(|t| t.diff().is_some()).unwrap();
@@ -312,7 +304,7 @@ async fn compare_files_a_closed_untitled_buffer_keeps_its_text() {
     compare(&mut app, Source::Open(u), file(&root, "b.txt")).await;
     let i = app.group().find(u).unwrap();
     app.test_activate_tab(i);
-    app.press(K::Char('w'), cmd());
+    app.test_execute(Command::CloseTab);
     app.press(K::Char('d'), M::NONE);
     assert!(app.buffers.get(u).is_none());
     let i = app
@@ -400,7 +392,7 @@ async fn compare_files_tabs_are_not_kept_in_sessions() {
 
 /// Runs a palette command by its title (Cmd+Shift+P, the title, Enter).
 fn run_command(app: &mut App, title: &str) {
-    app.press(K::Char('p'), cmd() | M::SHIFT);
+    app.test_execute(Command::ShowCommands);
     app.type_text(title);
     let p = app.palette.as_ref().unwrap();
     assert_eq!(p.rows[p.selected].label, title);
@@ -445,7 +437,10 @@ async fn walked(app: &mut App) -> bool {
 }
 
 fn type_at_start(app: &mut App, text: &str) {
-    app.press(K::Home, cmd());
+    app.test_execute(Command::Move {
+        motion: crate::command::Motion::DocStart,
+        select: false,
+    });
     app.type_text(text);
 }
 
@@ -702,7 +697,7 @@ fn show_diff(app: &mut App) {
 fn undo_in(app: &mut App, id: BufferId) {
     let i = app.group().find(id).unwrap();
     app.test_activate_tab(i);
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -827,7 +822,7 @@ async fn compare_files_apply_into_a_closed_or_unopened_side() {
     compare(&mut app, Source::Open(a), Source::Open(b)).await;
     let i = app.group().find(b).unwrap();
     app.test_activate_tab(i);
-    app.press(K::Char('w'), cmd());
+    app.test_execute(Command::CloseTab);
     show_diff(&mut app);
     assert!(app.settle(|a| a.diffs_settled()).await);
     at_hunk(&mut app, 0);
@@ -990,7 +985,7 @@ async fn compare_files_undo_redo_and_save_on_either_side() {
         app.test_execute(Command::Redo);
         assert_eq!(text(&app, id), typed);
         settled(&mut app).await;
-        app.press(K::Char('s'), cmd());
+        app.test_execute(Command::Save);
         assert!(app.settle(|a| !a.buffers.any_saving()).await);
         let path = |id| app.buffers.get(id).unwrap().path.clone();
         assert_eq!(fs::read_to_string(path(id)).unwrap(), typed);
@@ -1017,7 +1012,7 @@ async fn compare_files_save_a_file_side_and_an_untitled_side() {
     app.type_text("?");
     assert!(app.settle(|a| a.buffers.find_path(&root.join("b.txt")).is_some()).await);
     settled(&mut app).await;
-    app.press(K::Char('s'), cmd());
+    app.test_execute(Command::Save);
     assert!(app.settle(|a| !a.buffers.any_saving()).await);
     assert!(app.prompt.is_none());
     assert_eq!(fs::read_to_string(root.join("b.txt")).unwrap(), "one?\nthree\n");
@@ -1033,7 +1028,7 @@ async fn compare_files_save_a_file_side_and_an_untitled_side() {
     app.type_text("!");
     settled(&mut app).await;
     caret_at(&mut app, 0, true, 3);
-    app.press(K::Char('s'), cmd());
+    app.test_execute(Command::Save);
     assert!(
         matches!(&app.prompt, Some(crate::app::Prompt::Input(i))
             if matches!(i.kind, crate::app::InputKind::SaveAs { buffer } if buffer == u)),
@@ -1043,7 +1038,7 @@ async fn compare_files_save_a_file_side_and_an_untitled_side() {
     app.press(K::Esc, M::NONE);
     assert!(app.prompt.is_none());
     caret_at(&mut app, 0, false, 0);
-    app.press(K::Char('s'), cmd());
+    app.test_execute(Command::Save);
     assert!(app.prompt.is_none(), "a file side saves without asking");
     assert!(app.settle(|a| !a.buffers.any_saving()).await);
     assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "!one\ntwo\n");
@@ -1108,7 +1103,7 @@ async fn compare_files_a_frozen_side_is_read_only() {
     let (_d, mut app, l, r) = moving(EL, ER).await;
     let i = app.group().find(l).unwrap();
     app.test_activate_tab(i);
-    app.press(K::Char('w'), cmd());
+    app.test_execute(Command::CloseTab);
     show_diff(&mut app);
     settled(&mut app).await;
     caret_at(&mut app, 1, false, 1);

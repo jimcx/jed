@@ -365,14 +365,6 @@ use crate::app::Focus;
 use crate::command::Command;
 use crate::layout::PanelTab;
 
-fn cmd() -> M {
-    if cfg!(target_os = "macos") {
-        M::SUPER
-    } else {
-        M::CONTROL
-    }
-}
-
 fn draw_sized(app: &mut App, w: u16, h: u16) -> Terminal<TestBackend> {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| crate::ui::render(f, app)).unwrap();
@@ -419,7 +411,7 @@ fn task_tabs(app: &App) -> Vec<RunId> {
 
 /// "Tasks: Run Task" through the command palette.
 fn open_run_task(app: &mut App) {
-    app.press(KeyCode::Char('p'), cmd() | M::SHIFT);
+    app.test_execute(Command::ShowCommands);
     app.type_text("Tasks: Run Task");
     let p = app.palette.as_ref().unwrap();
     assert_eq!(p.rows[p.selected].label, "Tasks: Run Task");
@@ -625,7 +617,7 @@ async fn milestone_12_keys_and_pastes_go_to_the_focused_task() {
     assert!(settle_ended(&mut app, id).await);
 
     // Global keys still work in a task tab; Esc gives the keys back.
-    app.press(KeyCode::Char('p'), cmd() | M::SHIFT);
+    app.test_execute(Command::ShowCommands);
     assert!(app.palette.is_some());
     app.press(KeyCode::Esc, M::NONE);
     assert!(app.palette.is_none());
@@ -751,11 +743,11 @@ async fn milestone_12_scrolling_through_a_task_output() {
     let panel = app.hits.regions.panel.unwrap();
     app.mouse(MouseEventKind::ScrollUp, panel.x + 5, panel.y + 4);
     assert_eq!(app.tasks.get(id).unwrap().screen().screen().scrollback(), back + 3);
-    app.press(KeyCode::Home, M::CONTROL);
+    app.press_bound(Command::Task(crate::command::TaskCommand::Top));
     assert_eq!(first(&app), "1");
     app.mouse(MouseEventKind::ScrollDown, panel.x + 5, panel.y + 4);
     assert_eq!(first(&app), "4");
-    app.press(KeyCode::End, M::CONTROL);
+    app.press_bound(Command::Task(crate::command::TaskCommand::Bottom));
     assert_eq!(app.tasks.get(id).unwrap().screen().screen().scrollback(), 0);
     // From the palette, on the shown tab.
     app.test_execute(Command::Task(crate::command::TaskCommand::ScrollUp));
@@ -806,8 +798,8 @@ async fn milestone_12_kill_and_close_task_tabs() {
     app.test_execute(Command::KillTask);
     assert_eq!(app.message.as_ref().unwrap().text, "Task 'serve' isn't running");
 
-    // Cmd+W in the focused task tab closes it (it had ended), showing the tab before it.
-    app.press(KeyCode::Char('w'), cmd());
+    // Closing the focused task tab closes it (it had ended), showing the tab before it.
+    app.press_bound(Command::CloseTask);
     assert!(app.tasks.get(b).is_none());
     assert_eq!((app.ui.panel_tab, app.ui.focus), (PanelTab::Task(a), Focus::Panel));
     // Its × closes a running one, killing it.

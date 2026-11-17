@@ -8,6 +8,7 @@
 
 use std::fs;
 
+use crate::command::Command;
 use crossterm::event::{KeyCode as K, KeyModifiers as M};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -97,12 +98,7 @@ async fn git_editor_rebase_todo_comments_with_hash() {
     let mut term = Terminal::new(TestBackend::new(100, 10)).unwrap();
     let rows = screen(&mut term, &mut app);
     assert!(status(&rows).contains("Git Rebase Message"), "{:?}", status(&rows));
-    let cmd = if cfg!(target_os = "macos") {
-        M::SUPER
-    } else {
-        M::CONTROL
-    };
-    app.press(K::Char('/'), cmd);
+    app.test_execute(Command::CommentLine);
     let text = app.active_buffer().unwrap().rope.to_string();
     assert_eq!(text, "# pick abc123 One\npick def456 Two\n");
 }
@@ -124,12 +120,7 @@ async fn git_editor_commit_message_pairs_and_comment() {
     app.type_text("(");
     let text = app.active_buffer().unwrap().rope.to_string();
     assert_eq!(text, "it's 'x \"y [()]\n");
-    let cmd = if cfg!(target_os = "macos") {
-        M::SUPER
-    } else {
-        M::CONTROL
-    };
-    app.press(K::Char('/'), cmd);
+    app.test_execute(Command::CommentLine);
     let text = app.active_buffer().unwrap().rope.to_string();
     assert_eq!(text, "# it's 'x \"y [()]\n");
 }
@@ -260,7 +251,7 @@ mod editor_mode {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+    use crate::command::Command;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -269,14 +260,6 @@ mod editor_mode {
     use crate::lsp::fake::{FakeLauncher, FakeOptions};
     use crate::workspace::Workspace;
     use crate::workspace::trust::TrustStore;
-
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
-    }
 
     /// A `git2` repo with a `.workspace` (a server for commit messages, a task, tab width 3; trust
     /// undecided) and a state dir holding the workspace's own session, written by a workspace
@@ -380,9 +363,9 @@ mod editor_mode {
         assert!(bar.trim_end().ends_with("Ln 1, Col 1   Spaces: 3"), "{bar:?}");
 
         app.type_text("Fix it");
-        app.press(K::Char('s'), cmd());
+        app.test_execute(Command::Save);
         assert!(app.settle(|a| !a.active_buffer().unwrap().is_dirty()).await, "saved");
-        app.press(K::Char('w'), cmd());
+        app.test_execute(Command::CloseTab);
         assert!(app.quitting(), "closing the last tab quits");
         app.shutdown().await;
         assert!(fs::read_to_string(&msg).unwrap().starts_with("Fix it\n# Please"));
@@ -407,7 +390,7 @@ mod editor_mode {
             bar.starts_with(" Save and close to rebase · an empty list aborts "),
             "{bar:?}"
         );
-        app.press(K::Char('/'), cmd());
+        app.test_execute(Command::CommentLine);
         assert!(
             app.active_buffer()
                 .unwrap()
@@ -474,14 +457,6 @@ mod socket {
     use crate::ipc::{Request, client};
     use crate::milestone12_tests::{dirs, open_app, settle_ended};
     use crate::tasks::Status;
-
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
-    }
 
     /// An app on `root` listening in a short temp dir (`sun_path` is ~104 bytes on macOS);
     /// returns it with the socket path.
@@ -567,10 +542,10 @@ mod socket {
         // The same file in a second group: the answer waits for both tabs (any group).
         app.test_execute(Command::SplitRight);
         assert_eq!(app.groups.len(), 2);
-        app.press(K::Char('w'), cmd());
+        app.test_execute(Command::CloseTab);
         assert_eq!(app.groups.len(), 1, "the split's tab closed with its group");
         waits(&mut app, &waiting).await;
-        app.press(K::Char('w'), cmd());
+        app.test_execute(Command::CloseTab);
         assert_eq!(answered(&mut app, waiting).await, client::Outcome::Done(0));
         assert_eq!(app.test_ipc_waiters(), 0);
     }
@@ -601,11 +576,11 @@ mod socket {
         assert!(app.settle(|a| active_name(a).as_deref() == Some("later.txt")).await);
         waits(&mut app, &waiting).await;
         app.type_text("hello");
-        app.press(K::Char('s'), cmd());
+        app.test_execute(Command::Save);
         assert!(app.settle(|a| !a.active_buffer().unwrap().is_dirty()).await);
         assert_eq!(fs::read_to_string(&fresh).unwrap(), "hello");
         waits(&mut app, &waiting).await;
-        app.press(K::Char('w'), cmd());
+        app.test_execute(Command::CloseTab);
         assert_eq!(answered(&mut app, waiting).await, client::Outcome::Done(0));
     }
 
@@ -636,7 +611,7 @@ mod socket {
         assert_eq!(answered(&mut app, quick).await, client::Outcome::Done(0));
         assert!(app.settle(|x| active_name(x).as_deref() == Some("a.txt")).await);
         assert_eq!(app.groups.active, second, "open in the active group: its tab there");
-        app.press(K::Char('w'), cmd());
+        app.test_execute(Command::CloseTab);
         assert_eq!(app.groups.active, second);
         assert_eq!(active_name(&app).as_deref(), Some("b.txt"));
         app.ui.focus = crate::app::Focus::Terminal;
@@ -671,7 +646,7 @@ mod socket {
         let id = app.buffers.find_path(&file).unwrap();
         assert_eq!(app.groups.tabs_showing(id), 1, "no second tab");
 
-        app.press(K::Char('e'), cmd() | M::SHIFT);
+        app.test_execute(Command::FocusExplorer);
         assert!(app.settle(|a| a.explorer.selected.as_deref() == Some(&file)).await);
         app.press(K::F(2), M::NONE);
         for _ in 0.."notes.txt".len() {
@@ -688,10 +663,10 @@ mod socket {
         assert_eq!(answered(&mut app, quick).await, client::Outcome::Done(0));
         assert!(app.settle(|a| active_name(a).as_deref() == Some("other.txt")).await);
         waits(&mut app, &waiting).await;
-        app.press(K::Char('w'), cmd());
+        app.test_execute(Command::CloseTab);
         assert_eq!(active_name(&app).as_deref(), Some("moved.txt"));
         waits(&mut app, &waiting).await;
-        app.press(K::Char('w'), cmd());
+        app.test_execute(Command::CloseTab);
         assert_eq!(answered(&mut app, waiting).await, client::Outcome::Done(0));
     }
 
@@ -846,13 +821,13 @@ sys.exit(0 if s.makefile().readline().strip() else 1)
             return;
         };
         app.type_text("Made in the tab");
-        app.press(K::Char('s'), cmd());
+        app.test_execute(Command::Save);
         assert!(app.settle(|a| !a.active_buffer().unwrap().is_dirty()).await);
         assert!(
             app.tasks.get(id).unwrap().status().is_running(),
             "saving doesn't end the wait"
         );
-        app.press(K::Char('w'), cmd());
+        app.test_execute(Command::CloseTab);
         assert!(settle_ended(&mut app, id).await);
         assert!(matches!(app.tasks.get(id).unwrap().status(), Status::Exited(e) if e.success()));
         assert_eq!(
@@ -868,7 +843,7 @@ sys.exit(0 if s.makefile().readline().strip() else 1)
         let Some((mut app, root, id)) = commit_in_task(&dir, &sockets).await else {
             return;
         };
-        app.press(K::Char('w'), cmd());
+        app.test_execute(Command::CloseTab);
         assert!(settle_ended(&mut app, id).await);
         assert!(
             matches!(app.tasks.get(id).unwrap().status(), Status::Exited(e) if !e.success()),

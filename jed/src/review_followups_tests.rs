@@ -84,7 +84,7 @@ async fn review_followups_moving_onto_the_scrollbar_thumb_redraws_with_the_hover
 
 #[tokio::test(flavor = "multi_thread")]
 async fn review_followups_moving_over_a_source_control_row_redraws_with_its_buttons() {
-    use crate::milestone10_tests::{ctrl_shift_g, dirs, file, scm_row, settle_git};
+    use crate::milestone10_tests::{dirs, file, focus_scm, scm_row, settle_git};
     use crate::scm::Section;
     let (_d, root, state) = dirs();
     crate::milestone10_tests::scm_repo(&root);
@@ -94,7 +94,7 @@ async fn review_followups_moving_over_a_source_control_row_redraws_with_its_butt
     app.test_start();
     app.test_plain_whitespace();
     assert!(settle_git(&mut app, |s| s.entries.len() == 5).await);
-    ctrl_shift_g(&mut app);
+    focus_scm(&mut app);
     let key = file(Section::Changes, "a.txt");
     let (x, y) = scm_row(&mut app, &key);
     let has_button = |app: &App| app.hits.scm.as_ref().unwrap().buttons.iter().any(|(_, k, _)| *k == key);

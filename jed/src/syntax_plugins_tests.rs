@@ -40,14 +40,6 @@ use crate::syntax::{Associations, Language, detect};
 use crate::workspace::Workspace;
 use crate::workspace::trust::{Trust, TrustStore};
 
-fn cmd() -> M {
-    if cfg!(target_os = "macos") {
-        M::SUPER
-    } else {
-        M::CONTROL
-    }
-}
-
 /// Registers the manifest `text` (its id must be unique to the test).
 fn register(text: &str) -> Language {
     let (m, errors) = plugin::parse(text, "language.toml");
@@ -111,7 +103,7 @@ async fn syntax_plugins_a_plugin_file_opens_uncoloured_and_edits_by_its_config()
     assert!(buf.syntax.spans(&rope, 0..1).is_empty());
 
     // Comment Line inserts the manifest's token.
-    app.press(K::Char('/'), cmd());
+    app.test_execute(Command::CommentLine);
     assert_eq!(app.active_buffer().unwrap().rope.to_string(), "-- x = 1\n");
     // Auto-close per `pairs`: `(` and `"` close, `[` does not.
     app.press(K::End, M::NONE);
@@ -202,7 +194,7 @@ async fn syntax_plugins_workspace_association_names_a_plugin_id() {
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(errors[0].contains("ptb_nope"));
     // Comment Line through the association.
-    app.press(K::Char('/'), cmd());
+    app.test_execute(Command::CommentLine);
     assert_eq!(app.active_buffer().unwrap().rope.to_string(), "; x\n");
 }
 
@@ -493,7 +485,7 @@ fn coloured(app: &mut App) -> bool {
 
 fn rebuild_through_palette(app: &mut App) {
     let title = "Languages: Rebuild Syntax Plugins";
-    app.press(K::Char('p'), cmd() | M::SHIFT);
+    app.test_execute(Command::ShowCommands);
     app.type_text(title);
     let p = app.palette.as_ref().unwrap();
     assert_eq!(p.rows[p.selected].label, title);
@@ -795,7 +787,7 @@ async fn syntax_plugins_lua_files_open_coloured_and_edit_by_the_manifest() {
     assert!(keys.iter().any(|k| k.starts_with("function")), "{keys:?}");
 
     // Comment Line.
-    app.press(K::Char('/'), cmd());
+    app.test_execute(Command::CommentLine);
     assert_eq!(
         app.active_buffer().unwrap().rope.to_string(),
         "-- local function f() end\nx = \n"

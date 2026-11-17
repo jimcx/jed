@@ -718,8 +718,17 @@ async fn mr_review_edits_on_the_right_side_go_through_the_buffer() {
 mod lsp {
     use super::*;
     use crate::lsp::fake::{FakeLauncher, FakeOptions};
-    use crate::milestone9_tests::{cmd, draw, find_cells, idle, location, popup_rows, terminal, uri};
+    use crate::milestone9_tests::{draw, find_cells, idle, location, popup_rows, terminal, uri};
     use serde_json::json;
+
+    // Moved here from milestone9_tests; subtask d migrates this file's presses and removes it.
+    fn cmd() -> KeyModifiers {
+        if cfg!(target_os = "macos") {
+            KeyModifiers::SUPER
+        } else {
+            KeyModifiers::CONTROL
+        }
+    }
 
     /// `main` with `a.cpp` / `b.cpp`, then `feature` renaming `value` to `target` in `a.cpp`.
     fn make_cpp_repo(base: &Path) -> (PathBuf, String) {

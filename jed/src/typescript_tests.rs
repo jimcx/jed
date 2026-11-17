@@ -9,6 +9,7 @@
 
 use crossterm::event::{KeyCode as K, KeyModifiers as M};
 
+use crate::command::Command;
 use crate::lsp::fake::{FakeLauncher, FakeOptions};
 use crate::milestone9_tests::{open, open_app, project};
 use crate::syntax::Language;
@@ -54,7 +55,7 @@ async fn typescript_js_files_open_coloured_and_edit_by_the_javascript_config() {
     app.type_text("`");
     assert_eq!(text(&app), "function f() {\n    g()\n}\nlet s = `a`\n");
     // Comment Line uses `//`.
-    app.press(K::Char('/'), crate::milestone9_tests::cmd());
+    app.test_execute(Command::CommentLine);
     assert_eq!(text(&app), "function f() {\n    g()\n}\n// let s = `a`\n");
     // A quote inside the comment doesn't close. `tree()` is `Some` only while it matches the text,
     // so wait until the scope before the end of the comment line (the text's last char is `\n`)
@@ -73,7 +74,7 @@ async fn typescript_js_files_open_coloured_and_edit_by_the_javascript_config() {
     let lang = app.active_buffer().unwrap().syntax.language();
     assert_eq!((lang, lang.name()), (Language::JavaScriptReact, "JavaScript JSX"));
     assert!(app.settle(parsed).await);
-    app.press(K::Char('/'), crate::milestone9_tests::cmd());
+    app.test_execute(Command::CommentLine);
     assert_eq!(text(&app), "// const e = <a b=\"c\">{d}</a>;\n");
     // `<` isn't auto-closed in JSX.
     app.press(K::End, M::NONE);
@@ -143,7 +144,7 @@ async fn typescript_ts_and_tsx_files_open_by_the_javascript_config() {
     app.press(K::End, M::NONE);
     app.type_text("`a");
     assert_eq!(text(&app), "interface I {\n    a: T\n}\nlet s = `a`\n");
-    app.press(K::Char('/'), crate::milestone9_tests::cmd());
+    app.test_execute(Command::CommentLine);
     assert_eq!(text(&app), "interface I {\n    a: T\n}\n// let s = `a`\n");
 
     open(&mut app, &root.join("b.d.ts"));
@@ -248,11 +249,7 @@ async fn typescript_format_sends_the_tab_size() {
     let dir = tempfile::tempdir().unwrap();
     let files = [("a.ts", "if (a) {\n  b();\n}\n")];
     let (mut app, fake, _) = crate::milestone9_tests::lsp_project(dir.path(), &files, true).await;
-    if cfg!(target_os = "macos") {
-        app.press(K::Char('f'), M::SHIFT | M::ALT);
-    } else {
-        app.press(K::Char('i'), M::CONTROL | M::SHIFT);
-    }
+    app.test_execute(Command::FormatDocument);
     assert!(
         app.settle(|_| !fake.requests("textDocument/formatting").is_empty())
             .await
@@ -403,7 +400,7 @@ async fn typescript_real_server_quick_fix() {
     let mut listed = false;
     while !listed && t.elapsed() < std::time::Duration::from_secs(60) {
         put_cursor(&mut app, at);
-        app.press(K::Char('.'), crate::milestone9_tests::cmd());
+        app.test_execute(Command::QuickFix);
         listed = settle_for(&mut app, 5, |a| a.code_actions.popup.is_some()).await;
         if !listed {
             app.press(K::Esc, M::NONE);
@@ -435,7 +432,7 @@ async fn typescript_real_server_quick_fix() {
         app.active_buffer().unwrap().rope.to_string(),
         app.message.as_ref().map(|m| &m.text)
     );
-    app.press(K::Char('q'), crate::milestone9_tests::cmd());
+    app.test_execute(Command::QuickFix);
     app.shutdown_servers().await;
     if let Some(n) = children_settled(SERVER_NAME, 0) {
         assert_eq!(n, 0, "no {SERVER_NAME} left");

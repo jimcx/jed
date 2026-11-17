@@ -9,6 +9,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::command::Command;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyModifiers as M;
 use crossterm::event::MouseEventKind;
@@ -392,7 +393,10 @@ async fn git_marks_survive_an_edit_and_a_scroll() {
 
     // A line typed at the top: the mark moves with the text at once, mapped through the change
     // set (no recompute needed).
-    app.press(KeyCode::Home, M::CONTROL);
+    app.test_execute(Command::Move {
+        motion: crate::command::Motion::DocStart,
+        select: false,
+    });
     app.press(KeyCode::Enter, M::NONE);
     let term = draw_sized(&mut app, 100, 24);
     let after = text_cell(&app, 101);
@@ -451,7 +455,10 @@ async fn git_marks_column_is_reserved_so_nothing_reflows() {
     );
 
     // A typed change lights a cell at once, and nothing moves to make room for it.
-    app.press(KeyCode::Home, M::CONTROL);
+    app.test_execute(Command::Move {
+        motion: crate::command::Motion::DocStart,
+        select: false,
+    });
     app.type_text("x");
     assert!(settle_markers(&mut app).await, "the mark is recomputed");
     let term = draw_sized(&mut app, 100, 24);

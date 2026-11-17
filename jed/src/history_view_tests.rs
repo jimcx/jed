@@ -161,17 +161,9 @@ use crossterm::event::{KeyCode as K, KeyModifiers as M};
 use crate::buffer::Buffer;
 use crate::history;
 
-fn cmd() -> M {
-    if cfg!(target_os = "macos") {
-        M::SUPER
-    } else {
-        M::CONTROL
-    }
-}
-
 /// Saves the active buffer and waits for the save and its history task.
 async fn save(app: &mut App) {
-    app.press(K::Char('s'), cmd());
+    app.test_execute(Command::Save);
     let id = app.group().active_tab().unwrap().buffer;
     assert!(
         app.settle(|a| !a.buffers.get(id).unwrap().save_in_flight() && a.file_history.running() == 0)
@@ -548,7 +540,7 @@ async fn history_view_restore_entry_is_one_undo_step_and_writes_nothing() {
     assert_eq!(before, "xyyone\n");
     app.test_execute(Command::ShowFileHistory);
     app.press(K::Down, M::NONE);
-    app.press(K::Enter, M::ALT);
+    app.test_execute(Command::FileHistory(FileHistoryCommand::Restore));
     assert!(app.settle(|a| a.file_history.restoring == 0).await);
     assert_eq!(text(&app), "xone\n", "the older entry");
     assert_eq!(
@@ -558,7 +550,7 @@ async fn history_view_restore_entry_is_one_undo_step_and_writes_nothing() {
     );
     assert!(app.active_buffer().unwrap().is_dirty());
     app.ui.focus = crate::app::Focus::Editor;
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), before, "one undo step");
     // The palette command restores the selected entry too.
     app.test_execute(Command::FileHistory(FileHistoryCommand::Restore));
@@ -573,7 +565,7 @@ async fn history_view_restore_entry_is_refused_for_a_read_only_buffer() {
     app.test_execute(Command::ShowFileHistory);
     app.press(K::Down, M::NONE);
     app.active_mut().unwrap().0.read_only = Some("test".into());
-    app.press(K::Enter, M::ALT);
+    app.test_execute(Command::FileHistory(FileHistoryCommand::Restore));
     assert_eq!(app.file_history.restoring, 0);
     assert_eq!(text(&app), "xyyone\n");
     assert!(app.message.as_ref().unwrap().text.contains("Read-only"));
@@ -624,7 +616,7 @@ async fn history_view_keys_on_an_empty_list_do_nothing() {
         app.press(k, M::NONE);
     }
     app.press(K::Enter, M::NONE);
-    app.press(K::Enter, M::ALT);
+    app.test_execute(Command::FileHistory(FileHistoryCommand::Restore));
     idle(&mut app).await;
     assert_eq!(app.group().tabs.len(), tabs, "Enter opened nothing");
     assert_eq!(app.file_history.restoring, 0);
@@ -674,7 +666,7 @@ async fn history_view_restore_with_nothing_selected_restores_the_newest_entry() 
     app.type_text("zz");
     assert_eq!(text(&app), "xyyzzone\n");
     focus_without_selecting(&mut app);
-    app.press(K::Enter, M::ALT);
+    app.test_execute(Command::FileHistory(FileHistoryCommand::Restore));
     assert!(app.settle(|a| a.file_history.restoring == 0).await);
     assert_eq!(text(&app), "xyyone\n");
 }

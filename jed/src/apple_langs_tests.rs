@@ -12,6 +12,7 @@
 
 use crossterm::event::{KeyCode as K, KeyModifiers as M};
 
+use crate::command::Command;
 use crate::lsp::fake::{FakeLauncher, FakeOptions};
 use crate::milestone9_tests::{encoding, idle, open, open_app, project, real_completion, real_diagnostics};
 use crate::milestone9_tests::{real_hover_and_definition, uri, which};
@@ -58,7 +59,7 @@ async fn apple_langs_real_clangd_objc_diagnostics() {
         app.press(K::Down, M::NONE);
         app.press(K::End, M::NONE);
         app.press(K::Left, M::NONE);
-        app.press(K::Char('d'), crate::milestone9_tests::cmd());
+        app.test_execute(Command::AddNextMatch);
         app.type_text("0");
     };
     real_diagnostics(
@@ -140,7 +141,7 @@ async fn apple_langs_objc_edits_by_the_c_like_config() {
     app.type_text("'");
     assert_eq!(text(&app), "id s = @\"hi'\";\n");
     // Comment Line uses `//`.
-    app.press(K::Char('/'), crate::milestone9_tests::cmd());
+    app.test_execute(Command::CommentLine);
     assert_eq!(text(&app), "// id s = @\"hi'\";\n");
     app.shutdown_servers().await;
 }
@@ -178,7 +179,7 @@ async fn apple_langs_swift_edits_by_the_swift_config() {
     app.type_text("'");
     assert_eq!(text(&app), "func f() {\n    g()\n}\nlet s = \"a\"'\n");
     // Comment Line uses `//`.
-    app.press(K::Char('/'), crate::milestone9_tests::cmd());
+    app.test_execute(Command::CommentLine);
     assert_eq!(text(&app), "func f() {\n    g()\n}\n// let s = \"a\"'\n");
     app.shutdown_servers().await;
 }
@@ -320,7 +321,7 @@ async fn apple_langs_real_sourcekit_lsp_diagnostics() {
         app.press(K::Down, M::NONE);
         app.press(K::End, M::NONE);
         app.press(K::Left, M::NONE);
-        app.press(K::Char('d'), crate::milestone9_tests::cmd());
+        app.test_execute(Command::AddNextMatch);
         app.type_text("0");
     };
     real_diagnostics(

@@ -145,20 +145,13 @@ use serde_json::{Value, json};
 use crate::app::{App, Level, Prompt};
 use crate::buffer::Buffer;
 use crate::buffer::pos::PosEncoding;
+use crate::command::Command;
 use crate::diagnostics::Severity;
 use crate::lsp::fake::{FakeLauncher, FakeOptions};
 use crate::lsp::{Launcher, ProcessLauncher, SHUTDOWN_TIMEOUT, ServerConfig, State};
 use crate::syntax::Language;
 use crate::workspace::trust::{Trust, TrustStore};
 use crate::workspace::{self, Workspace};
-
-pub(crate) fn cmd() -> M {
-    if cfg!(target_os = "macos") {
-        M::SUPER
-    } else {
-        M::CONTROL
-    }
-}
 
 /// A workspace `<dir>/proj` with `files`, its trust store in `<dir>/state`.
 pub(crate) fn project(dir: &Path, files: &[(&str, &str)]) -> PathBuf {
@@ -376,7 +369,7 @@ async fn milestone_9_quit_shuts_servers_down() {
         app.settle(|a| encoding(a, Language::Cpp).is_some() && encoding(a, Language::Python).is_some())
             .await
     );
-    app.press(K::Char('q'), cmd());
+    app.test_execute(Command::Quit);
     assert!(app.quitting());
     app.shutdown_servers().await;
     assert_eq!(fake.exited(), 2, "both servers stopped");
@@ -498,14 +491,14 @@ async fn real_server(language: Language, file: (&str, &str), configure: impl FnO
     // Edits at two cursors, undo and a save (9b): the server stays up and says nothing (a bad
     // range would be logged by it, not answered; 9c checks its diagnostics follow the text).
     let path = root.join(file.0);
-    app.press(K::Down, cmd() | M::ALT);
+    app.test_execute(Command::AddCursorBelow);
     app.press(K::End, M::NONE);
     app.type_text(" é😀");
     app.pump();
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     app.pump();
     app.type_text("y");
-    app.press(K::Char('s'), cmd());
+    app.test_execute(Command::Save);
     assert!(
         app.settle(|a| a.message.as_ref().is_some_and(|m| m.text.starts_with("Saved")))
             .await
@@ -518,7 +511,7 @@ async fn real_server(language: Language, file: (&str, &str), configure: impl FnO
         State::Running { .. }
     ));
     assert!(app.message.as_ref().is_some_and(|m| m.text.starts_with("Saved")));
-    app.press(K::Char('q'), cmd());
+    app.test_execute(Command::Quit);
     let t = Instant::now();
     app.shutdown_servers().await;
     assert!(
@@ -652,30 +645,29 @@ async fn milestone_9_document_follows_edits() {
         in_sync(&mut app, &fake, &path, "paste").await;
 
         // Cmd+D on `int` thrice, then type over them, delete, undo, redo.
-        app.press(K::Char('k'), cmd()); // nothing bound: harmless
         app.press(K::Up, M::NONE);
         app.press(K::Up, M::NONE);
         app.press(K::Home, M::NONE);
         for _ in 0..3 {
-            app.press(K::Char('d'), cmd());
+            app.test_execute(Command::AddNextMatch);
         }
         app.type_text("long");
         app.press(K::Backspace, M::NONE);
         in_sync(&mut app, &fake, &path, "Cmd+D typing").await;
-        app.press(K::Char('z'), cmd());
+        app.test_execute(Command::Undo);
         in_sync(&mut app, &fake, &path, "undo").await;
-        app.press(K::Char('z'), cmd());
-        app.press(K::Char('z'), cmd());
+        app.test_execute(Command::Undo);
+        app.test_execute(Command::Undo);
         in_sync(&mut app, &fake, &path, "undo twice").await;
-        app.press(K::Char('z'), cmd() | M::SHIFT);
+        app.test_execute(Command::Redo);
         in_sync(&mut app, &fake, &path, "redo").await;
 
         // Cmd+Shift+L on `item`: 960 selections, over `COALESCE_AT`.
         app.press(K::Esc, M::NONE);
-        app.press(K::Char('f'), cmd());
+        app.test_execute(Command::OpenFind);
         app.type_text("item");
         app.press(K::Esc, M::NONE);
-        app.press(K::Char('l'), cmd() | M::SHIFT);
+        app.test_execute(Command::SelectAllMatches);
         let count = app.group().active_tab().unwrap().view.selections.len();
         assert!(count > crate::lsp::documents::COALESCE_AT, "{count} selections");
         let before = did_changes(&fake).len();
@@ -691,7 +683,7 @@ async fn milestone_9_document_follows_edits() {
             5,
             "one coalesced range per keystroke"
         );
-        app.press(K::Char('z'), cmd());
+        app.test_execute(Command::Undo);
         in_sync(&mut app, &fake, &path, "Cmd+Shift+L undo").await;
         assert_eq!(full_text_changes(&fake), 0, "ranges only, never the full text");
         app.shutdown_servers().await;
@@ -714,7 +706,7 @@ async fn milestone_9_open_save_close_and_sync_kinds() {
     open_synced(&mut app, &fake, &a).await;
     open_synced(&mut app, &fake, &b).await;
     app.type_text("x");
-    app.press(K::Char('s'), cmd());
+    app.test_execute(Command::Save);
     // The save finishes and a key comes before its result is taken in: `didSave` still follows
     // that key's `didChange` (the fake checks the saved text against its copy).
     let t = Instant::now();
@@ -734,16 +726,16 @@ async fn milestone_9_open_save_close_and_sync_kinds() {
     );
     assert!(fake.errors().is_empty(), "{:?}", fake.errors());
     // Saved again (the "y" came after the first save), so closing doesn't ask.
-    app.press(K::Char('s'), cmd());
+    app.test_execute(Command::Save);
     assert!(app.settle(|_| fake.saves().len() == 2).await);
 
     // Close b's tab: didClose; a stays open.
-    app.press(K::Char('w'), cmd());
+    app.test_execute(Command::CloseTab);
     assert!(app.settle(|_| fake.document(&uri(&b)).is_none()).await);
     assert!(fake.document(&uri(&a)).is_some());
 
     // An explorer rename to a C file: closed, then opened at its new URI as C.
-    app.press(K::Char('e'), cmd() | M::SHIFT);
+    app.test_execute(Command::FocusExplorer);
     assert!(app.settle(|app| app.explorer.find(&a).is_some()).await);
     app.press(K::Home, M::NONE);
     for _ in 0..3 {
@@ -782,7 +774,7 @@ async fn milestone_9_open_save_close_and_sync_kinds() {
     app.type_text("ab");
     in_sync(&mut app, &fake, &a, "full sync").await;
     assert_eq!(full_text_changes(&fake), 1);
-    app.press(K::Char('s'), cmd());
+    app.test_execute(Command::Save);
     assert!(app.settle(|_| !fake.saves().is_empty()).await);
     assert_eq!(fake.saves(), [(uri(&a), None)]);
     app.shutdown_servers().await;
@@ -807,7 +799,7 @@ async fn milestone_9_open_save_close_and_sync_kinds() {
         assert!(app.settle(|a| encoding(a, Language::Cpp).is_some()).await);
         idle(&mut app).await;
         app.type_text("x");
-        app.press(K::Char('s'), cmd());
+        app.test_execute(Command::Save);
         assert!(
             app.settle(|a| a.message.as_ref().is_some_and(|m| m.text.starts_with("Saved")))
                 .await
@@ -841,7 +833,7 @@ async fn milestone_9_rename_and_language_change_reopen() {
     in_sync(&mut app, &fake, &a, "typing").await;
 
     // Explorer rename a.cpp → a.cc (still C++).
-    app.press(K::Char('e'), cmd() | M::SHIFT);
+    app.test_execute(Command::FocusExplorer);
     assert!(app.settle(|app| app.explorer.find(&a).is_some()).await);
     app.press(K::Home, M::NONE);
     for _ in 0..3 {
@@ -944,14 +936,14 @@ async fn milestone_9_random_edits_stay_in_sync() {
                 7 => app.press(K::Delete, M::NONE),
                 8 => app.press([K::Left, K::Right, K::Up, K::Down][rng.below(4)], M::NONE),
                 9 => app.press([K::Right, K::Down, K::End][rng.below(3)], M::SHIFT),
-                10 => app.press(K::Char('d'), cmd()),
-                11 => app.press(K::Down, cmd() | M::ALT),
+                10 => app.test_execute(Command::AddNextMatch),
+                11 => app.test_execute(Command::AddCursorBelow),
                 12 => app.handle_test_event(crossterm::event::Event::Paste("p\r\nq😀\n".into())),
-                13 => app.press(K::Char('z'), cmd()),
-                14 => app.press(K::Char('z'), cmd() | M::SHIFT),
-                15 => app.press(K::Down, M::ALT),
-                16 => app.press(K::Up, M::ALT | M::SHIFT),
-                17 => app.press(K::Char('/'), cmd()),
+                13 => app.test_execute(Command::Undo),
+                14 => app.test_execute(Command::Redo),
+                15 => app.test_execute(Command::MoveLinesDown),
+                16 => app.test_execute(Command::CopyLinesUp),
+                17 => app.test_execute(Command::CommentLine),
                 18 => app.press(K::Esc, M::NONE),
                 _ => app.press([K::Home, K::End, K::PageUp][rng.below(3)], M::NONE),
             }
@@ -998,7 +990,7 @@ async fn milestone_9_typing_at_many_cursors_stays_fast() {
     app.press(K::Right, M::NONE);
     app.press(K::Right, M::NONE);
     app.press(K::Right, M::NONE);
-    app.press(K::Char('l'), cmd() | M::SHIFT);
+    app.test_execute(Command::SelectAllMatches);
     let count = app.group().active_tab().unwrap().view.selections.len();
     assert_eq!(count, 2 * i);
 
@@ -1026,7 +1018,7 @@ async fn milestone_9_typing_at_many_cursors_stays_fast() {
             .starts_with("int thing = value_0; // thing\n")
     );
     let t = Instant::now();
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     app.pump();
     let undo = t.elapsed();
     println!("undo with a server: {undo:?}");
@@ -1200,7 +1192,7 @@ async fn milestone_9_diagnostics_show_as_squiggles_and_counts() {
     draw(&mut term, &mut app);
     assert!(status(&term).contains(" ⚠ unused bar "), "one line: {}", status(&term));
     // A notification wins until the next key.
-    app.press(K::Char('s'), cmd());
+    app.test_execute(Command::Save);
     assert!(app.settle(|a| a.message.is_some()).await);
     draw(&mut term, &mut app);
     assert!(status(&term).contains("Saved") && !status(&term).contains("unused"));
@@ -1522,7 +1514,7 @@ pub(crate) async fn real_diagnostics(
         app.active_buffer().unwrap().rope.to_string()
     );
     assert_eq!(app.lsp.diagnostics.counts().of(Severity::Error), 0);
-    app.press(K::Char('q'), cmd());
+    app.test_execute(Command::Quit);
     app.shutdown_servers().await;
     if let Some(n) = children_settled(process, 0) {
         assert_eq!(n, 0, "no {process} left");
@@ -1540,7 +1532,7 @@ async fn milestone_9_real_clangd_diagnostics() {
         app.press(K::Down, M::NONE);
         app.press(K::End, M::NONE);
         app.press(K::Left, M::NONE);
-        app.press(K::Char('d'), cmd());
+        app.test_execute(Command::AddNextMatch);
         app.type_text("0");
     };
     real_diagnostics(
@@ -1613,7 +1605,7 @@ async fn milestone_9_many_diagnostics_stay_cheap() {
     for _ in 0..5 {
         app.press(K::Right, M::NONE);
     }
-    app.press(K::Char('l'), cmd() | M::SHIFT);
+    app.test_execute(Command::SelectAllMatches);
     let count = app.group().active_tab().unwrap().view.selections.len();
     assert_eq!(count, 2 * lines);
     let n = 5u32;
@@ -1644,7 +1636,7 @@ async fn milestone_9_many_diagnostics_stay_cheap() {
     }
 
     // The Problems list over all of them: a key and a frame only look at the rows on screen.
-    app.press(K::Char('j'), cmd());
+    app.test_execute(Command::TogglePanel);
     draw(&mut term, &mut app);
     let t = Instant::now();
     app.press(K::End, M::NONE);
@@ -1776,7 +1768,7 @@ async fn milestone_9_problems_panel_toggles_and_lists() {
     assert!(find_cells(&term, "PROBLEMS").is_none(), "hidden at first");
     let full = view_height(&app);
 
-    app.press(K::Char('j'), cmd());
+    app.test_execute(Command::TogglePanel);
     assert!(app.ui.panel_visible);
     assert_eq!(app.ui.focus, crate::app::Focus::Panel);
     draw(&mut term, &mut app);
@@ -1829,14 +1821,14 @@ async fn milestone_9_problems_panel_toggles_and_lists() {
     let cursor = term.get_cursor_position().unwrap();
     assert!(cursor.y < panel.y, "the cursor is drawn above the panel: {cursor:?}");
 
-    app.press(K::Char('j'), cmd());
+    app.test_execute(Command::TogglePanel);
     assert!(!app.ui.panel_visible);
     draw(&mut term, &mut app);
     assert!(find_cells(&term, "PROBLEMS").is_none());
     assert_eq!(view_height(&app), full);
-    app.press(K::Char('j'), cmd());
+    app.test_execute(Command::TogglePanel);
     assert_eq!(app.ui.focus, crate::app::Focus::Panel);
-    app.press(K::Char('j'), cmd());
+    app.test_execute(Command::TogglePanel);
     assert_eq!(
         app.ui.focus,
         crate::app::Focus::Editor,
@@ -1855,7 +1847,7 @@ async fn milestone_9_problems_open_and_keep_their_selection() {
     let (mut app, _fake, root) = problems_project(dir.path()).await;
     let (pa, pc, pb) = (root.join("a.cpp"), root.join("c.cpp"), root.join("sub/b.cpp"));
     let mut term = big_terminal();
-    app.press(K::Char('m'), cmd() | M::SHIFT);
+    app.test_execute(Command::ToggleProblems);
     for _ in 0..4 {
         app.press(K::Down, M::NONE);
     }
@@ -1896,7 +1888,7 @@ async fn milestone_9_problems_open_and_keep_their_selection() {
 
     // a.cpp's error, after typing before it on its line: the mark moved, and so do the row's
     // column and what Enter selects.
-    app.press(K::Char('m'), cmd() | M::SHIFT);
+    app.test_execute(Command::ToggleProblems);
     app.press(K::Home, M::NONE);
     app.press(K::Down, M::NONE);
     assert_eq!(selected(&app), Some((pa.clone(), 1)));
@@ -1907,7 +1899,7 @@ async fn milestone_9_problems_open_and_keep_their_selection() {
     app.type_text("abc ");
     draw(&mut term, &mut app);
     assert!(find_cells(&term, "clang(undeclared_var_use) [Ln 1, Col 13]").is_some());
-    app.press(K::Char('m'), cmd() | M::SHIFT);
+    app.test_execute(Command::ToggleProblems);
     app.press(K::Enter, M::NONE);
     assert_eq!(selection(&app), (12, 15));
     let text = app.active_buffer().unwrap().rope.to_string();
@@ -1928,7 +1920,7 @@ async fn milestone_9_problems_open_and_keep_their_selection() {
     assert_eq!(app.ui.focus, crate::app::Focus::Editor);
     // A file row: a click only selects it; a double click opens its first problem (selected)
     // and focuses the editor.
-    app.press(K::Char('m'), cmd() | M::SHIFT);
+    app.test_execute(Command::ToggleProblems);
     draw(&mut term, &mut app);
     let a_row = panel_row_starting(&term, &app, "a.cpp").expect("a.cpp's row");
     click(&mut app, a_row);
@@ -1940,7 +1932,7 @@ async fn milestone_9_problems_open_and_keep_their_selection() {
     assert_eq!(selected(&app), Some((pa.clone(), 1)), "which becomes the selection");
     assert_eq!(app.ui.focus, crate::app::Focus::Editor);
     // A file not open yet, by a click (End scrolls the list down to it).
-    app.press(K::Char('m'), cmd() | M::SHIFT);
+    app.test_execute(Command::ToggleProblems);
     app.press(K::End, M::NONE);
     draw(&mut term, &mut app);
     let b = find_cells(&term, "⊗ b error").unwrap();
@@ -2030,7 +2022,13 @@ async fn milestone_9_next_problem_goes_through_files() {
     assert!(app.settle(|a| a.lsp.diagnostics.counts().of(Severity::Hint) == 1).await);
     // Wide enough for the whole message in the status bar.
     let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 30)).unwrap();
-    let f8 = |app: &mut App, shift: bool| app.press(K::F(8), if shift { M::SHIFT } else { M::NONE });
+    let f8 = |app: &mut App, shift: bool| {
+        if shift {
+            app.press(K::F(8), M::SHIFT)
+        } else {
+            app.press(K::F(8), M::NONE)
+        }
+    };
     let at = |app: &App| (active_path(app).unwrap(), selection(app));
     let bar = A_CPP.find("bar;").unwrap();
 
@@ -2071,7 +2069,7 @@ async fn milestone_9_next_problem_goes_through_files() {
     draw(&mut term, &mut app);
     assert!(status(&term).contains("(2 of 3)"), "the error: {}", status(&term));
     // From the list, the focus stays there.
-    app.press(K::Char('m'), cmd() | M::SHIFT);
+    app.test_execute(Command::ToggleProblems);
     f8(&mut app, false);
     assert_eq!(app.ui.focus, crate::app::Focus::Panel);
     assert_eq!(at(&app), (pa.clone(), (bar, bar)));
@@ -2095,7 +2093,7 @@ async fn milestone_9_problems_focus_and_mouse() {
     let mut term = big_terminal();
     let text = |app: &App| app.active_buffer().unwrap().rope.to_string();
 
-    app.press(K::Char('m'), cmd() | M::SHIFT);
+    app.test_execute(Command::ToggleProblems);
     assert_eq!((app.ui.panel_visible, app.ui.focus), (true, Focus::Panel));
     assert_eq!(
         app.problems
@@ -2112,19 +2110,19 @@ async fn milestone_9_problems_focus_and_mouse() {
         Some(crate::command::Command::Problems(crate::command::ProblemsCommand::Down))
     );
     assert!(app.ui.side_visible);
-    app.press(K::Char('b'), cmd());
+    app.test_execute(Command::ToggleSidebar);
     assert!(!app.ui.side_visible);
     assert_eq!(
         app.ui.focus,
         Focus::Panel,
         "hiding the side panel leaves the keys in the list"
     );
-    app.press(K::Char('b'), cmd());
+    app.test_execute(Command::ToggleSidebar);
     app.press(K::Esc, M::NONE);
     assert_eq!((app.ui.panel_visible, app.ui.focus), (true, Focus::Editor));
-    app.press(K::Char('m'), cmd() | M::SHIFT);
+    app.test_execute(Command::ToggleProblems);
     assert_eq!(app.ui.focus, Focus::Panel);
-    app.press(K::Char('m'), cmd() | M::SHIFT);
+    app.test_execute(Command::ToggleProblems);
     assert_eq!((app.ui.panel_visible, app.ui.focus), (false, Focus::Editor));
 
     // The status bar's counts: show and focus, then hide.
@@ -2143,7 +2141,7 @@ async fn milestone_9_problems_focus_and_mouse() {
     click(&mut app, counts);
     assert_eq!((app.ui.panel_visible, app.ui.focus), (true, Focus::Panel));
     click(&mut app, (60, 3));
-    app.press(K::Char('m'), cmd() | M::SHIFT);
+    app.test_execute(Command::ToggleProblems);
     assert_eq!(app.ui.focus, Focus::Panel, "shown, unfocused: Cmd+Shift+M focuses it");
     click(&mut app, (60, 3));
     assert_eq!(app.ui.focus, Focus::Editor);
@@ -2158,7 +2156,7 @@ async fn milestone_9_problems_focus_and_mouse() {
     // Dragging the top border up makes it taller (the editor smaller); it stops at the
     // editor's minimum.
     use crossterm::event::{MouseButton, MouseEventKind};
-    app.press(K::Char('j'), cmd());
+    app.test_execute(Command::TogglePanel);
     draw(&mut term, &mut app);
     let panel = app.hits.regions.panel.unwrap();
     let before = view_height(&app);
@@ -2203,7 +2201,7 @@ async fn milestone_9_problems_edge_cases() {
     app.press(K::F(8), M::NONE);
     assert_eq!(app.message.as_ref().map(|m| m.text.as_str()), Some("No problems"));
     assert_eq!((active_path(&app), selection(&app)), (Some(pa.clone()), (0, 0)));
-    app.press(K::Char('j'), cmd());
+    app.test_execute(Command::TogglePanel);
     for key in [K::Down, K::End, K::PageDown, K::Up, K::Enter] {
         app.press(key, M::NONE);
     }
@@ -2240,7 +2238,7 @@ async fn milestone_9_problems_edge_cases() {
 
     // Tiny terminals: the editor keeps `MIN_EDITOR_HEIGHT` (or all there is), the panel only
     // what's left; drawing, keys, wheel, a border drag and clicks never panic.
-    app.press(K::Char('m'), cmd() | M::SHIFT);
+    app.test_execute(Command::ToggleProblems);
     for h in 4..=13 {
         for w in [30, 41] {
             let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
@@ -2310,7 +2308,7 @@ pub(crate) fn put_cursor(app: &mut App, at: usize) {
 }
 
 pub(crate) fn show_hover(app: &mut App) {
-    app.press(K::Char('i'), cmd() | M::ALT);
+    app.test_execute(Command::ShowHover);
 }
 
 /// The popup's inside as drawn: one string per row (padding and trailing spaces trimmed).
@@ -2418,10 +2416,10 @@ async fn milestone_9_hover_popup_from_the_command() {
     assert!(app.settle(|a| a.hover.popup.is_some()).await);
     app.handle_test_event(crossterm::event::Event::Paste("z".into()));
     assert!(app.hover.popup.is_none());
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
 
     // Esc closes only it: the cursors stay.
-    app.press(K::Up, cmd() | M::ALT);
+    app.test_execute(Command::AddCursorAbove);
     let sels = app.group().active_tab().unwrap().view.selections.len();
     assert_eq!(sels, 2);
     show_hover(&mut app);
@@ -2575,7 +2573,7 @@ async fn milestone_9_hover_popup_over_the_find_widget() {
     // One line as wide as the editor allows: the popup spans it.
     let wide = "w".repeat(editor.width as usize - 4);
     fake.respond("textDocument/hover", json!({ "contents": wide }));
-    app.press(K::Char('f'), cmd());
+    app.test_execute(Command::OpenFind);
     put_cursor(&mut app, text.find("line 2").unwrap());
     let (x, y) = find_cells(&term, "line 2").unwrap();
     click(&mut app, (x, y));
@@ -2598,8 +2596,8 @@ async fn milestone_9_hover_popup_over_the_find_widget() {
     assert!(app.hover.popup.is_some());
 
     // Any terminal size, a split beside it: drawn inside its group's editor or not at all.
-    app.press(K::Char('\\'), cmd());
-    app.press(K::Char('1'), cmd());
+    app.test_execute(Command::SplitRight);
+    app.test_execute(Command::FocusGroup(1));
     show_hover(&mut app);
     assert!(app.settle(|a| a.hover.popup.is_some()).await);
     draw(&mut term, &mut app);
@@ -2927,7 +2925,7 @@ async fn milestone_9_go_to_definition() {
         json!(uri(&a))
     );
     assert_eq!(selection(&app), (4, 4), "a cursor, nothing selected");
-    app.press(K::Char('u'), cmd());
+    app.test_execute(Command::CursorUndo);
     assert_eq!(selection(&app), (use_at, use_at), "Cmd+U goes back");
     app.press(K::F(12), M::NONE);
     assert!(app.settle(|a| cursor_line_col(a) == (0, 4)).await);
@@ -2954,7 +2952,7 @@ async fn milestone_9_go_to_definition() {
     assert_eq!(cursor_line_col(&app), (1, "// 😀 here: ".len()));
 
     // Nothing.
-    app.press(K::Char('w'), cmd());
+    app.test_execute(Command::CloseTab);
     assert_eq!(active_path(&app).as_deref(), Some(a.as_path()));
     put_cursor(&mut app, use_at);
     fake.respond("textDocument/definition", Value::Null);
@@ -3068,7 +3066,7 @@ async fn milestone_9_definitions_list() {
     app.press(K::Esc, M::NONE);
     assert_eq!(app.ui.focus, crate::app::Focus::Editor);
     // Cmd+Shift+M still switches to Problems; the Locations tab stays in the strip.
-    app.press(K::Char('m'), cmd() | M::SHIFT);
+    app.test_execute(Command::ToggleProblems);
     draw(&mut term, &mut app);
     let tabs = screen_row(&term, 0, app.hits.regions.panel.unwrap().y + 1);
     assert!(tabs.contains("PROBLEMS") && tabs.contains("LOCATIONS"), "{tabs:?}");
@@ -3203,7 +3201,7 @@ pub(crate) async fn real_hover_and_definition(
         app.message.as_ref().map(|m| &m.text)
     );
     assert_eq!(cursor_line_col(&app).0, def_line, "{process}");
-    app.press(K::Char('q'), cmd());
+    app.test_execute(Command::Quit);
     app.shutdown_servers().await;
     if let Some(n) = children_settled(process, 0) {
         assert_eq!(n, 0, "no {process} left");
@@ -3280,7 +3278,7 @@ fn text(app: &App) -> String {
 }
 
 fn ctrl_space(app: &mut App) {
-    app.press(K::Char(' '), M::CONTROL);
+    app.test_execute(Command::TriggerSuggest);
 }
 
 fn list_shown(app: &App) -> bool {
@@ -3445,7 +3443,7 @@ async fn milestone_9_completion_filters_and_inserts() {
     assert_eq!(text(&app), "int main() {\n    alphabet\n}\n");
     assert_eq!(selection(&app), (25, 25));
     assert!(app.completion.popup.is_none());
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), "int main() {\n    alpha\n}\n", "one undo step");
     assert_eq!(selection(&app), (22, 22));
 
@@ -3456,7 +3454,7 @@ async fn milestone_9_completion_filters_and_inserts() {
     app.press(K::Down, M::NONE);
     app.press(K::Tab, M::NONE);
     assert_eq!(text(&app), "int main() {\n    alphabet\n}\n");
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
 
     // Esc only closes it.
     app.press(K::Char('@'), M::CONTROL); // a legacy terminal's Ctrl+Space
@@ -3547,7 +3545,7 @@ async fn milestone_9_completion_trigger_characters_and_edits() {
     assert_eq!(text(&app), "#include <s.h>\nint main() {\n  😀s.member\n}\n");
     let after_member = "#include <s.h>\nint main() {\n  😀s.member".len();
     assert_eq!(selection(&app), (after_member, after_member));
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), "int main() {\n  😀s.\n}\n", "one step: the include too");
 
     // Ctrl+Space at the trigger, then typing filters; the snippet's placeholder is selected.
@@ -3565,8 +3563,8 @@ async fn milestone_9_completion_trigger_characters_and_edits() {
     assert_eq!(selection(&app), (open, open + "int n".len()));
     app.type_text("5");
     assert_eq!(text(&app), "int main() {\n  😀s.method(5)\n}\n");
-    app.press(K::Char('z'), cmd());
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), "int main() {\n  😀s.met\n}\n");
 
     // Resolve: the selected item is resolved; its detail is drawn.
@@ -3625,7 +3623,7 @@ async fn milestone_9_completion_trigger_characters_and_edits() {
     assert_eq!(text(&app), "#include <m.h>\nint main() {\n  😀s.meter\n}\n");
     let end = text(&app).find("meter").unwrap() + 5;
     assert_eq!(selection(&app), (end, end), "the cursor follows");
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), "int main() {\n  😀s.meter\n}\n", "its own step");
     // `>` is a trigger character too (the server decides what it means).
     app.press(K::End, M::NONE);
@@ -3779,8 +3777,8 @@ async fn milestone_9_completion_at_every_cursor_and_by_mouse() {
     items.extend((0..20).map(|i| json!({ "label": format!("fill{i:02}"), "sortText": format!("z{i:02}") })));
     fake.respond("textDocument/completion", completion_list(Value::Array(items), false));
     put_cursor(&mut app, 16);
-    app.press(K::Char('d'), cmd());
-    app.press(K::Char('d'), cmd());
+    app.test_execute(Command::AddNextMatch);
+    app.test_execute(Command::AddNextMatch);
     app.press(K::Right, M::NONE);
     {
         use crate::buffer::pos::ByteIdx;
@@ -3811,7 +3809,7 @@ async fn milestone_9_completion_at_every_cursor_and_by_mouse() {
         [line(0) + 9, line(1) + 9, line(2) + 9],
         "inside each pair of parens"
     );
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), src, "one undo step");
     assert_eq!(app.group().active_tab().unwrap().view.selections.len(), 3);
 
@@ -3831,7 +3829,7 @@ async fn milestone_9_completion_at_every_cursor_and_by_mouse() {
     click(&mut app, (h.rows.x + 3, h.rows.y + 1));
     assert_eq!(text(&app), "int main() {\n  fox;\n  fox;\n  fox;\n}\n");
     assert!(app.completion.popup.is_none());
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
 
     // A long list scrolls under the wheel; the selection stays.
     app.press(K::Esc, M::NONE);
@@ -3967,7 +3965,7 @@ async fn milestone_9_completion_at_many_cursors_stays_fast() {
     for _ in 0..5 {
         app.press(K::Right, M::NONE);
     }
-    app.press(K::Char('l'), cmd() | M::SHIFT);
+    app.test_execute(Command::SelectAllMatches);
     app.press(K::Right, M::NONE);
     let count = app.group().active_tab().unwrap().view.selections.len();
     assert_eq!(count, 2 * i);
@@ -3987,7 +3985,7 @@ async fn milestone_9_completion_at_many_cursors_stays_fast() {
     println!("completion at {count} cursors: a key with the list {key:?}, inserting {accept:?}");
     assert!(text(&app).starts_with("int itemize = value_0; // itemize\n"));
     in_sync(&mut app, &fake, &path, "after inserting").await;
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert!(
         text(&app).starts_with("int itemi = value_0; // itemi\n"),
         "one undo step"
@@ -4046,7 +4044,7 @@ pub(crate) async fn real_completion(
     app.press(K::Enter, M::NONE);
     let want = format!("{obj}.{member}");
     assert!(text(&app).contains(&want), "{process}: {}", text(&app));
-    app.press(K::Char('q'), cmd());
+    app.test_execute(Command::Quit);
     app.shutdown_servers().await;
     if let Some(n) = children_settled(process, 0) {
         assert_eq!(n, 0, "no {process} left");
@@ -4181,7 +4179,7 @@ async fn milestone_9_completion_ranges_follow_typing() {
         "int main() {\n  s->foo\n  /*a*/t->foo\n  fox;\n  fox;\n}\n",
         "the dot replaced at both; the import where the server meant it"
     );
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(
         text(&app),
         "int main() {\n  s.f\n  t.f\n  fox;\n  fox;\n}\n",
@@ -4375,7 +4373,7 @@ async fn milestone_9_find_references() {
     assert_eq!(app.ui.focus, crate::app::Focus::Editor);
 
     // One reference: still the list.
-    app.press(K::PageUp, M::CONTROL);
+    app.test_execute(Command::PrevTab);
     assert_eq!(active_path(&app).as_deref(), Some(a.as_path()));
     put_cursor(&mut app, 5);
     fake.respond("textDocument/references", json!([location(&a, 0, 4, 10)]));
@@ -4446,18 +4444,18 @@ async fn milestone_9_rename_across_files() {
     let (mut app, fake, root) = lsp_project(dir.path(), &files, false).await;
     let (a, b, c) = (root.join("a.cpp"), root.join("b.cpp"), root.join("c.cpp"));
     open_synced(&mut app, &fake, &b).await;
-    app.press(K::PageUp, M::CONTROL);
+    app.test_execute(Command::PrevTab);
     assert_eq!(active_path(&app).as_deref(), Some(a.as_path()));
     // A second view of a.cpp, its cursor on line 1's ';'.
-    app.press(K::Char('\\'), cmd());
+    app.test_execute(Command::SplitRight);
     let semi = DEF_A.find(';').unwrap() + DEF_A[DEF_A.find(';').unwrap() + 1..].find(';').unwrap() + 1;
     put_cursor(&mut app, semi);
-    app.press(K::Char('1'), cmd());
+    app.test_execute(Command::FocusGroup(1));
     let line1 = DEF_A.find('\n').unwrap() + 1;
     set_cursors(&mut app, &[5, 12, line1 + 12], 0);
 
     // The explorer's F2 is still the file rename.
-    app.press(K::Char('e'), cmd() | M::SHIFT);
+    app.test_execute(Command::FocusExplorer);
     // The reveal of a.cpp waits on the root's listing, read off the UI thread: under load it
     // hadn't arrived (no rows, nothing selected) and F2 had no file to rename.
     assert!(
@@ -4467,7 +4465,7 @@ async fn milestone_9_rename_across_files() {
     app.press(K::F(2), M::NONE);
     assert!(app.prompt.is_none() && app.inline_rename.is_some());
     app.press(K::Esc, M::NONE);
-    app.press(K::Char('1'), cmd());
+    app.test_execute(Command::FocusGroup(1));
     assert_eq!(app.ui.focus, crate::app::Focus::Editor);
 
     fake.respond(
@@ -4544,19 +4542,19 @@ async fn milestone_9_rename_across_files() {
     }
 
     // Undo: one step per buffer, only that buffer.
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), DEF_A);
     assert_eq!(all_selections(&app), [(5, 5), (12, 12), (line1 + 12, line1 + 12)]);
     assert_eq!(
         app.buffers.get(id_b).unwrap().rope.to_string(),
         "int f() { return renamed; }\n"
     );
-    app.press(K::PageDown, M::CONTROL);
+    app.test_execute(Command::NextTab);
     assert_eq!(active_path(&app).as_deref(), Some(c.as_path()));
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), REN_C);
     assert!(!app.buffers.get(id_c).unwrap().is_dirty(), "back to the file");
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), REN_C, "nothing more to undo");
     for path in [&a, &c] {
         in_sync(&mut app, &fake, path, "after undo").await;
@@ -4660,7 +4658,7 @@ async fn milestone_9_rename_refusals() {
     open_synced(&mut app, &fake, &b).await;
     let id_b = buffer_id(&app, &b);
     app.buffers.get_mut(id_b).unwrap().read_only = Some("test".into());
-    app.press(K::PageUp, M::CONTROL);
+    app.test_execute(Command::PrevTab);
     put_cursor(&mut app, 5);
     fake.respond(
         "textDocument/rename",
@@ -4677,13 +4675,13 @@ async fn milestone_9_rename_refusals() {
     );
     assert_eq!(text(&app), DEF_A);
     // F2 in a read-only buffer.
-    app.press(K::PageDown, M::CONTROL);
+    app.test_execute(Command::NextTab);
     let asked = fake.requests("textDocument/prepareRename").len();
     app.press(K::F(2), M::NONE);
     assert_eq!(message(&app).as_deref(), Some("Read-only: test"));
     assert!(app.prompt.is_none());
     app.buffers.get_mut(id_b).unwrap().read_only = None;
-    app.press(K::PageUp, M::CONTROL);
+    app.test_execute(Command::PrevTab);
     put_cursor(&mut app, 5);
 
     // An edit for another version of an open file.
@@ -4740,9 +4738,9 @@ async fn milestone_9_rename_without_prepare() {
     let a = root.join("a.cpp");
     open_synced(&mut app, &fake, &a).await;
     // A second view in a split, its cursor after the ';'.
-    app.press(K::Char('\\'), cmd());
+    app.test_execute(Command::SplitRight);
     put_cursor(&mut app, "int 😀 = target;".len());
-    app.press(K::Char('1'), cmd());
+    app.test_execute(Command::FocusGroup(1));
     put_cursor(&mut app, "int 😀 = tar".len());
     app.press(K::F(2), M::NONE);
     assert_eq!(rename_prompt(&app).unwrap().1, "target");
@@ -4771,9 +4769,9 @@ async fn milestone_9_rename_without_prepare() {
     // Typing at once doesn't join the rename's undo step.
     app.type_text("s");
     assert_eq!(text(&app), "int 😀 = goasl;\n");
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), "int 😀 = goal;\n");
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), "int 😀 = target;\n");
     put_cursor(&mut app, "int 😀 ".len());
     app.press(K::F(2), M::NONE);
@@ -4831,7 +4829,7 @@ async fn milestone_9_rename_files_not_open() {
     assert_eq!(message(&app).as_deref(), Some("The file changed: rename cancelled"));
     idle(&mut app).await;
     assert!(fake.requests("textDocument/rename").is_empty());
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), DEF_A);
     put_cursor(&mut app, 5);
 
@@ -4935,7 +4933,7 @@ pub(crate) async fn real_references_and_rename(
     while !both(&app) && t.elapsed() < Duration::from_secs(60) {
         app.press(K::F(12), M::SHIFT);
         settle_for(&mut app, 3, both).await;
-        app.press(K::Char('1'), cmd());
+        app.test_execute(Command::FocusGroup(1));
         put_cursor(&mut app, at);
     }
     assert!(
@@ -5042,13 +5040,10 @@ async fn milestone_9_real_ty_references_and_rename() {
     .await;
 }
 
-/// Shift+Alt+F on macOS, Ctrl+Shift+I on Linux (VS Code's).
 fn format_document(app: &mut App) {
-    if cfg!(target_os = "macos") {
-        app.press(K::Char('f'), M::SHIFT | M::ALT);
-    } else {
-        app.press(K::Char('i'), M::CONTROL | M::SHIFT);
-    }
+    // A key press clears the last message first; a command does not.
+    app.message = None;
+    app.test_execute(Command::FormatDocument);
 }
 
 fn cursor_offsets(app: &App) -> Vec<usize> {
@@ -5127,12 +5122,12 @@ async fn milestone_9_format_document() {
         "only what changed"
     );
     // One undo step back, cursors too.
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), UNFORMATTED);
     assert_eq!(cursor_offsets(&app), [5, 13, end_line + 3]);
-    app.press(K::Char('z'), cmd() | M::SHIFT);
+    app.test_execute(Command::Redo);
     assert_eq!(text(&app), FORMATTED);
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), UNFORMATTED);
 
     // Several edits: still one undo step.
@@ -5152,7 +5147,7 @@ async fn milestone_9_format_document() {
     format_document(&mut app);
     let two = FORMATTED.replace("// ", "/// ");
     assert!(app.settle(|a| text(a) == two).await, "{:?}", text(&app));
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), UNFORMATTED, "one undo step");
 
     // Stale: typing before the answer cancels it; the late answer changes nothing.
@@ -5335,7 +5330,7 @@ fn undo_to(app: &mut App, text_: &str, steps: usize) {
         if text(app) == text_ {
             return;
         }
-        app.press(K::Char('z'), cmd());
+        app.test_execute(Command::Undo);
     }
     assert_eq!(text(app), text_, "undone");
 }
@@ -5465,7 +5460,7 @@ async fn done_when(app: &mut App, root: &Path, tee: &Tee, d: &DoneWhen<'_>) {
         message(app)
     );
     while active_path(app).as_deref() != Some(path.as_path()) {
-        app.press(K::PageUp, M::CONTROL);
+        app.test_execute(Command::PrevTab);
     }
 
     // Find references (the server may need to index the other files first).
@@ -5475,7 +5470,7 @@ async fn done_when(app: &mut App, root: &Path, tee: &Tee, d: &DoneWhen<'_>) {
     while !all(app) && t.elapsed() < Duration::from_secs(60) {
         app.press(K::F(12), M::SHIFT);
         settle_for(app, 3, all).await;
-        app.press(K::Char('1'), cmd());
+        app.test_execute(Command::FocusGroup(1));
         put_cursor(app, at);
     }
     assert!(
@@ -5522,7 +5517,7 @@ async fn done_when(app: &mut App, root: &Path, tee: &Tee, d: &DoneWhen<'_>) {
                 text(app),
                 message(app)
             );
-            app.press(K::Char('z'), cmd());
+            app.test_execute(Command::Undo);
             assert_eq!(text(app), renamed_text, "{process}: one undo step");
         }
         None => {
@@ -5534,7 +5529,7 @@ async fn done_when(app: &mut App, root: &Path, tee: &Tee, d: &DoneWhen<'_>) {
 
     let n = incremental_only(tee, process);
     assert!(n >= 5, "{process}: {n} didChanges");
-    app.press(K::Char('q'), cmd());
+    app.test_execute(Command::Quit);
     app.shutdown_servers().await;
     if let Some(n) = children_settled(process, 0) {
         assert_eq!(n, 0, "no {process} left");

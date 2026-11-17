@@ -8594,7 +8594,7 @@ mod discard_changes {
     use crate::git::test_repo::git;
     use crate::history;
     use crate::milestone10_tests::{
-        ctrl_shift_g, dirs, draw_sized, file, open_file_app, scm_repo, scm_row, selected_key, settle_git, settle_stage,
+        dirs, draw_sized, file, focus_scm, open_file_app, scm_repo, scm_row, selected_key, settle_git, settle_stage,
     };
     use crate::scm::{RowKey, Section};
 
@@ -8617,7 +8617,7 @@ mod discard_changes {
         scm_repo(root);
         let mut app = open_file_app(root, state, "a.txt");
         assert!(settle_git(&mut app, |s| s.entry(Path::new("sub/e.txt")).is_some()).await);
-        ctrl_shift_g(&mut app);
+        focus_scm(&mut app);
         app
     }
 
@@ -8732,7 +8732,7 @@ mod discard_changes {
         scm_repo(&root);
         let mut app = open_file_app(&root, &state, "sub/e.txt");
         assert!(settle_git(&mut app, |s| s.entry(Path::new("sub/e.txt")).is_some()).await);
-        ctrl_shift_g(&mut app);
+        focus_scm(&mut app);
         select(&mut app, &file(Section::Changes, "sub/e.txt"));
         app.test_execute(Command::DiscardChanges);
         match &app.prompt {
@@ -8785,7 +8785,7 @@ mod discard_changes {
         let mut app = open_file_app(&root, &state, "b.txt");
         assert!(settle_git(&mut app, |s| s.entry(Path::new("a.txt")).is_some()).await);
         let before = read(&root, "a.txt");
-        ctrl_shift_g(&mut app);
+        focus_scm(&mut app);
         select(&mut app, &file(Section::MergeChanges, "a.txt"));
         app.test_execute(Command::DiscardChanges);
         assert!(app.prompt.is_none());

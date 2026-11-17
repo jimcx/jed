@@ -341,7 +341,7 @@ async fn git_history_follows_the_active_file() {
     assert_eq!(summaries(&app), ["changes b", "adds both"]);
 
     // Back to the first tab (Ctrl+PageUp, the previous tab).
-    app.press(KeyCode::PageUp, M::CONTROL);
+    app.test_execute(Command::PrevTab);
     assert!(settle_history(&mut app, &a, 2).await);
     assert_eq!(summaries(&app), ["changes a", "adds both"]);
     assert_eq!(app.git_history.rows()[0].id, cli_log(&root, "a.txt")[0]);
@@ -858,7 +858,7 @@ async fn git_history_enter_opens_a_commit_tab() {
     assert!(lines[0].starts_with("commit "), "{:?}", lines[0]);
 
     // Back to the file's tab and Enter the same commit again: the tab is reused.
-    app.press(KeyCode::PageUp, M::CONTROL);
+    app.test_execute(Command::PrevTab);
     assert!(settle_history(&mut app, &root.join("a.txt"), 2).await);
     let _term = draw(&mut app);
     assert_eq!(enter_commit(&mut app).await, second);
@@ -918,7 +918,7 @@ async fn git_history_done_when() {
     );
     let term = draw(&mut app);
     assert!(list_row(&term, app.hits.history.unwrap().list, 0).contains("fourth: changes b"));
-    app.press(KeyCode::PageUp, M::CONTROL);
+    app.test_execute(Command::PrevTab);
     assert!(settle_history(&mut app, &a, 3).await);
     assert_eq!(app.git_history.rows()[0].id, third);
 
@@ -1184,7 +1184,7 @@ async fn git_history_enter_with_nothing_selected_opens_the_first_commit() {
     );
 
     // Back to a.txt with nothing selected: Enter opens the newest commit.
-    app.press(KeyCode::PageUp, M::CONTROL);
+    app.test_execute(Command::PrevTab);
     assert!(settle_history(&mut app, &root.join("a.txt"), 2).await);
     let _term = draw(&mut app);
     focus_history(&mut app);
@@ -1742,17 +1742,12 @@ async fn git_history_commit_tab_selects_and_copies() {
     // The expected text comes from git itself, not from the tab's rendering.
     let shown = cli_show(&root, &second, width);
     let lines: Vec<&str> = shown.lines().collect();
-    let cmd = if cfg!(target_os = "macos") {
-        M::SUPER
-    } else {
-        M::CONTROL
-    };
 
     // From the top, Shift+Down twice: the first two lines selected (the second's start included).
     doc_start(&mut app);
     app.press(KeyCode::Down, M::SHIFT);
     app.press(KeyCode::Down, M::SHIFT);
-    app.press(KeyCode::Char('c'), cmd);
+    app.test_execute(Command::Copy);
     assert_eq!(app.clipboard.read().unwrap(), format!("{}\n{}\n", lines[0], lines[1]));
     // Drawn: the selection covers those two lines, not the third.
     let term = draw(&mut app);
@@ -1766,11 +1761,11 @@ async fn git_history_commit_tab_selects_and_copies() {
     assert_ne!(bg(2, 1), selection, "the cursor's line is not");
     // An empty cursor copies its whole line.
     app.press(KeyCode::Esc, M::NONE);
-    app.press(KeyCode::Char('c'), cmd);
+    app.test_execute(Command::Copy);
     assert_eq!(app.clipboard.read().unwrap(), format!("{}\n", lines[2]));
     // Cut does nothing (read only): the clipboard keeps what Copy left.
     app.press(KeyCode::Down, M::SHIFT);
-    app.press(KeyCode::Char('x'), cmd);
+    app.test_execute(Command::Cut);
     assert_eq!(app.clipboard.read().unwrap(), format!("{}\n", lines[2]));
 }
 

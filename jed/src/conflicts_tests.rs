@@ -34,7 +34,7 @@ use crate::git::Change;
 use crate::git::test_repo::{commit_all, git, init};
 use crate::layout::MergeButton;
 use crate::milestone10_tests::{
-    ctrl_shift_g, dirs, file, open_file_app, scm_button, scm_rows, selected_key, settle_git, settle_stage,
+    dirs, file, focus_scm, open_file_app, scm_button, scm_rows, selected_key, settle_git, settle_stage,
 };
 use crate::scm::Section;
 use crate::selection::{Selection, Selections};
@@ -277,29 +277,29 @@ async fn next_and_previous_conflict_move_and_wrap() {
     set_cursor(&mut app, 0);
 
     // Alt+F8: the first, then the second, then wraps to the first.
-    app.press(KeyCode::F(8), KeyModifiers::ALT);
+    app.test_execute(Command::Merge(MergeCommand::Next));
     assert_eq!(head(&app), starts[0]);
     // The target is revealed (the cursor is brought on screen next draw) and undo sealed.
     assert_eq!(
         app.group().active_tab().unwrap().view.reveal_range,
         Some((starts[0], starts[0]))
     );
-    app.press(KeyCode::F(8), KeyModifiers::ALT);
+    app.test_execute(Command::Merge(MergeCommand::Next));
     assert_eq!(head(&app), starts[1]);
-    app.press(KeyCode::F(8), KeyModifiers::ALT);
+    app.test_execute(Command::Merge(MergeCommand::Next));
     assert_eq!(head(&app), starts[0], "wraps");
     assert_eq!(app.group().active_tab().unwrap().view.selections.len(), 1);
     // Shift+Alt+F8: back to the second at once (wrapping), then the first.
-    app.press(KeyCode::F(8), KeyModifiers::ALT | KeyModifiers::SHIFT);
+    app.test_execute(Command::Merge(MergeCommand::Previous));
     assert_eq!(head(&app), starts[1], "wraps back");
-    app.press(KeyCode::F(8), KeyModifiers::ALT | KeyModifiers::SHIFT);
+    app.test_execute(Command::Merge(MergeCommand::Previous));
     assert_eq!(head(&app), starts[0]);
 
     // A file without markers: nothing moves.
     let (_dir, mut app) = open("plain\ntext\n");
     set_cursor(&mut app, 3);
-    app.press(KeyCode::F(8), KeyModifiers::ALT);
-    app.press(KeyCode::F(8), KeyModifiers::ALT | KeyModifiers::SHIFT);
+    app.test_execute(Command::Merge(MergeCommand::Next));
+    app.test_execute(Command::Merge(MergeCommand::Previous));
     assert_eq!(head(&app), ByteIdx(3));
     // The command, too (the palette's entry).
     app.test_execute(Command::Merge(MergeCommand::Next));
@@ -635,7 +635,7 @@ async fn conflicts_done_when_a_real_merge_source_control_accept_and_stage_resolv
         })
         .await
     );
-    ctrl_shift_g(&mut app);
+    focus_scm(&mut app);
     assert_eq!(
         scm_rows(&mut app),
         ["▾ Merge Changes 1", "a.txt !", "▾ Changes 0"],
@@ -739,7 +739,7 @@ async fn conflicts_done_when_a_real_merge_source_control_accept_and_stage_resolv
     // Next Conflict wraps past the last.
     set_cursor(&mut app, 0);
     for expected in [starts[0], starts[1], starts[0]] {
-        app.press(KeyCode::F(8), KeyModifiers::ALT);
+        app.test_execute(Command::Merge(MergeCommand::Next));
         assert_eq!(head(&app), expected);
     }
 
@@ -753,7 +753,7 @@ async fn conflicts_done_when_a_real_merge_source_control_accept_and_stage_resolv
     assert_eq!(text_of(&d.doc.as_ref().unwrap().right), "THEIRS THREE");
 
     // Stage File on the file still holding markers asks first: Cancel leaves it conflicted.
-    ctrl_shift_g(&mut app);
+    focus_scm(&mut app);
     assert_eq!(
         scm_rows(&mut app),
         ["▾ Merge Changes 1", "a.txt !", "▾ Changes 0"],

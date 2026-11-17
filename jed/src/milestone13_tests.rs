@@ -918,12 +918,7 @@ async fn milestone_13_closing_or_renaming_a_dirty_buffer_moves_its_backup() {
 
     // Renaming a.txt in the explorer: the old name's backup goes, the new name's comes with the
     // next backup.
-    let cmd = if cfg!(target_os = "macos") {
-        KeyModifiers::SUPER
-    } else {
-        KeyModifiers::CONTROL
-    };
-    app.press(KeyCode::Char('e'), cmd | KeyModifiers::SHIFT);
+    app.test_execute(Command::FocusExplorer);
     let a = root.join("a.txt");
     assert!(app.settle(|app| app.explorer.find(&a).is_some()).await, "root listed");
     app.explorer.selected = Some(a.clone());
@@ -976,20 +971,12 @@ fn recent_on_disk(state: &Path) -> Vec<PathBuf> {
 }
 
 /// Ctrl+R, then waits for the listing: the picker's rows (folder name, path), or none.
-async fn ctrl_r(app: &mut App) -> Option<Vec<(String, String)>> {
-    app.press(KeyCode::Char('r'), KeyModifiers::CONTROL);
+async fn open_recent_picker(app: &mut App) -> Option<Vec<(String, String)>> {
+    app.test_execute(Command::OpenRecentWorkspace);
     assert!(app.settle(|a| a.recent.listing_running == 0).await, "listed");
     let p = app.palette.as_ref()?;
     assert_eq!(p.mode(), Mode::Recent);
     Some(p.rows.iter().map(|r| (r.label.clone(), r.detail.clone())).collect())
-}
-
-fn cmd() -> KeyModifiers {
-    if cfg!(target_os = "macos") {
-        KeyModifiers::SUPER
-    } else {
-        KeyModifiers::CONTROL
-    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1023,7 +1010,7 @@ async fn milestone_13_ctrl_r_picks_a_recent_workspace() {
     let mut app = started(&root, &state).await;
     let show = |p: &Path| recent::display(p, &crate::paths::home());
     // Most recent first; the current workspace and the folder gone since are left out.
-    let rows = ctrl_r(&mut app).await.expect("the picker opens");
+    let rows = open_recent_picker(&mut app).await.expect("the picker opens");
     assert_eq!(
         rows,
         [
@@ -1056,7 +1043,7 @@ async fn milestone_13_ctrl_r_picks_a_recent_workspace() {
     );
     assert_eq!(app.workspace.root, root);
     // A path the shell would split is quoted.
-    ctrl_r(&mut app).await.unwrap();
+    open_recent_picker(&mut app).await.unwrap();
     app.press(KeyCode::Enter, KeyModifiers::NONE);
     let message = app.message.as_ref().unwrap().text.clone();
     assert!(
@@ -1064,7 +1051,7 @@ async fn milestone_13_ctrl_r_picks_a_recent_workspace() {
         "{message}"
     );
     // Esc closes it and drops the entries.
-    ctrl_r(&mut app).await.unwrap();
+    open_recent_picker(&mut app).await.unwrap();
     app.press(KeyCode::Esc, KeyModifiers::NONE);
     assert!(app.palette.is_none() && app.recent.picker.is_none());
     quit(app).await;
@@ -1078,7 +1065,7 @@ async fn milestone_13_open_recent_workspace_is_in_the_palette() {
     fs::create_dir_all(&other).unwrap();
     quit(started(&other, &state).await).await;
     let mut app = started(&root, &state).await;
-    app.press(KeyCode::Char('p'), cmd() | KeyModifiers::SHIFT);
+    app.test_execute(Command::ShowCommands);
     app.type_text("Open Recent Workspace");
     let p = app.palette.as_ref().unwrap();
     let row = &p.rows[p.selected];
@@ -1104,7 +1091,7 @@ async fn milestone_13_no_other_recent_workspace_says_so() {
     fs::remove_dir(&gone).unwrap();
     // Only the current workspace and a folder gone since: no picker, a message.
     let mut app = started(&root, &state).await;
-    assert_eq!(ctrl_r(&mut app).await, None);
+    assert_eq!(open_recent_picker(&mut app).await, None);
     let message = &app.message.as_ref().unwrap().text;
     assert!(message.starts_with("No other recent workspaces"), "{message}");
     assert_eq!(recent_on_disk(&state), std::slice::from_ref(&root));
@@ -1116,7 +1103,7 @@ async fn milestone_13_no_other_recent_workspace_says_so() {
     app.test_plain_whitespace();
     assert!(app.settle(|a| !a.session.loading()).await);
     assert_eq!(app.recent.recorded, 0);
-    assert_eq!(ctrl_r(&mut app).await, None);
+    assert_eq!(open_recent_picker(&mut app).await, None);
     let message = &app.message.as_ref().unwrap().text;
     assert!(message.contains("no state directory"), "{message}");
 }
@@ -1149,7 +1136,7 @@ fn project(root: &Path) {
 
 /// Quick open (Cmd+P): types `name`, waits for it to be the first row, Enter, waits for the open.
 async fn quick_open(app: &mut App, name: &str) {
-    app.press(KeyCode::Char('p'), cmd());
+    app.test_execute(Command::QuickOpen);
     app.type_text(name);
     let found = app
         .settle(|a| {
@@ -1169,7 +1156,7 @@ async fn quick_open(app: &mut App, name: &str) {
 
 /// Runs the palette command titled `title` (Cmd+Shift+P).
 fn palette_command(app: &mut App, title: &str) {
-    app.press(KeyCode::Char('p'), cmd() | KeyModifiers::SHIFT);
+    app.test_execute(Command::ShowCommands);
     app.type_text(title);
     let p = app.palette.as_ref().unwrap();
     assert_eq!(p.rows[p.selected].label, title);
@@ -1252,11 +1239,11 @@ async fn milestone_13_done_when_quit_and_reopen_gives_back_the_same_screen() {
     // Group 1: main.rs scrolled to line 120 with three cursors selecting a word each, the
     // bottom one primary (the status bar's Ln / Col and the terminal cursor are its)…
     quick_open(&mut app, "main.rs").await;
-    app.press(KeyCode::Char('g'), KeyModifiers::CONTROL);
+    app.test_execute(Command::GoToLine);
     app.type_text("122:5");
     app.press(KeyCode::Enter, KeyModifiers::NONE);
     for _ in 0..2 {
-        app.press(KeyCode::Up, cmd() | KeyModifiers::ALT);
+        app.test_execute(Command::AddCursorAbove);
     }
     for _ in 0..3 {
         app.press(KeyCode::Right, KeyModifiers::SHIFT);
@@ -1269,26 +1256,26 @@ async fn milestone_13_done_when_quit_and_reopen_gives_back_the_same_screen() {
     palette_command(&mut app, "Git: Open Changes");
     assert!(app.group().active_diff().is_some(), "the diff tab");
     // Group 2, right: README.md near its end, "Paragraph" and its next match selected with Cmd+D.
-    app.press(KeyCode::Char('\\'), cmd());
+    app.test_execute(Command::SplitRight);
     quick_open(&mut app, "README.md").await;
     app.press_file_end();
-    app.press(KeyCode::Char('g'), KeyModifiers::CONTROL);
+    app.test_execute(Command::GoToLine);
     app.type_text("101:3");
     app.press(KeyCode::Enter, KeyModifiers::NONE);
-    app.press(KeyCode::Char('d'), cmd());
-    app.press(KeyCode::Char('d'), cmd());
+    app.test_execute(Command::AddNextMatch);
+    app.test_execute(Command::AddNextMatch);
     assert_eq!(
         app.group().active_tab().unwrap().view.selections.len(),
         2,
         "Cmd+D added a match"
     );
     // Group 3, below group 2: Cargo.toml.
-    app.press(KeyCode::Char('\\'), cmd() | KeyModifiers::ALT);
+    app.test_execute(Command::SplitDown);
     quick_open(&mut app, "Cargo.toml").await;
     assert_eq!(app.groups.ids().len(), 3);
     // Side panel on Source Control, the bottom panel shown; then back to group 2's editor.
-    app.press(KeyCode::Char('g'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
-    app.press(KeyCode::Char('j'), cmd());
+    app.test_execute(Command::FocusScm);
+    app.test_execute(Command::TogglePanel);
     assert!(app.ui.panel_visible);
     // Both dividers dragged off the middle (the ratios are the session's).
     for dir in [SplitDir::Right, SplitDir::Down] {
@@ -1302,7 +1289,7 @@ async fn milestone_13_done_when_quit_and_reopen_gives_back_the_same_screen() {
         app.mouse(MouseEventKind::Drag(MouseButton::Left), to.0, to.1);
         app.mouse(MouseEventKind::Up(MouseButton::Left), to.0, to.1);
     }
-    app.press(KeyCode::Char('2'), cmd());
+    app.test_execute(Command::FocusGroup(2));
     assert_eq!(app.ui.focus, Focus::Editor);
     assert_eq!(
         app.group().active_tab().unwrap().view.selections.len(),
@@ -1317,15 +1304,15 @@ async fn milestone_13_done_when_quit_and_reopen_gives_back_the_same_screen() {
     let ratios = format!("{:?}", app.groups.tree);
     assert!(!ratios.contains("ratio: 0.5,"), "both dividers moved: {ratios}");
     // Group 1's other tabs, drawn one by one (Ctrl+PageUp), then back to the diff.
-    app.press(KeyCode::Char('1'), cmd());
+    app.test_execute(Command::FocusGroup(1));
     let mut tabs_before = Vec::new();
     for _ in 0..2 {
-        app.press(KeyCode::PageUp, KeyModifiers::CONTROL);
+        app.test_execute(Command::PrevTab);
         tabs_before.push(frame(&mut app, &mut term));
     }
-    app.press(KeyCode::PageDown, KeyModifiers::CONTROL);
-    app.press(KeyCode::PageDown, KeyModifiers::CONTROL);
-    app.press(KeyCode::Char('2'), cmd());
+    app.test_execute(Command::NextTab);
+    app.test_execute(Command::NextTab);
+    app.test_execute(Command::FocusGroup(2));
     assert!(frame(&mut app, &mut term) == before, "looking changed nothing");
     let screen = format!("{}\n{}", before.rows.join("\n"), before.side.join("\n"));
     for text in [
@@ -1343,7 +1330,7 @@ async fn milestone_13_done_when_quit_and_reopen_gives_back_the_same_screen() {
     assert!(screen.contains("Paragraph 49"), "README scrolled:\n{screen}");
 
     // Quit (Cmd+Q: nothing unsaved, no prompt), as `run` does.
-    app.press(KeyCode::Char('q'), cmd());
+    app.test_execute(Command::Quit);
     assert!(app.quitting());
     app.shutdown().await;
 
@@ -1360,18 +1347,18 @@ async fn milestone_13_done_when_quit_and_reopen_gives_back_the_same_screen() {
     assert_eq!(before.side, after.side, "the Source Control view's rows");
     assert_eq!(before.cursor, after.cursor, "the terminal cursor");
     // Group 1's other tabs: main.rs at line 120 with its three selections, lib.rs paged down.
-    app.press(KeyCode::Char('1'), cmd());
+    app.test_execute(Command::FocusGroup(1));
     for (i, shot) in tabs_before.iter().enumerate() {
-        app.press(KeyCode::PageUp, KeyModifiers::CONTROL);
+        app.test_execute(Command::PrevTab);
         let tab = frame(&mut app, &mut term);
         for (y, (a, b)) in shot.rows.iter().zip(&tab.rows).enumerate() {
             assert_eq!(a, b, "tab {i}, row {y}");
         }
         assert!(tab == *shot, "tab {i}: colours, the side panel, the cursor");
     }
-    app.press(KeyCode::PageDown, KeyModifiers::CONTROL);
-    app.press(KeyCode::PageDown, KeyModifiers::CONTROL);
-    app.press(KeyCode::Char('2'), cmd());
+    app.test_execute(Command::NextTab);
+    app.test_execute(Command::NextTab);
+    app.test_execute(Command::FocusGroup(2));
 
     // And again after a second quit with nothing touched.
     quit(app).await;
@@ -1393,20 +1380,20 @@ async fn milestone_13_done_when_a_kill_loses_at_most_one_backup_interval() {
     // A session to come back to: main.rs, and README.md in a split.
     let mut app = reopen(&root, &state, None).await;
     quick_open(&mut app, "main.rs").await;
-    app.press(KeyCode::Char('\\'), cmd());
+    app.test_execute(Command::SplitRight);
     quick_open(&mut app, "README.md").await;
     quit(app).await;
 
     // Edits: three cursors in main.rs, a line in README.md.
     let mut app = reopen(&root, &state, None).await;
-    app.press(KeyCode::Char('1'), cmd());
-    app.press(KeyCode::Char('g'), KeyModifiers::CONTROL);
+    app.test_execute(Command::FocusGroup(1));
+    app.test_execute(Command::GoToLine);
     app.type_text("10");
     app.press(KeyCode::Enter, KeyModifiers::NONE);
-    app.press(KeyCode::Down, cmd() | KeyModifiers::ALT);
-    app.press(KeyCode::Down, cmd() | KeyModifiers::ALT);
+    app.test_execute(Command::AddCursorBelow);
+    app.test_execute(Command::AddCursorBelow);
     app.type_text("kept ");
-    app.press(KeyCode::Char('2'), cmd());
+    app.test_execute(Command::FocusGroup(2));
     app.type_text("Saved by the backup.");
     app.press(KeyCode::Enter, KeyModifiers::NONE);
     // One backup interval passes: everything so far is backed up.
@@ -1416,7 +1403,7 @@ async fn milestone_13_done_when_a_kill_loses_at_most_one_backup_interval() {
     assert_eq!(main_at_tick.matches("kept ").count(), 3);
     // More edits, less than an interval before the kill: the next backup isn't due yet.
     app.type_text("lost");
-    app.press(KeyCode::Char('1'), cmd());
+    app.test_execute(Command::FocusGroup(1));
     app.type_text("lost ");
     app.pump();
     let due = app.backups.deadline().expect("the next backup is pending");
@@ -1463,9 +1450,9 @@ async fn milestone_13_done_when_a_kill_loses_at_most_one_backup_interval() {
         (disk("src/main.rs"), disk("README.md")),
         (main0.clone(), readme0.clone())
     );
-    for g in ['1', '2'] {
-        app.press(KeyCode::Char(g), cmd());
-        app.press(KeyCode::Char('z'), cmd());
+    for g in [1u8, 2] {
+        app.test_execute(Command::FocusGroup(g));
+        app.test_execute(Command::Undo);
         assert!(!app.active_buffer().unwrap().is_dirty());
     }
     assert_eq!(text_of(&app, &root, "src/main.rs"), main0);

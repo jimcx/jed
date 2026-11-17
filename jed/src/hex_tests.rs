@@ -28,20 +28,12 @@ use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 
 use crate::app::{App, Focus};
-use crate::command::Command;
+use crate::command::{Command, FindCommand};
 use crate::group::Tab;
 use crate::hex::{self, Column, HexDoc, HexTab};
 use crate::milestone10_tests::dirs;
 use crate::workspace::Workspace;
 use crate::workspace::trust::TrustStore;
-
-pub(crate) fn cmd() -> M {
-    if cfg!(target_os = "macos") {
-        M::SUPER
-    } else {
-        M::CONTROL
-    }
-}
 
 /// `\x7fELF` and a NUL early (binary), then every byte value three times, then some text.
 pub(crate) fn data() -> Vec<u8> {
@@ -87,7 +79,7 @@ async fn hex_app_inner(watch: bool) -> (tempfile::TempDir, PathBuf, App) {
 
 /// Quick open (Cmd+P): types `name`, Enter, waits for its tab (hex or text).
 pub(crate) async fn quick_open(app: &mut App, name: &str) {
-    app.press(KeyCode::Char('p'), cmd());
+    app.test_execute(Command::QuickOpen);
     app.type_text(name);
     let found = app
         .settle(|a| {
@@ -232,7 +224,7 @@ async fn hex_rows_are_hexdumps_and_resizing_keeps_a_power_of_two() {
 
     // Widening gives 32 bytes per row, narrowing 8 then 4 — never another count — the cursor
     // (somewhere in the middle) shown each time.
-    app.press(KeyCode::Char('g'), M::CONTROL);
+    app.test_execute(Command::GoToLine);
     app.type_text("0x200");
     app.press(KeyCode::Enter, M::NONE);
     for (width, per_row) in [
@@ -306,7 +298,7 @@ async fn hex_keys_move_select_and_switch_columns() {
     assert!(hex(&app).top_row() > 0);
     app.press_file_start();
     assert_eq!(at(&app), (0, None));
-    app.press(KeyCode::Char('a'), cmd());
+    app.test_execute(Command::SelectAll);
     assert_eq!(at(&app), (data().len() - 1, Some(0..data().len())));
     let term = draw(&mut app, 100, 12);
     assert!(status_bar(&term).contains(&format!("{} bytes selected", data().len())));
@@ -337,22 +329,22 @@ async fn hex_keys_move_select_and_switch_columns() {
 async fn hex_copy_takes_the_cursors_column() {
     let (_d, _root, mut app) = hex_app().await;
     open_bin(&mut app).await;
-    app.press(KeyCode::Char('c'), cmd());
+    app.test_execute(Command::Copy);
     assert_eq!(app.clipboard.read().unwrap(), "7f", "the cursor's byte");
     app.press(KeyCode::Right, M::NONE);
     app.press(KeyCode::Right, M::SHIFT);
     app.press(KeyCode::Right, M::SHIFT);
-    app.press(KeyCode::Char('c'), cmd());
+    app.test_execute(Command::Copy);
     assert_eq!(app.clipboard.read().unwrap(), "45 4c 46");
     app.press(KeyCode::Tab, M::NONE);
-    app.press(KeyCode::Char('c'), cmd());
+    app.test_execute(Command::Copy);
     assert_eq!(app.clipboard.read().unwrap(), "ELF");
     app.press(KeyCode::Right, M::SHIFT);
     app.press(KeyCode::Right, M::SHIFT);
-    app.press(KeyCode::Char('c'), cmd());
+    app.test_execute(Command::Copy);
     assert_eq!(app.clipboard.read().unwrap(), "ELF..", "`.` for the rest");
     // Cut doesn't take anything away.
-    app.press(KeyCode::Char('x'), cmd());
+    app.test_execute(Command::Cut);
     assert_eq!(hex(&app).doc.bytes(), data());
 }
 
@@ -451,7 +443,7 @@ async fn hex_go_to_offset_and_the_status_bar() {
     assert!(!status.contains("Ln "), "no line, encoding or language: {status}");
 
     // Ctrl+G is Go to Offset: its hint, hex then decimal, past the end the last byte.
-    app.press(KeyCode::Char('g'), M::CONTROL);
+    app.test_execute(Command::GoToLine);
     let term = draw(&mut app, 100, 12);
     let screen: Vec<String> = (0..12).map(|y| line(&term, 0, y, 100)).collect();
     assert!(
@@ -466,13 +458,13 @@ async fn hex_go_to_offset_and_the_status_bar() {
     assert_cursor_shown(&app, &term);
     assert!(status_bar(&term).ends_with(&format!("Offset 0x100 (256)   0xf8 248   {len} bytes")));
     for (query, want) in [("300", 300), ("1f0h", 0x1f0), ("0x99999", len - 1)] {
-        app.press(KeyCode::Char('g'), M::CONTROL);
+        app.test_execute(Command::GoToLine);
         app.type_text(query);
         app.press(KeyCode::Enter, M::NONE);
         assert_eq!(hex(&app).cursor, want, "{query}");
     }
     // Not an offset: the input stays.
-    app.press(KeyCode::Char('g'), M::CONTROL);
+    app.test_execute(Command::GoToLine);
     app.type_text("zz");
     app.press(KeyCode::Enter, M::NONE);
     assert!(app.palette.is_some());
@@ -606,7 +598,7 @@ async fn hex_reopen_as_hex_and_as_text() {
     app.test_execute(Command::ReopenAsHex);
     assert!(app.active_hex().is_none());
     assert!(app.message.as_ref().unwrap().text.contains("unsaved changes"));
-    app.press(KeyCode::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert!(!app.active_buffer().unwrap().is_dirty());
 
     // In place of the text tab, its buffer dropped; the bytes on disk.
@@ -654,7 +646,7 @@ async fn hex_tab_title_deleted_mark_and_files_too_big() {
     let big = fs::File::create(root.join("big.bin")).unwrap();
     big.set_len(hex::RESIDENT_MAX + 1).unwrap();
     drop(big);
-    app.press(KeyCode::Char('p'), cmd());
+    app.test_execute(Command::QuickOpen);
     app.type_text("big.bin");
     assert!(
         app.settle(|a| a
@@ -708,7 +700,7 @@ async fn hex_explorer_opens_renames_moves_and_closes_the_tab() {
     let (_d, root, mut app) = hex_app().await;
     let bin = root.join("bin.dat");
     // The explorer: Enter on the file opens it as hex.
-    app.press(KeyCode::Char('e'), cmd() | M::SHIFT);
+    app.test_execute(Command::FocusExplorer);
     assert!(app.settle(|a| a.explorer.find(&bin).is_some()).await, "root listed");
     app.explorer.selected = Some(bin.clone());
     app.press(KeyCode::Enter, M::NONE);
@@ -718,7 +710,7 @@ async fn hex_explorer_opens_renames_moves_and_closes_the_tab() {
 
     // F2 in the explorer: the tab follows the file to its new name.
     let renamed = root.join("renamed.dat");
-    app.press(KeyCode::Char('e'), cmd() | M::SHIFT);
+    app.test_execute(Command::FocusExplorer);
     app.explorer.selected = Some(bin.clone());
     app.press(KeyCode::F(2), M::NONE);
     for _ in 0.."bin.dat".len() {
@@ -774,17 +766,13 @@ async fn hex_empty_file_and_narrow_rows() {
     let status = status_bar(&term);
     assert!(status.ends_with("0 bytes") && !status.contains("Offset"), "{status}");
     // Keys, copy, the mouse and Go to Offset find no byte to move to.
-    for (key, mods) in [
-        (KeyCode::Right, M::NONE),
-        (KeyCode::End, M::NONE),
-        (KeyCode::PageDown, M::NONE),
-        (KeyCode::Down, M::SHIFT),
-        (KeyCode::Char('a'), cmd()),
-        (KeyCode::Char('c'), cmd()),
-        (KeyCode::Tab, M::NONE),
-    ] {
-        app.press(key, mods);
-    }
+    app.press(KeyCode::Right, M::NONE);
+    app.press(KeyCode::End, M::NONE);
+    app.press(KeyCode::PageDown, M::NONE);
+    app.press(KeyCode::Down, M::SHIFT);
+    app.test_execute(Command::SelectAll);
+    app.test_execute(Command::Copy);
+    app.press(KeyCode::Tab, M::NONE);
     assert_eq!((hex(&app).cursor, hex(&app).selection()), (0, None));
     assert_eq!(app.clipboard.read().unwrap(), "", "nothing copied");
     let rect = rows_rect(&app);
@@ -792,7 +780,7 @@ async fn hex_empty_file_and_narrow_rows() {
     app.mouse(MouseEventKind::Drag(MouseButton::Left), rect.x + 30, rect.y + 2);
     app.mouse(MouseEventKind::Up(MouseButton::Left), rect.x + 30, rect.y + 2);
     app.mouse(MouseEventKind::ScrollDown, rect.x + 12, rect.y);
-    app.press(KeyCode::Char('g'), M::CONTROL);
+    app.test_execute(Command::GoToLine);
     app.type_text("5");
     app.press(KeyCode::Enter, M::NONE);
     assert!(app.palette.is_none());
@@ -808,7 +796,7 @@ async fn hex_empty_file_and_narrow_rows() {
     // Narrow tabs (the side bar shown, the terminal narrowed): 2 then 1 byte per row, then rows
     // cut; never a panic, the cursor kept and shown.
     quick_open(&mut app, "bin.dat").await;
-    app.press(KeyCode::Char('g'), M::CONTROL);
+    app.test_execute(Command::GoToLine);
     app.type_text("0x20");
     app.press(KeyCode::Enter, M::NONE);
     app.ui.side_visible = true;
@@ -869,15 +857,6 @@ async fn hex_empty_file_and_narrow_rows() {
 
 // Find on a hex tab (hex-c).
 
-/// The find widget's toggle keys: Cmd+Alt on macOS, Alt elsewhere.
-pub(crate) fn toggle() -> M {
-    if cfg!(target_os = "macos") {
-        M::SUPER | M::ALT
-    } else {
-        M::ALT
-    }
-}
-
 /// Bytes with `ELF` in every case at known places, one across a 16-byte row break (and none on
 /// the first two rows, which the find widget covers at the right):
 /// `ELF` at 32 (row 2), `elf` at 46 (rows 2 and 3), `Elf` at 64, `ELF` at 80.
@@ -918,7 +897,7 @@ async fn find_app(bytes: &[u8]) -> (tempfile::TempDir, App) {
 
 /// Cmd+F, then `query` typed over the seeded one.
 pub(crate) fn find(app: &mut App, query: &str) {
-    app.press(KeyCode::Char('f'), cmd());
+    app.test_execute(Command::OpenFind);
     assert_eq!(app.ui.focus, Focus::Find);
     app.press(KeyCode::Backspace, M::NONE);
     app.type_text(query);
@@ -998,38 +977,38 @@ async fn hex_find_ascii_and_hex_find_the_same_match_and_the_toggle_converts() {
     );
 
     // Alt+X: the same bytes as hex pairs, the same match; and back.
-    app.press(KeyCode::Char('x'), toggle());
+    app.test_execute(Command::Find(FindCommand::ToggleHex));
     assert!(app.find_options.hex);
     assert_eq!(app.find.query.text, "45 4c 46");
     assert_eq!(hex(&app).selection(), Some(32..35));
     settle_count(&mut app).await;
     let term = draw(&mut app, 100, 20);
     assert!(widget_rows(&app, &term)[0].ends_with("1 of 2"), "hex is exact");
-    app.press(KeyCode::Char('x'), toggle());
+    app.test_execute(Command::Find(FindCommand::ToggleHex));
     assert!(!app.find_options.hex);
     assert_eq!(app.find.query.text, "ELF");
 
     // A hex query typed (spaces ignored, either case) finds what the ASCII one does.
-    app.press(KeyCode::Char('x'), toggle());
+    app.test_execute(Command::Find(FindCommand::ToggleHex));
     find(&mut app, "454C46");
     assert_eq!(app.find.query.text, "454C46");
     assert_eq!(hex(&app).selection(), Some(32..35));
     // Bytes that aren't all printable stay as they are when going to ASCII (re-read as text).
     find(&mut app, "00 ff");
-    app.press(KeyCode::Char('x'), toggle());
+    app.test_execute(Command::Find(FindCommand::ToggleHex));
     assert!(!app.find_options.hex);
     assert_eq!(app.find.query.text, "00 ff", "kept, read as text");
     assert!(app.find.hex.error().is_none());
 
     // ASCII text always converts to hex: its bytes.
-    app.press(KeyCode::Char('x'), toggle());
+    app.test_execute(Command::Find(FindCommand::ToggleHex));
     assert_eq!(app.find.query.text, "30 30 20 66 66");
 
     // The mode is kept for the session: closing and reopening the widget keeps it (seeded
     // from the selection as pairs: the NUL byte `00` selected while typing `00 ff`).
     app.press(KeyCode::Esc, M::NONE);
     assert!(!app.find.visible);
-    app.press(KeyCode::Char('f'), cmd());
+    app.test_execute(Command::OpenFind);
     assert!(app.find_options.hex);
     assert_eq!(app.find.query.text, "00");
     // From the editor (widget closed) the toggle still flips the mode and converts the query
@@ -1037,7 +1016,7 @@ async fn hex_find_ascii_and_hex_find_the_same_match_and_the_toggle_converts() {
     app.press(KeyCode::Esc, M::NONE);
     find(&mut app, "45 4c 46");
     app.press(KeyCode::Esc, M::NONE);
-    app.press(KeyCode::Char('x'), toggle());
+    app.test_execute(Command::Find(FindCommand::ToggleHex));
     assert!(!app.find_options.hex && !app.find.visible);
     assert_eq!(app.find.query.text, "ELF");
 }
@@ -1053,17 +1032,17 @@ async fn hex_find_case_sensitivity_and_errors() {
     assert_eq!(hex(&app).selection(), Some(32..35), "`ELF` matches `elf` without Aa");
 
     // Aa: ASCII letters must match exactly.
-    app.press(KeyCode::Char('c'), toggle());
+    app.test_execute(Command::Find(FindCommand::ToggleCase));
     assert!(app.find_options.case_sensitive);
     assert_eq!(hex(&app).selection(), Some(46..49), "researched from the selection");
     settle_count(&mut app).await;
     assert_eq!(app.find.hex.count().unwrap().found(), 1);
     let term = draw(&mut app, 100, 20);
     assert!(widget_rows(&app, &term)[0].ends_with("1 of 1"));
-    app.press(KeyCode::Char('c'), toggle());
+    app.test_execute(Command::Find(FindCommand::ToggleCase));
 
     // Hex mode: an odd count of digits, or a non-hex char, is the widget's error.
-    app.press(KeyCode::Char('x'), toggle());
+    app.test_execute(Command::Find(FindCommand::ToggleHex));
     find(&mut app, "45 4");
     let term = draw(&mut app, 100, 20);
     let rows = widget_rows(&app, &term);
@@ -1148,7 +1127,7 @@ async fn hex_find_next_and_previous_wrap_select_and_scroll() {
     let (_d, mut app) = find_app(&data).await;
     draw(&mut app, 100, 20);
     find(&mut app, "ELF");
-    app.press(KeyCode::Char('c'), toggle());
+    app.test_execute(Command::Find(FindCommand::ToggleCase));
     assert_eq!(hex(&app).selection(), Some(32..35));
     let sel = |app: &App| (hex(app).selection(), hex(app).cursor);
     app.press(KeyCode::Enter, M::NONE);
@@ -1186,13 +1165,13 @@ async fn hex_find_next_and_previous_wrap_select_and_scroll() {
     app.press(KeyCode::Esc, M::NONE);
     app.press(KeyCode::Esc, M::NONE);
     assert_eq!(hex(&app).selection(), None);
-    app.press(KeyCode::Char('g'), M::CONTROL);
+    app.test_execute(Command::GoToLine);
     app.type_text("32");
     app.press(KeyCode::Enter, M::NONE);
     app.press(KeyCode::F(3), M::NONE);
     assert_eq!(sel(&app).0, Some(32..35));
     // Overlapping matches are each a step.
-    app.press(KeyCode::Char('x'), toggle());
+    app.test_execute(Command::Find(FindCommand::ToggleHex));
     find(&mut app, "00 00");
     let start = hex(&app).selection().unwrap().start;
     app.press(KeyCode::Enter, M::NONE);
@@ -1227,10 +1206,10 @@ async fn hex_find_count_is_naive_and_off_thread_and_stale_counts_are_dropped() {
     app.press(KeyCode::Enter, M::NONE);
     let term = draw(&mut app, 100, 20);
     assert!(widget_rows(&app, &term)[0].ends_with(&format!("3 of {want}")));
-    app.press(KeyCode::Char('c'), toggle());
+    app.test_execute(Command::Find(FindCommand::ToggleCase));
     settle_count(&mut app).await;
     assert_eq!(app.find.hex.count().unwrap().found(), naive_count(&data, b"ab", true));
-    app.press(KeyCode::Char('x'), toggle());
+    app.test_execute(Command::Find(FindCommand::ToggleHex));
     assert_eq!(app.find.query.text, "61 62");
     settle_count(&mut app).await;
     assert_eq!(app.find.hex.count().unwrap().found(), naive_count(&data, b"ab", true));
@@ -1302,7 +1281,7 @@ async fn hex_find_seeds_from_the_selection() {
     let (_d, mut app) = find_app(&find_data()).await;
     draw(&mut app, 100, 20);
     let go = |app: &mut App, offset: &str| {
-        app.press(KeyCode::Char('g'), M::CONTROL);
+        app.test_execute(Command::GoToLine);
         app.type_text(offset);
         app.press(KeyCode::Enter, M::NONE);
     };
@@ -1311,34 +1290,34 @@ async fn hex_find_seeds_from_the_selection() {
     app.press(KeyCode::Right, M::SHIFT);
     assert_eq!(hex(&app).selection(), Some(32..35));
     // ASCII mode: the text.
-    app.press(KeyCode::Char('f'), cmd());
+    app.test_execute(Command::OpenFind);
     assert_eq!(app.find.query.text, "ELF");
     assert!(app.find.query.selection().is_some(), "selected: typing replaces it");
     assert_eq!(hex(&app).selection(), Some(32..35), "the selection is the match");
     app.press(KeyCode::Esc, M::NONE);
     // Hex mode: the pairs.
-    app.press(KeyCode::Char('x'), toggle());
-    app.press(KeyCode::Char('f'), cmd());
+    app.test_execute(Command::Find(FindCommand::ToggleHex));
+    app.test_execute(Command::OpenFind);
     assert_eq!(app.find.query.text, "45 4c 46");
     app.press(KeyCode::Esc, M::NONE);
     go(&mut app, "0");
     app.press(KeyCode::Right, M::SHIFT);
-    app.press(KeyCode::Char('f'), cmd());
+    app.test_execute(Command::OpenFind);
     assert_eq!(app.find.query.text, "7f 00");
     app.press(KeyCode::Esc, M::NONE);
     // ASCII mode, bytes that aren't printable: the last query stays.
-    app.press(KeyCode::Char('x'), toggle());
+    app.test_execute(Command::Find(FindCommand::ToggleHex));
     assert_eq!(app.find.query.text, "7f 00", "not printable: kept");
     find(&mut app, "tail");
     app.press(KeyCode::Esc, M::NONE);
     go(&mut app, "0");
     app.press(KeyCode::Right, M::SHIFT);
-    app.press(KeyCode::Char('f'), cmd());
+    app.test_execute(Command::OpenFind);
     assert_eq!(app.find.query.text, "tail");
     // No selection: the last query too.
     app.press(KeyCode::Esc, M::NONE);
     app.press(KeyCode::Left, M::NONE);
-    app.press(KeyCode::Char('f'), cmd());
+    app.test_execute(Command::OpenFind);
     assert_eq!(app.find.query.text, "tail");
 }
 
@@ -1347,12 +1326,7 @@ async fn hex_find_has_no_replace_select_all_or_word_options() {
     let (_d, mut app) = find_app(&find_data()).await;
     draw(&mut app, 100, 20);
     // Cmd+Alt+F / Ctrl+H: the find input only.
-    let open_replace = if cfg!(target_os = "macos") {
-        (KeyCode::Char('f'), M::SUPER | M::ALT)
-    } else {
-        (KeyCode::Char('h'), M::CONTROL)
-    };
-    app.press(open_replace.0, open_replace.1);
+    app.test_execute(Command::OpenReplace);
     assert!(app.find.visible);
     app.type_text("ELF");
     let sel = hex(&app).selection();
@@ -1362,20 +1336,20 @@ async fn hex_find_has_no_replace_select_all_or_word_options() {
     // Tab doesn't go to a replace input; replace keys, Alt+Enter, Cmd+D do nothing.
     app.press(KeyCode::Tab, M::NONE);
     assert_eq!(app.find.field, crate::find::Field::Find);
-    app.press(KeyCode::Char('1'), cmd() | M::SHIFT);
-    app.press(KeyCode::Enter, cmd() | M::ALT);
-    app.press(KeyCode::Enter, M::ALT);
+    app.test_execute(Command::Find(FindCommand::ReplaceOne));
+    app.test_execute(Command::Find(FindCommand::ReplaceAll));
+    app.test_execute(Command::Find(FindCommand::SelectAllMatches));
     assert_eq!(app.ui.focus, Focus::Find);
     app.press(KeyCode::Esc, M::NONE);
-    app.press(KeyCode::Char('d'), cmd());
-    app.press(KeyCode::Char('l'), cmd() | M::SHIFT);
+    app.test_execute(Command::AddNextMatch);
+    app.test_execute(Command::SelectAllMatches);
     assert_eq!(hex(&app).selection(), sel);
     assert_eq!(hex(&app).doc.bytes(), find_data().as_slice());
     // Whole word and regex are drawn disabled and their keys and clicks do nothing here.
-    app.press(KeyCode::Char('f'), cmd());
+    app.test_execute(Command::OpenFind);
     let options = app.find_options;
-    app.press(KeyCode::Char('w'), toggle());
-    app.press(KeyCode::Char('r'), toggle());
+    app.test_execute(Command::Find(FindCommand::ToggleWholeWord));
+    app.test_execute(Command::Find(FindCommand::ToggleRegex));
     let term = draw(&mut app, 100, 20);
     let hit = app.hits.find.unwrap();
     for r in &hit.toggles[1..3] {
@@ -1403,7 +1377,7 @@ async fn hex_find_leaves_the_text_tabs_find_as_it_was() {
     quick_open(&mut app, "notes.txt").await;
     app.test_plain_whitespace();
     draw(&mut app, 100, 20);
-    app.press(KeyCode::Char('f'), cmd());
+    app.test_execute(Command::OpenFind);
     app.type_text("world");
     let sel = |app: &App| {
         let s = *app.group().active_tab().unwrap().view.selections.primary();
@@ -1416,24 +1390,19 @@ async fn hex_find_leaves_the_text_tabs_find_as_it_was() {
     assert!(rows[0].ends_with("1 of 1"));
     assert_eq!(app.hits.find.unwrap().toggles[3].width, 0, "no 0x toggle");
     // Alt+X does nothing on a text tab.
-    app.press(KeyCode::Char('x'), toggle());
+    app.test_execute(Command::Find(FindCommand::ToggleHex));
     assert!(!app.find_options.hex);
     assert_eq!(app.find.query.text, "world");
     // Replace still shows there.
-    let open_replace = if cfg!(target_os = "macos") {
-        (KeyCode::Char('f'), M::SUPER | M::ALT)
-    } else {
-        (KeyCode::Char('h'), M::CONTROL)
-    };
-    app.press(open_replace.0, open_replace.1);
+    app.test_execute(Command::OpenReplace);
     let term = draw(&mut app, 100, 20);
     assert_eq!(widget_rows(&app, &term).len(), 2, "the replace row");
 
     // Back on the hex tab (Ctrl+PageUp): the same query, searched as bytes; no replace row.
     app.press(KeyCode::Esc, M::NONE);
-    app.press(KeyCode::PageUp, M::CONTROL);
+    app.test_execute(Command::PrevTab);
     assert!(app.active_hex().is_some());
-    app.press(KeyCode::Char('f'), cmd());
+    app.test_execute(Command::OpenFind);
     app.type_text("tail");
     assert_eq!(hex(&app).selection(), Some(84..88));
     let term = draw(&mut app, 100, 20);
@@ -1445,20 +1414,20 @@ async fn hex_find_switching_tabs_with_the_widget_open() {
     let (_d, mut app) = find_app(&find_data()).await;
     quick_open(&mut app, "notes.txt").await;
     app.test_plain_whitespace();
-    app.press(KeyCode::PageUp, M::CONTROL);
+    app.test_execute(Command::PrevTab);
     assert!(app.active_hex().is_some());
     draw(&mut app, 100, 20);
     // Hex mode on the hex tab, the widget left open.
-    app.press(KeyCode::Char('x'), toggle());
+    app.test_execute(Command::Find(FindCommand::ToggleHex));
     find(&mut app, "6c");
     assert_eq!(hex(&app).selection(), Some(47..48));
     let hex_tab = hex(&app).id;
 
     // To the text tab, the widget still open: a text search there (the hex mode doesn't apply),
     // and its replace row is back.
-    app.press(KeyCode::PageDown, M::CONTROL);
+    app.test_execute(Command::NextTab);
     assert!(app.active_hex().is_none() && app.find.visible && app.find_options.hex);
-    app.press(KeyCode::Char('f'), cmd());
+    app.test_execute(Command::OpenFind);
     app.type_text("world");
     let s = *app.group().active_tab().unwrap().view.selections.primary();
     assert_eq!((s.start().0, s.end().0), (6, 11));
@@ -1475,7 +1444,7 @@ async fn hex_find_switching_tabs_with_the_widget_open() {
 
     // Back to the hex tab with the widget open: the query read as hex pairs ("world" isn't
     // hex: the error), no replace row; a valid one counts afresh.
-    app.press(KeyCode::PageUp, M::CONTROL);
+    app.test_execute(Command::PrevTab);
     assert!(app.active_hex().is_some());
     let term = draw(&mut app, 100, 20);
     let rows = widget_rows(&app, &term);
@@ -1525,7 +1494,7 @@ async fn hex_find_empty_file_end_of_file_and_one_byte_rows() {
     find(&mut app, "l");
     assert_eq!(hex(&app).selection(), Some(33..34));
     app.ui.focus = Focus::Editor;
-    app.press(KeyCode::Char('g'), M::CONTROL);
+    app.test_execute(Command::GoToLine);
     app.type_text("80");
     app.press(KeyCode::Enter, M::NONE);
     assert_eq!(hex(&app).cursor, 80);
@@ -1614,7 +1583,7 @@ pub(crate) async fn quit(mut app: App) {
 }
 
 pub(crate) fn go_to_offset(app: &mut App, offset: &str) {
-    app.press(KeyCode::Char('g'), M::CONTROL);
+    app.test_execute(Command::GoToLine);
     app.type_text(offset);
     app.press(KeyCode::Enter, M::NONE);
 }
@@ -1686,17 +1655,17 @@ async fn hex_done_when() {
         app.find.hex.count().unwrap().found(),
         naive_count(&bytes, b"ELF", false)
     );
-    app.press(KeyCode::Char('x'), toggle());
+    app.test_execute(Command::Find(FindCommand::ToggleHex));
     assert_eq!(app.find.query.text, "45 4c 46");
     assert_eq!(hex(&app).selection(), Some(1..4));
     settle_count(&mut app).await;
     assert_eq!(app.find.hex.count().unwrap().found(), naive_count(&bytes, b"ELF", true));
-    app.press(KeyCode::Char('x'), toggle());
+    app.test_execute(Command::Find(FindCommand::ToggleHex));
     assert_eq!(app.find.query.text, "ELF");
 
     // `07 08` runs over a row break three times (15, 271, 527): with the third current, the
     // second is highlighted in both columns of both its rows; the count is the naive one.
-    app.press(KeyCode::Char('x'), toggle());
+    app.test_execute(Command::Find(FindCommand::ToggleHex));
     find(&mut app, "07 08");
     assert_eq!(hex(&app).selection(), Some(15..17));
     settle_count(&mut app).await;
@@ -1728,7 +1697,7 @@ async fn hex_done_when() {
     app.press(KeyCode::Right, M::SHIFT);
     app.press(KeyCode::Right, M::SHIFT);
     assert_eq!(hex(&app).selection(), Some(527..531));
-    app.press(KeyCode::Char('c'), cmd());
+    app.test_execute(Command::Copy);
     assert_eq!(app.clipboard.read().unwrap(), "07 08 09 0a");
 
     // The file rewritten on disk updates the tab: new bytes, the cursor clamped into them, the

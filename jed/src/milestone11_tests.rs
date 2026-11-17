@@ -45,6 +45,7 @@ use ratatui::backend::TestBackend;
 use crate::app::{App, Level};
 use crate::buffer::Buffer;
 use crate::buffer::pos::ByteIdx;
+use crate::command::Command;
 use crate::diff_view::Pair;
 use crate::git::test_repo::{commit_all, init};
 use crate::history;
@@ -52,14 +53,6 @@ use crate::palette::Mode;
 use crate::selection::{Selection, Selections};
 use crate::workspace::trust::TrustStore;
 use crate::workspace::{self, Workspace};
-
-fn cmd() -> M {
-    if cfg!(target_os = "macos") {
-        M::SUPER
-    } else {
-        M::CONTROL
-    }
-}
 
 /// A temp dir with `proj/` (the workspace) and `state/` (the trust store, outside it).
 fn dirs() -> (tempfile::TempDir, PathBuf, PathBuf) {
@@ -98,7 +91,7 @@ fn open(app: &mut App, path: &Path) {
 
 /// Saves the active buffer and waits for the save and every history task to end.
 async fn save(app: &mut App) {
-    app.press(K::Char('s'), cmd());
+    app.test_execute(Command::Save);
     let id = app.group().active_tab().unwrap().buffer;
     assert!(
         app.settle(|a| {
@@ -289,7 +282,7 @@ async fn milestone_11_an_explorer_rename_moves_the_history() {
     assert_eq!(snapshots(&root, "src/a.txt").len(), 2);
 
     // F2 in the explorer on the file.
-    app.press(K::Char('e'), cmd() | M::SHIFT);
+    app.test_execute(Command::FocusExplorer);
     let a = root.join("src/a.txt");
     let src = root.join("src");
     assert!(app.settle(|app| app.explorer.find(&src).is_some()).await, "root listed");
@@ -329,7 +322,7 @@ async fn milestone_11_an_explorer_rename_moves_the_history() {
     assert_eq!(snapshots(&root, "src/b.txt"), vec![b"12a\n".to_vec(), b"1a\n".to_vec()]);
 
     // Saving under the new name adds to the moved history.
-    app.press(K::Char('1'), cmd());
+    app.test_execute(Command::FocusGroup(1));
     app.type_text("3");
     save(&mut app).await;
     assert_eq!(snapshots(&root, "src/b.txt").len(), 3);
@@ -364,7 +357,7 @@ async fn milestone_11_watcher_events_under_jed_are_ignored() {
 
 /// Runs a palette command by its title, through the keys.
 fn run_command(app: &mut App, title: &str) {
-    app.press(K::Char('p'), cmd() | M::SHIFT);
+    app.test_execute(Command::ShowCommands);
     app.type_text(title);
     let p = app.palette.as_ref().unwrap();
     assert_eq!(p.rows[p.selected].label, title);
@@ -511,9 +504,9 @@ async fn milestone_11_restore_is_one_undo_step_and_writes_nothing() {
     assert_eq!(head, ByteIdx(2), "a cursor in an unchanged line stays");
 
     // One undo step gives the exact buffer back; redo restores again.
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), before);
-    app.press(K::Char('z'), cmd() | M::SHIFT);
+    app.test_execute(Command::Redo);
     assert_eq!(text(&app), "one\ntwo\n");
 
     // Restoring what the buffer already holds: a message, no edit.
@@ -522,7 +515,7 @@ async fn milestone_11_restore_is_one_undo_step_and_writes_nothing() {
     app.press(K::Enter, M::NONE);
     settle_restore(&mut app).await;
     assert!(app.message.as_ref().unwrap().text.contains("already reads as it did"));
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), before, "still one step");
 }
 
@@ -672,7 +665,7 @@ async fn milestone_11_restore_over_edits_made_while_it_reads() {
     assert_eq!(edited, "one\nTWO\nthreezz\n");
     settle_restore(&mut app).await;
     assert_eq!(text(&app), "one\ntwo\n", "the entry, over the edit too");
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), edited, "one undo step back to the edited text");
 
     // A cursor in an unchanged line after a changed one keeps its place in that line (not its
@@ -690,7 +683,7 @@ async fn milestone_11_restore_over_edits_made_while_it_reads() {
     let head = app.group().active_tab().unwrap().view.selections.primary().head;
     assert_eq!(head, ByteIdx(4), "still at the start of TWO");
     // Two changes (lines 1 and 3), still one undo step.
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), "XXone\nTWO\nthreezz\n");
 }
 
@@ -755,7 +748,7 @@ async fn milestone_11_done_when_restore_then_undo_gives_back_the_exact_buffer() 
     settle_restore(&mut app).await;
     assert_eq!(text(&app), "old\r\ntext\r\n");
     assert!(app.active_buffer().unwrap().is_dirty());
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), clean);
     assert!(!app.active_buffer().unwrap().is_dirty(), "clean again");
 
@@ -782,7 +775,7 @@ async fn milestone_11_done_when_restore_then_undo_gives_back_the_exact_buffer() 
     assert_eq!(text(&app), "old\r\ntext\r\n");
     assert_eq!(fs::read(root.join("src/a.txt")).unwrap(), saved, "nothing written");
 
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     let buf = app.active_buffer().unwrap();
     assert_eq!(buf.rope.to_string(), before_text, "the exact text");
     assert!(buf.bom && buf.is_dirty());
@@ -794,12 +787,12 @@ async fn milestone_11_done_when_restore_then_undo_gives_back_the_exact_buffer() 
     );
     assert_eq!(view.selections.primary_index(), before_selections.primary_index());
     // Redo restores again; undo once more is the same buffer.
-    app.press(K::Char('z'), cmd() | M::SHIFT);
+    app.test_execute(Command::Redo);
     assert_eq!(text(&app), "old\r\ntext\r\n");
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), before_text);
     // The undo before it is the typing's: back to the file as saved.
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), clean);
     assert!(!app.active_buffer().unwrap().is_dirty());
 
@@ -811,9 +804,9 @@ async fn milestone_11_done_when_restore_then_undo_gives_back_the_exact_buffer() 
     app.press(K::Enter, M::NONE);
     settle_restore(&mut app).await;
     assert_eq!(text(&app), "old\r\ntext\r\n");
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), typed, "the typing kept");
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), clean);
 }
 
@@ -832,7 +825,7 @@ fn history_not_open(root: &Path) -> PathBuf {
 
 /// Shows the explorer with `src/` expanded.
 async fn explorer_with_src(app: &mut App, root: &Path, file: &Path) {
-    app.press(K::Char('e'), cmd() | M::SHIFT);
+    app.test_execute(Command::FocusExplorer);
     let src = root.join("src");
     assert!(app.settle(|app| app.explorer.find(&src).is_some()).await, "root listed");
     app.explorer.selected = Some(src);
@@ -913,7 +906,7 @@ async fn milestone_11_explorer_shows_the_history_of_a_file_not_open() {
     );
     // Undo gives back the file as it was loaded.
     app.test_execute(crate::command::Command::NextTab);
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), "disk\n");
     assert!(!app.active_buffer().unwrap().is_dirty());
 
@@ -953,7 +946,7 @@ async fn milestone_11_restore_from_the_picker_opens_a_file_not_open() {
     settle_restore(&mut app).await;
     assert_eq!(text(&app), "one\n");
     assert_eq!(fs::read_to_string(&path).unwrap(), "disk\n");
-    app.press(K::Char('z'), cmd());
+    app.test_execute(Command::Undo);
     assert_eq!(text(&app), "disk\n");
 
     // A file that opens read-only (not UTF-8): opened, the restore refused.

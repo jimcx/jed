@@ -19,6 +19,7 @@ use std::fs;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 
+use crate::command::Command;
 use crossterm::event::{KeyCode, KeyModifiers as M};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -26,7 +27,7 @@ use ratatui::backend::TestBackend;
 use crate::app::{App, Focus};
 use crate::hex::{self, RESIDENT_MAX};
 use crate::hex_tests::{
-    cmd, drawn_rows, find, go_to_offset, hex, quick_open, quit, rows_rect, settle_count, state_app, status_bar,
+    drawn_rows, find, go_to_offset, hex, quick_open, quit, rows_rect, settle_count, state_app, status_bar,
 };
 use crate::milestone10_tests::dirs;
 use crate::workspace::Workspace;
@@ -217,12 +218,12 @@ async fn hex_more_copy_reads_off_the_ui_thread_and_refuses_over_the_cap() {
     for _ in 0..5 {
         app.press(KeyCode::Right, M::SHIFT);
     }
-    app.press(KeyCode::Char('c'), cmd());
+    app.test_execute(Command::Copy);
     assert_eq!(wait_copied(&mut app, "").await, "43 4f 50 59 4d 45");
 
     // Over the cap: a message, nothing copied.
-    app.press(KeyCode::Char('a'), cmd());
-    app.press(KeyCode::Char('c'), cmd());
+    app.test_execute(Command::SelectAll);
+    app.test_execute(Command::Copy);
     let said = app.message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
     assert_eq!(said, "Selection too big to copy (20 MB, at most 16 MB)");
     assert_eq!(app.clipboard.read().unwrap(), "43 4f 50 59 4d 45", "unchanged");
@@ -235,7 +236,7 @@ async fn hex_more_copy_reads_off_the_ui_thread_and_refuses_over_the_cap() {
         h.move_to(hex::HEX_COPY_MAX as usize - 1, true);
     }
     app.message = None;
-    app.press(KeyCode::Char('c'), cmd());
+    app.test_execute(Command::Copy);
     assert!(app.message.is_none());
     let text = wait_copied(&mut app, "43 4f 50 59 4d 45").await;
     assert_eq!(text.len() as u64, hex::HEX_COPY_MAX);
@@ -379,7 +380,7 @@ async fn hex_more_closing_the_widget_or_the_tab_ends_the_running_search() {
     assert!(!app.find.visible);
     assert!(app.find.hex.query().is_none() && app.find.hex.count().is_none());
     // Opening it again counts again.
-    app.press(KeyCode::Char('f'), cmd());
+    app.test_execute(Command::OpenFind);
     settle_count(&mut app).await;
     assert_eq!(app.find.hex.count().unwrap().found(), 1);
     // Another tab in front: the hex search is dropped, not left running.
@@ -545,7 +546,7 @@ mod inspector {
         assert!(line_has(&term, toggle, "BE"));
 
         // Alt+E (bound on a hex tab) and a click on the header flip it back and forth.
-        app.press(KeyCode::Char('e'), M::ALT);
+        app.test_execute(Command::HexToggleByteOrder);
         assert_eq!(app.hex_order(), ByteOrder::Little);
         wide(&mut app);
         click(&mut app, toggle.x + 1, toggle.y);
@@ -960,18 +961,18 @@ mod hex_more_d {
         for _ in 0..5 {
             app.press(KeyCode::Right, M::SHIFT);
         }
-        app.press(KeyCode::Char('c'), cmd());
+        app.test_execute(Command::Copy);
         let le = wait_copied(&mut app, "").await;
         assert_eq!(le, "504f43 454d59", "little-endian: each group reversed");
         app.test_execute(Command::HexToggleByteOrder);
         draw(&mut app);
-        app.press(KeyCode::Char('c'), cmd());
+        app.test_execute(Command::Copy);
         let be = wait_copied(&mut app, &le).await;
         assert_eq!(be, "434f50 594d45");
         // The ASCII column's copy is the text, whatever the grouping.
         app.press(KeyCode::Tab, M::NONE);
         draw(&mut app);
-        app.press(KeyCode::Char('c'), cmd());
+        app.test_execute(Command::Copy);
         assert_eq!(wait_copied(&mut app, &be).await, "COPYME");
     }
 
@@ -985,11 +986,11 @@ mod hex_more_d {
             h.anchor = Some(1);
             h.cursor = 6;
         }
-        app.press(KeyCode::Char('c'), cmd());
+        app.test_execute(Command::Copy);
         assert_eq!(app.clipboard.read().unwrap(), "040302 070605");
         app.test_execute(Command::HexToggleByteOrder);
         crate::hex_tests::draw(&mut app, 100, 12);
-        app.press(KeyCode::Char('c'), cmd());
+        app.test_execute(Command::Copy);
         assert_eq!(app.clipboard.read().unwrap(), "020304 050607");
     }
 
@@ -1070,7 +1071,7 @@ mod follow_copy {
     async fn hex_more_e_follow_pointer_jumps_and_back_forward_return() {
         let (_d, mut app) = app_of(&file_with(&[0x10, 0, 0, 0], 0x20)).await;
         draw(&mut app, 120, 30);
-        app.press(KeyCode::Char('p'), M::ALT);
+        app.test_execute(Command::HexFollowPointer);
         assert_eq!(cursor(&app), 0x10);
         draw(&mut app, 120, 30);
         app.test_execute(Command::NavBack);
@@ -1237,7 +1238,7 @@ mod follow_copy {
         copy_as(&mut app, "Base64");
         assert_eq!(wait_copied(&mut app, "b'COPYME'").await, "Q09QWU1F");
         // Over the cap: a message, the clipboard unchanged.
-        app.press(KeyCode::Char('a'), cmd());
+        app.test_execute(Command::SelectAll);
         copy_as(&mut app, "without");
         assert_eq!(said(&app), "Selection too big to copy (20 MB, at most 16 MB)");
         assert_eq!(app.clipboard.read().unwrap(), "Q09QWU1F");
@@ -1511,9 +1512,9 @@ mod done_when {
         assert!(app.find.hex.query().is_none());
 
         // Copying a selection over the cap gives the message; so does Copy As.
-        app.press(KeyCode::Char('a'), cmd());
+        app.test_execute(Command::SelectAll);
         app.message = None;
-        app.press(KeyCode::Char('c'), cmd());
+        app.test_execute(Command::Copy);
         assert!(said(&app).starts_with("Selection too big to copy"), "{}", said(&app));
         app.message = None;
         copy_as(&mut app, "Base64");
@@ -1652,7 +1653,7 @@ mod done_when {
         draw(&mut app);
         let mut worst = Duration::ZERO;
         let mut note = |d: Duration| worst = worst.max(d);
-        app.press(KeyCode::Char('p'), cmd());
+        app.test_execute(Command::QuickOpen);
         app.type_text("big.bin");
         let listed = |a: &App| {
             a.palette

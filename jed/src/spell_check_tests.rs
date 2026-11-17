@@ -138,7 +138,10 @@ async fn spell_check_marks_follow_edits_and_only_the_touched_lines_are_checked()
     idle(&mut e.app).await;
     assert_eq!(spelled(&e.app), ["recieve", "wrold"]);
     let before = e.app.spell.scanned;
-    e.app.press(K::Home, M::CONTROL);
+    e.app.test_execute(Command::Move {
+        motion: crate::command::Motion::DocStart,
+        select: false,
+    });
     e.app.type_text("a ");
     // Right away the old marks have moved with the text.
     let b = e.app.active_buffer().unwrap();
@@ -180,7 +183,10 @@ async fn spell_check_a_stale_background_result_is_dropped() {
         e.app.sync_spell();
     }
     // The text changes before its result is handled: the typo is gone.
-    e.app.press(K::Home, M::CONTROL);
+    e.app.test_execute(Command::Move {
+        motion: crate::command::Motion::DocStart,
+        select: false,
+    });
     for _ in 0..7 {
         e.app.press(K::Delete, M::NONE);
     }
@@ -408,7 +414,10 @@ async fn spell_check_an_edit_with_many_selections_checks_again_in_full() {
     let mut e = open(&dir, "a.txt", &"wrold here\n".repeat(100), |_| {});
     idle(&mut e.app).await;
     assert_eq!(spelled(&e.app).len(), 100);
-    e.app.press(K::Home, M::CONTROL);
+    e.app.test_execute(Command::Move {
+        motion: crate::command::Motion::DocStart,
+        select: false,
+    });
     e.app.press(K::Right, M::NONE);
     e.app.test_execute(crate::command::Command::SelectAllMatches);
     e.app.type_text("hello");
@@ -462,7 +471,10 @@ async fn milestone_spell_check_budget_one_mb() {
 
     // A one-line edit re-checks in a few ms and scans one line.
     let before = e.app.spell.scanned;
-    e.app.press(K::Home, M::CONTROL);
+    e.app.test_execute(Command::Move {
+        motion: crate::command::Motion::DocStart,
+        select: false,
+    });
     e.app.type_text("x ");
     let edited = Instant::now();
     e.app.active_mut().unwrap().0.spell.edited_at = Some(Instant::now() - Duration::from_secs(1));
@@ -491,14 +503,6 @@ async fn milestone_spell_check_budget_one_mb() {
 use crate::buffer::pos::ByteIdx;
 use crate::command::{Command, SpellCommand};
 use crate::selection::{Selection, Selections};
-
-fn cmd() -> M {
-    if cfg!(target_os = "macos") {
-        M::SUPER
-    } else {
-        M::CONTROL
-    }
-}
 
 fn spell(app: &mut App, c: SpellCommand) {
     app.test_execute(Command::Spell(c));
@@ -572,7 +576,7 @@ async fn spell_check_add_to_user_dictionary_unmarks_the_word_in_every_buffer() {
     let mut e = open(&dir, "a.txt", "recieve hello wrold\n", |_| {});
     std::fs::write(e.root.join("b.txt"), "another recieve here\n").unwrap();
     idle(&mut e.app).await;
-    e.app.press(K::Char('p'), cmd());
+    e.app.test_execute(Command::QuickOpen);
     e.app.type_text("b.txt");
     assert!(
         e.app
@@ -591,7 +595,7 @@ async fn spell_check_add_to_user_dictionary_unmarks_the_word_in_every_buffer() {
     idle(&mut e.app).await;
     assert_eq!(spelled(&e.app), ["recieve"]);
     // Back on a.txt, the caret inside the word: mid-word, the mark under it.
-    e.app.press(K::Char('p'), cmd());
+    e.app.test_execute(Command::QuickOpen);
     e.app.type_text("a.txt");
     assert!(
         e.app
@@ -670,7 +674,10 @@ async fn spell_check_ignore_is_for_this_buffer_and_not_saved() {
     idle(&mut e.app).await;
     assert_eq!(spelled(&e.app), ["wrold"]);
     // A new occurrence typed later is ignored too.
-    e.app.press(K::End, M::CONTROL);
+    e.app.test_execute(Command::Move {
+        motion: crate::command::Motion::DocEnd,
+        select: false,
+    });
     e.app.type_text(" recieve ");
     idle(&mut e.app).await;
     assert_eq!(spelled(&e.app), ["wrold"]);
@@ -840,7 +847,7 @@ async fn spell_check_commands_refuse_on_read_only_and_hex_tabs() {
 
     // A hex tab.
     std::fs::write(e.root.join("b.bin"), [0u8, 1, 2, 0xff, 0, 0, 7]).unwrap();
-    e.app.press(K::Char('p'), cmd());
+    e.app.test_execute(Command::QuickOpen);
     e.app.type_text("b.bin");
     assert!(
         e.app
@@ -887,7 +894,7 @@ async fn spell_check_commands_are_in_the_palette_and_unicode_words_work() {
         Some("wrold")
     );
     // The palette lists all seven.
-    e.app.press(K::Char('p'), cmd() | M::SHIFT);
+    e.app.test_execute(Command::ShowCommands);
     e.app.type_text("Spelling:");
     assert!(
         e.app
