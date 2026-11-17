@@ -318,7 +318,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
             let find = (is_active && !terminal && app.find.visible && app.find.diff.is_current(d.id, d.doc_key()))
                 .then(|| app.find.diff.matcher())
                 .flatten();
-            diff_hit = Some(diff::render(
+            // Inline blame on a review diff: from the file's buffer (opened with the tab).
+            let blame = (app.blame.on && d.pair.is_review())
+                .then(|| app.buffers.find_path(&d.path).and_then(|b| app.buffers.get(b)))
+                .flatten();
+            let mut hit = diff::render(
                 f,
                 editor_area,
                 d,
@@ -327,7 +331,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 focused,
                 find,
                 app.review.clock.unwrap_or_else(crate::forge::time::now),
-            ));
+                blame,
+            );
+            blame_hash = hit.blame_hash.take();
+            diff_hit = Some(hit);
             // As drawn: `diff::render` sets `text_width` and measures the rows it drew.
             hscroll = Some((d.scroll_width, d.text_width, d.left_col, None));
             if let Some(bar) = bar {

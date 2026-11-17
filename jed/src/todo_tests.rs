@@ -33,6 +33,9 @@
 //!   the text never moved; nothing for untracked files, outside a repository, or toggled off;
 //!   staged lines still uncommitted; nothing computed while off or for background tabs; turned
 //!   off and on again it is blamed afresh (an amended HEAD commit shows).
+//! - `review_blame`: inline blame in a review diff: the caret's right-side line's label after
+//!   its text, none on a deleted line, with a selection over lines or with blame off; its hash
+//!   opens the commit.
 //! - `folder_filter`: the Search view's files to include / exclude (shown by `…` / Cmd+Shift+J)
 //!   narrow the search as the reference filtered by hand (folder names, paths, `*.md`, lists),
 //!   on top of `.workspace`'s excludes; exclude beats include; `!` within a field; dirty buffers
@@ -14279,5 +14282,93 @@ mod find_in_diff_view {
         assert_eq!(cursor(&app), 3, "a query without a match leaves the cursor in place");
         app.press(K::Enter, M::NONE);
         assert_eq!(cursor(&app), 3);
+    }
+}
+
+/// Inline blame in a review diff: the caret's right-side line shows its blame after its text,
+/// as in the editor; a deleted line, a selection over lines and blame off show none; a click on
+/// the hash opens the commit.
+mod review_blame {
+    use crossterm::event::{KeyCode as K, KeyModifiers as M, MouseButton, MouseEventKind};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::App;
+    use crate::blame::Want;
+    use crate::command::Command;
+    use crate::mr_review_tests::{open_file, shown};
+
+    fn file_buffer(app: &App) -> Option<&crate::buffer::Buffer> {
+        app.buffers.iter().find(|(_, b)| b.has_file()).map(|(_, b)| b)
+    }
+
+    /// The screen's rows, trailing blanks dropped.
+    fn screen(app: &mut App) -> Vec<String> {
+        let mut term = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        let buf = term.backend().buffer();
+        (0..24)
+            .map(|y| {
+                (0..120)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    fn row_with<'a>(rows: &'a [String], text: &str) -> &'a str {
+        rows.iter()
+            .find(|r| r.contains(text))
+            .unwrap_or_else(|| panic!("{text}: {rows:#?}"))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_blame_shows_the_caret_lines_blame_on_the_right_side() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _server, _main) = shown(dir.path()).await;
+        open_file(&mut app, "mod.txt").await;
+        assert!(app.settle(|a| file_buffer(a).is_some()).await);
+        app.test_execute(Command::ToggleBlame);
+        assert!(
+            app.settle(
+                |a| file_buffer(a).is_some_and(|b| !b.blame.running() && b.blame.want(b.revision()) == Want::Nothing)
+            )
+            .await
+        );
+        // Rows: m1, -m2, +m2 changed, +m3; the caret starts on the change's first row (deleted).
+        let rows = screen(&mut app);
+        assert!(!row_with(&rows, "m2 changed").contains('•'), "{rows:#?}");
+        assert!(
+            !row_with(&rows, "- m2").contains('•'),
+            "a deleted line has none: {rows:#?}"
+        );
+
+        app.press(K::Down, M::NONE);
+        let rows = screen(&mut app);
+        let line = row_with(&rows, "m2 changed");
+        assert!(line.contains("m2 changed   ") && line.ends_with("• work"), "{line}");
+        assert!(!row_with(&rows, "m3").contains('•'), "only the caret's line");
+
+        // A selection over two lines hides it.
+        app.press(K::Down, M::SHIFT);
+        let rows = screen(&mut app);
+        assert!(!rows.iter().any(|r| r.contains('•')), "{rows:#?}");
+        app.press(K::Up, M::NONE);
+        screen(&mut app);
+
+        // The hash opens the commit.
+        let (rect, id) = app.hits.groups[0].blame_hash.clone().expect("the hash's cells");
+        assert!(row_with(&screen(&mut app), "m2 changed").contains(&id[..7]), "{id}");
+        app.mouse(MouseEventKind::Down(MouseButton::Left), rect.x, rect.y);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), rect.x, rect.y);
+        assert!(app.active_buffer().is_some_and(|b| b.commit.is_some()), "a commit tab");
+
+        // Off: none.
+        app.test_execute(Command::ToggleBlame);
+        app.test_execute(Command::PrevTab);
+        let rows = screen(&mut app);
+        assert!(!rows.iter().any(|r| r.contains('•')), "{rows:#?}");
     }
 }

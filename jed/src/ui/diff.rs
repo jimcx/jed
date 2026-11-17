@@ -21,6 +21,8 @@ use ratatui::style::Style;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+use crate::blame;
+use crate::buffer::Buffer;
 use crate::buffer::pos::{self, DisplayCol};
 use crate::diff_view::{self, DiffTab, Kind, Lines, Row};
 use crate::git::stage::Side;
@@ -136,6 +138,8 @@ struct Line<'a> {
 /// Draws the diff tab in `area`; `focused` puts the terminal cursor on the current row, `find`
 /// (the find widget's query, while it is open over the tab) highlights its matches. Writes back
 /// the layout and the rows that fit; returns the rows' rect and the buttons for the mouse.
+/// `blame` (inline blame on, a review diff): the file's buffer, whose blame of the caret's
+/// right-side line is drawn after its text as the editor draws it.
 #[allow(clippy::too_many_arguments)]
 pub fn render(
     f: &mut Frame,
@@ -146,6 +150,7 @@ pub fn render(
     focused: bool,
     find: Option<&Matcher>,
     now: i64,
+    blame: Option<&Buffer>,
 ) -> DiffHit {
     let st = Styles {
         base: theme.get("editor"),
@@ -182,6 +187,7 @@ pub fn render(
     d.tab_width = tab_width;
     d.sync_caret();
     let caret = d.caret;
+    let blame = blame.and_then(|buf| blame_label(d, buf));
     let body = Rect {
         y: area.y + 1,
         height: area.height - 1,
@@ -473,6 +479,40 @@ pub fn render(
             (cell, at_left.1.max(at_right.1), (at_right.1, at_left.1))
         };
         widest = widest.max(w);
+        // Inline blame: `GAP` cells after the caret's line, cut with "…" at the edge, nothing
+        // when too little room is left or its start is scrolled off to the left (the editor's).
+        if current
+            && inline
+            && let Some((label, id)) = &blame
+            && let Some((tx, y)) = at_caret
+        {
+            let start = w + blame::GAP;
+            let keep = if id.is_some() { blame::HASH_LEN } else { 0 };
+            let end = d.left_col + d.text_width;
+            if start >= d.left_col
+                && let Some(shown) = blame::fit_keeping(label, keep, end.saturating_sub(start))
+            {
+                let row_style = if row.kind() == Kind::Same {
+                    st.current
+                } else {
+                    st.inserted
+                };
+                let style = row_style.patch(theme.get("git.blame.editorDecorationForeground"));
+                let x = tx + (start - d.left_col) as u16;
+                let room = (body.x + body.width).saturating_sub(x);
+                out.set_stringn(x, y, &shown, room as usize, style);
+                if let Some(id) = id {
+                    // The hash's cells (less a cut's "…"): dimmer, and a click opens the commit.
+                    let cells = shown.chars().take(keep).filter(|&c| c != '…').count();
+                    let cells = cells.min(room as usize) as u16;
+                    let hash = style.patch(theme.get("git.blame.hash"));
+                    for dx in 0..cells {
+                        out[(x + dx, y)].set_style(hash);
+                    }
+                    hit.blame_hash = Some((Rect::new(x, y, cells, 1), id.to_string()));
+                }
+            }
+        }
         if current {
             // The caret: its column in its side's text, when that is in view.
             let text = if caret.right {
@@ -850,6 +890,30 @@ fn draw_text(
         out.set_stringn(x + (col - left_col) as u16, y, " ", 1, style.patch(st.selection));
     }
     col
+}
+
+/// A review diff's inline blame label and commit: the caret's line on the right side, when the
+/// selection stays on it and the file's buffer still has that line's text (an edit whose diff
+/// isn't read yet: none until it is).
+fn blame_label(d: &DiffTab, buf: &Buffer) -> Option<(String, Option<git2::Oid>)> {
+    let caret = d.caret;
+    if !d.pair.is_review() || !caret.right || caret.anchor.0 != caret.head.0 {
+        return None;
+    }
+    let (line, rope) = (caret.head.0, &buf.rope);
+    if line >= pos::line_count(rope) {
+        return None;
+    }
+    let (start, end) = (pos::line_start(rope, line), pos::line_end(rope, line));
+    if rope.slice(start.0..end.0) != d.side_text(true, line) {
+        return None;
+    }
+    let shown = buf.blame.line(rope, line)?;
+    let id = match shown {
+        blame::Line::Committed(c) => Some(c.id),
+        blame::Line::Uncommitted => None,
+    };
+    Some((blame::label(shown, crate::history::now_ms()), id))
 }
 
 /// The line number a row draws inline.

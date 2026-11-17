@@ -1074,6 +1074,18 @@ impl App {
                     self.review_comment();
                     return true;
                 }
+                // A review diff's inline blame hash opens the commit (the caret stays).
+                if let Some(id) = self
+                    .hits
+                    .group(g)
+                    .and_then(|h| h.blame_hash.as_ref())
+                    .filter(|(r, _)| r.contains(p))
+                    .map(|(_, id)| id.clone())
+                {
+                    self.focus_group(g);
+                    self.open_commit(&id, None);
+                    return true;
+                }
                 if h.restore.is_some_and(|r| r.contains(p)) {
                     self.focus_group(g);
                     self.show_file_history(true);

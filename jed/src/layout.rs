@@ -544,6 +544,8 @@ pub struct DiffHit {
     pub blocks: Vec<BlockHit>,
     /// A review tab's floating Comment button on the selection's last line, when drawn.
     pub comment: Option<Rect>,
+    /// A review tab's inline blame hash cells and commit id (moved to `GroupHit::blame_hash`).
+    pub blame_hash: Option<(Rect, String)>,
 }
 
 /// A thread block's rows in view and its collapse toggle (when its header is in view).

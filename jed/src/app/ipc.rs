@@ -158,9 +158,8 @@ impl App {
     /// else the first in reading order; `None` when no group does.
     fn group_showing(&self, path: &Path) -> Option<crate::layout::GroupId> {
         let buffer = self.buffers.find_path(path);
-        let shows = |g: &crate::group::Group| {
-            buffer.is_some_and(|id| g.find(id).is_some()) || g.find_hex(path).is_some()
-        };
+        let shows =
+            |g: &crate::group::Group| buffer.is_some_and(|id| g.find(id).is_some()) || g.find_hex(path).is_some();
         let active = self.groups.active;
         std::iter::once(active)
             .chain(self.groups.ids())

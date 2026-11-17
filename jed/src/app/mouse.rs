@@ -223,6 +223,7 @@ impl App {
                     && !d.buttons.iter().chain(&d.reverts).any(|(r, _)| r.contains(p))
                     && !d.moves.iter().any(|(r, _, _)| r.contains(p))
                     && !d.blocks.iter().any(|b| b.rect.contains(p))
+                    && !hit.blame_hash.as_ref().is_some_and(|(r, _)| r.contains(p))
                     && !d.comment.is_some_and(|r| r.contains(p))
                     && hit.scrollbar.is_none_or(|s| !s.track.contains(p))
             }

@@ -538,7 +538,7 @@ fn menu_labels(app: &App) -> Vec<String> {
 }
 
 /// An app with the panel shown and loaded on the standard repository.
-async fn shown(dir: &Path) -> (App, FakeServer, String) {
+pub(crate) async fn shown(dir: &Path) -> (App, FakeServer, String) {
     let (root, main) = make_repo(dir);
     let server = one_mr(&main);
     let mut app = open_app(&root, None, config_for(&server), true);

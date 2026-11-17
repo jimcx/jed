@@ -1,7 +1,8 @@
 //! Inline blame in the app: "Git: Toggle Inline Blame" (session state, off at start) and keeping
 //! the blame of shown buffers current while it's on — computed off-thread at once for a buffer
 //! never blamed or when HEAD may have moved (every git status read), `blame::DELAY` after edits.
-//! `ui::editor` draws the primary cursor line's label from `buf.blame`.
+//! `ui::editor` draws the primary cursor line's label from `buf.blame`, `ui::diff` a review
+//! diff's caret line's (on its right side) from its file's buffer's.
 
 use std::collections::HashSet;
 use std::time::Instant;
@@ -56,11 +57,18 @@ impl App {
         if due {
             self.blame.deadline = None;
         }
+        // A text tab's buffer, or the file's buffer a review diff shows on its right side.
         let shown: HashSet<BufferId> = self
             .groups
             .ids()
             .into_iter()
-            .filter_map(|g| Some(self.groups.get(g)?.active_tab()?.buffer))
+            .filter_map(|g| {
+                let g = self.groups.get(g)?;
+                match g.active_tab() {
+                    Some(t) => Some(t.buffer),
+                    None => self.buffer_of(&g.active_diff().filter(|d| d.pair.is_review())?.path),
+                }
+            })
             .collect();
         let repo = self.git.status.as_ref().map(|s| &s.repo);
         let mut later = false;
