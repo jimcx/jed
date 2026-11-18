@@ -1,8 +1,8 @@
 #!/bin/sh
 # Print the changelog body for a release (jed and jmux share its tag): the tasks completed since the
 # previous release, then every commit between them. The release command embeds
-# it in the annotated tag message; release.yml publishes it as the GitHub Release
-# notes.
+# it in the annotated tag message; CI's release job publishes it as the GitHub
+# Release notes.
 #
 # Usage: scripts/changelog [<since> [<until>]]
 #   since  the previous release tag; default the highest `v*` tag reachable
