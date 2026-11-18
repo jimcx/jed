@@ -212,6 +212,39 @@ impl Pick {
         Pick::new(old, new)
     }
 
+    /// The pick of a version's lines (`old` of the version -> buffer diff): the old lines
+    /// `ranges` (each a line range; need not be sorted), plus the added lines of every hunk that
+    /// overlaps one of them, so taking them back replaces whole hunks. A pure addition (no old
+    /// lines) goes only when a range runs across its position, so the span looks like the
+    /// version; lines added right at a range's edge stay.
+    pub fn from_old_lines(hunks: &[Hunk], ranges: impl IntoIterator<Item = Range<usize>>) -> Pick {
+        let old = normalize(ranges);
+        let mut new = Vec::new();
+        for h in hunks {
+            let first = old.partition_point(|r| r.end < h.old.start);
+            if old[first..].iter().take_while(|r| r.start <= h.old.end).any(|r| {
+                if h.old.is_empty() {
+                    r.start < h.old.start && h.old.start < r.end
+                } else {
+                    touches(&h.old, r)
+                }
+            }) {
+                new.push(h.new.clone());
+            }
+        }
+        Pick::new(old, new)
+    }
+
+    /// The old lines picked, sorted and merged.
+    pub fn old_ranges(&self) -> &[Range<usize>] {
+        &self.old
+    }
+
+    /// The new lines picked, sorted and merged.
+    pub fn new_ranges(&self) -> &[Range<usize>] {
+        &self.new
+    }
+
     pub fn has_old(&self, line: usize) -> bool {
         contains(&self.old, line)
     }
@@ -222,15 +255,17 @@ impl Pick {
 
     /// How many changed lines of `hunks` (removed and added) the pick takes.
     pub fn count(&self, hunks: &[Hunk]) -> usize {
-        let n = |ranges: &[Range<usize>], of: &Range<usize>| -> usize {
-            let first = ranges.partition_point(|r| r.end <= of.start);
-            ranges[first..]
-                .iter()
-                .take_while(|r| r.start < of.end)
-                .map(|r| r.end.min(of.end) - r.start.max(of.start))
-                .sum()
-        };
-        hunks.iter().map(|h| n(&self.old, &h.old) + n(&self.new, &h.new)).sum()
+        self.count_old(hunks) + self.count_new(hunks)
+    }
+
+    /// How many removed (old) lines of `hunks` the pick takes.
+    pub fn count_old(&self, hunks: &[Hunk]) -> usize {
+        hunks.iter().map(|h| overlap(&self.old, &h.old)).sum()
+    }
+
+    /// How many added (new) lines of `hunks` the pick takes.
+    pub fn count_new(&self, hunks: &[Hunk]) -> usize {
+        hunks.iter().map(|h| overlap(&self.new, &h.new)).sum()
     }
 
     /// The changed lines of `hunks` this pick leaves out.
@@ -249,6 +284,16 @@ impl Pick {
                 .map(|l| l..l + 1),
         )
     }
+}
+
+/// How many lines of `of` the sorted, merged `ranges` cover.
+fn overlap(ranges: &[Range<usize>], of: &Range<usize>) -> usize {
+    let first = ranges.partition_point(|r| r.end <= of.start);
+    ranges[first..]
+        .iter()
+        .take_while(|r| r.start < of.end)
+        .map(|r| r.end.min(of.end) - r.start.max(of.start))
+        .sum()
 }
 
 fn normalize(ranges: impl IntoIterator<Item = Range<usize>>) -> Vec<Range<usize>> {
@@ -621,6 +666,36 @@ mod tests {
         assert!(Pick::from_new_lines(&hunks, [4..5]).old.is_empty());
         assert!(Pick::from_new_lines(&hunks, [0..1]).old.is_empty());
         assert!(Pick::from_new_lines(&hunks, []).old.is_empty());
+    }
+
+    #[test]
+    fn from_old_lines_adds_the_new_lines_of_touched_hunks() {
+        // old a b c d e / new a X Y c d Z: hunks old 1..2 -> new 1..3, old 4..5 -> new 5..6.
+        let hunks = diff(b"a\nb\nc\nd\ne\n", b"a\nX\nY\nc\nd\nZ\n", 0).unwrap().hunks;
+        let p = Pick::from_old_lines(&hunks, [1..2]);
+        assert_eq!((p.old_ranges(), p.new_ranges()), (&[1..2][..], &[1..3][..]));
+        let p = Pick::from_old_lines(&hunks, [4..5, 0..1]);
+        assert_eq!((p.old_ranges(), p.new_ranges()), (&[0..1, 4..5][..], &[5..6][..]));
+        assert!(Pick::from_old_lines(&hunks, [2..4]).new_ranges().is_empty());
+        assert!(Pick::from_old_lines(&hunks, []).new_ranges().is_empty());
+    }
+
+    #[test]
+    fn from_old_lines_takes_a_pure_addition_only_inside_a_range() {
+        // old a b c / new a b X c: X is added between old lines 1 and 2.
+        let hunks = diff(b"a\nb\nc\n", b"a\nb\nX\nc\n", 0).unwrap().hunks;
+        assert!(
+            Pick::from_old_lines(&hunks, [1..2]).new_ranges().is_empty(),
+            "edge before"
+        );
+        assert!(
+            Pick::from_old_lines(&hunks, [2..3]).new_ranges().is_empty(),
+            "edge after"
+        );
+        assert_eq!(Pick::from_old_lines(&hunks, [1..3]).new_ranges(), &[2..3][..], "across");
+        // A line deleted in the new text is a hunk of its own: picking it takes it back.
+        let hunks = diff(b"a\nb\nc\n", b"a\nc\n", 0).unwrap().hunks;
+        assert_eq!(Pick::from_old_lines(&hunks, [1..2]).old_ranges(), &[1..2][..]);
     }
 
     #[test]

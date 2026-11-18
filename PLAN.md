@@ -203,8 +203,8 @@ Go back to any earlier save of a file, independent of git.
 - List of entries, newest first, with relative time and size ("3 min ago · 12 KB")
 - Select an entry:
   - Compare: side-by-side diff, entry vs current buffer (reuses the git diff view)
-  - Open: the entry's text in a read-only tab, to select and copy from it (the [Open and restore earlier versions of a file](tasks/hist_versions.md) task)
-  - Restore: replaces the buffer text as one undoable edit; nothing written until you save — or, from an opened version or the compare, just the lines a selection touches (the same task)
+  - Open ("File History: Open"; Space in the Explorer's File History section): the entry's text in a read-only tab titled `a.rs (History: 3 min ago)`, highlighted by the file's language, to select and copy from it; kept by sessions ([Open and restore earlier versions of a file](tasks/hist_versions.md))
+  - Restore: replaces the buffer text as one undoable edit; nothing written until you save — or, with "File History: Restore Selection" (palette, unbound) in an opened version or a history / commit compare, just the lines a selection touches, mapped through the version → buffer diff (a file not open opens first; a read-only buffer refuses)
 - Also reachable from the explorer (on a file) and the tab bar
   - Explorer: "Explorer: Show File History" (palette, on the selected file) or right-click on a file's row; tab bar: right-click on a tab (activates it); jed has no context menus, so the right-click runs the command directly
   - The file needn't be open: Compare shows the entry against the file on disk (the buffer once it opens); Restore opens the file first, then restores into the buffer
@@ -437,7 +437,7 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
     - Diffed against the first parent (what `git show --stat` prints for a merge too, git 2.53); a root commit against the empty tree. The `Merge:` header labels a merge's stat
     - Scrolls, selects and copies like a read-only editor (the text is plain; colours come from the line kinds); the file's own row in the stat is highlighted
     - Enter or a click on a stat row opens that file's change in a diff tab in the group to the right of the commit tab's (split right when there's none; reused for the next file clicked): the parent's text ↔ the commit's (`diff_view::Text::Commit`, a new side: a blob read from a commit's tree by path), titled `name (abc1234)`; no staging or revert buttons
-    - The file's full content at a commit, as a read-only tab to select and copy from (and restore selected lines from), is the [Open and restore earlier versions of a file](tasks/hist_versions.md) task
+    - The file's full content at a commit, as a read-only version tab titled `a.rs (abc1234)` to select and copy from (and restore selected lines from): Alt+Enter on a commit tab's stat row, or "Git: Open File at Commit" / the Open Version button on a commit diff ([Open and restore earlier versions of a file](tasks/hist_versions.md))
   - Sessions keep commit tabs and commit diff tabs by commit id (dropped when the commit is gone), the section's collapsed state and divider position
 - Merge conflicts (the [Merge conflicts](tasks/conflicts.md) task): editing a conflicted file, not merging (`git merge` / `rebase` stay on the command line)
   - A conflict is `<<<<<<<` … (`|||||||` base …, diff3 / zdiff3) `=======` … `>>>>>>>` at line starts, found by a line scan of the buffer (not the tree), cached by revision; nested or unterminated markers aren't a conflict
@@ -710,7 +710,6 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Language features** (`lang`): go to symbol, signature help and breadcrumbs / sticky scroll — [tasks/lang.md](tasks/lang.md)
 - **Language server setup docs** (`language_server_docs`): docs for installing and configuring language servers — [tasks/language_server_docs.md](tasks/language_server_docs.md)
 - **Nested languages (injections)** (`injections`): a language's highlighter can run another language's over part of its text (cpp in Markdown fences), for built-in and plugin languages alike — [tasks/injections.md](tasks/injections.md)
-- **Open and restore earlier versions of a file** (`hist_versions`): a file's earlier version — a saved snapshot, or its blob at a commit — opens as a read-only text tab so its text can be selected, copied and searched, and the lines a selection touches restore into the file's buffer as one undo step. — [tasks/hist_versions.md](tasks/hist_versions.md)
 - **Open File by path** (`open_file_path`): open a file by typing a path with completion — [tasks/open_file_path.md](tasks/open_file_path.md)
 - **Performance pass** (`performance_pass`): startup time, memory, and 1 MB file performance; check slow-frame warnings — [tasks/performance_pass.md](tasks/performance_pass.md)
 - **PTY smoke tests** (`pty`): end-to-end tests running the real binary in a pseudo-terminal — [tasks/pty.md](tasks/pty.md)
@@ -793,6 +792,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - ✅ **Mouse selection in the terminal scrollback** (`term_select_scrollback`): select scrolled-back terminal output with the mouse; a scroll keeps the selection on its text — [tasks/term_select_scrollback.md](tasks/term_select_scrollback.md)
 - ✅ **Move tabs** (`move_tabs`): move the active tab into the next / previous group, or left / right within its group — [tasks/move_tabs.md](tasks/move_tabs.md)
 - ✅ **Objective-C and Swift** (`apple_langs`): Objective-C and Swift files get syntax colours, comment / pair / indent behaviour and language servers (`clangd` for Objective-C, `sourcekit-lsp` for Swift) — [tasks/apple_langs.md](tasks/apple_langs.md)
+- ✅ **Open and restore earlier versions of a file** (`hist_versions`): a file's earlier version — a saved snapshot, or its blob at a commit — opens as a read-only text tab so its text can be selected, copied and searched, and the lines a selection touches restore into the file's buffer as one undo step. — [tasks/hist_versions.md](tasks/hist_versions.md)
 - ✅ **Remove tui-term** (`remove_tui_term` [p-10]): draw a shell / task tab's vt100 screen straight into the buffer and drop the tui-term dependency — [tasks/remove_tui_term.md](tasks/remove_tui_term.md)
 - ✅ **Render whitespace** (`render_whitespace`): VS Code's `editor.renderWhitespace` setting, plus a View: Toggle Render Whitespace command — [tasks/render_whitespace.md](tasks/render_whitespace.md)
 - ✅ **Reopen closed tab** (`reopen_closed_tab`): reopen the last closed tab (Cmd+Shift+T) — [tasks/reopen_closed_tab.md](tasks/reopen_closed_tab.md)

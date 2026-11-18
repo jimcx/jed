@@ -604,3 +604,246 @@ mod commit_file {
         assert!(versions(&app).is_empty(), "dropped with the commit gone");
     }
 }
+
+/// hist_versions-c: "File History: Restore Selection" puts the version's lines back into the
+/// file's buffer as one undo step, from a version tab, a history compare diff tab and a commit
+/// diff tab; a file not open opens first, a read-only buffer refuses, nothing is saved.
+mod restore {
+    use super::*;
+    use crate::command::Motion;
+    use crate::diff_caret::Caret;
+    use crate::diff_view::Pair;
+
+    const V: &str = "a\nb\nc\nd\ne\nf\n";
+    const NOW: &str = "a\nB\nc\nd\nE\nf\n";
+
+    /// `t.txt` = V recorded as the older entry, then the buffer made `NOW` (saved: the newer
+    /// entry), the older entry's version tab open and active. Returns the file's buffer and
+    /// the older entry.
+    async fn setup() -> (tempfile::TempDir, std::path::PathBuf, App, BufferId, Snapshot) {
+        let (d, root, state) = dirs();
+        fs::write(root.join("t.txt"), V).unwrap();
+        let mut app = open_file_app(&root, &state, "t.txt");
+        app.type_text("x");
+        app.press(K::Backspace, M::NONE);
+        save(&mut app).await;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let file = app.group().active_tab().unwrap().buffer;
+        app.test_execute(Command::SelectAll);
+        app.type_text(NOW);
+        save(&mut app).await;
+        assert!(app.settle(|a| a.file_history_view.entries.len() == 2).await);
+        let older = entry(&app, 1);
+        app.open_version(root.join("t.txt"), VersionSource::Snapshot(older));
+        let v = version_open(&mut app, 1).await;
+        assert_eq!(text(&app, v), V);
+        (d, root, app, file, older)
+    }
+
+    fn text(app: &App, id: BufferId) -> String {
+        app.buffers.get(id).unwrap().rope.to_string()
+    }
+
+    fn named(app: &App) -> Option<BufferId> {
+        app.buffers
+            .iter()
+            .find(|(_, b)| b.has_file() && b.name() == "t.txt")
+            .map(|(id, _)| id)
+    }
+
+    fn msg(app: &App) -> String {
+        app.message.as_ref().map(|m| m.text.clone()).unwrap_or_default()
+    }
+
+    async fn said(app: &mut App, what: &str) {
+        assert!(app.settle(|a| msg(a).contains(what)).await, "no `{what}`: {}", msg(app));
+    }
+
+    /// Selects lines `first..=last` of the active diff tab's `right` side.
+    fn pick_rows(app: &mut App, right: bool, first: usize, last: usize) {
+        let d = app.group_mut().active_diff_mut().unwrap();
+        let len = d.side_text(right, last).len();
+        d.caret = Caret {
+            right,
+            anchor: (first, 0),
+            head: (last, len),
+            col: None,
+        };
+        d.cursor = d.aligned().row_of(right, last);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hist_versions_restore_puts_the_selected_lines_back_as_one_undo_step() {
+        let (_d, root, mut app, file, _) = setup().await;
+        app.press(K::Down, M::NONE); // the version's line 1: "b"
+        app.test_execute(Command::RestoreFileHistorySelection);
+        said(&mut app, "Restored 1 line from t.txt (History:").await;
+        assert!(msg(&app).ends_with("(not saved)"));
+        assert_eq!(text(&app, file), "a\nb\nc\nd\nE\nf\n", "only line 1 changed");
+        assert!(app.buffers.get(file).unwrap().is_dirty());
+        assert_eq!(fs::read_to_string(root.join("t.txt")).unwrap(), NOW, "nothing saved");
+        app.test_execute(Command::PrevTab);
+        app.test_execute(Command::Undo);
+        assert_eq!(text(&app, file), NOW, "one undo removes it");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hist_versions_restore_takes_every_selection_and_leaves_the_rest() {
+        let (_d, _root, mut app, file, _) = setup().await;
+        // Select lines 1..=4 of the version: both changed lines.
+        app.press(K::Down, M::NONE);
+        for _ in 0..4 {
+            app.press(K::Down, M::SHIFT);
+        }
+        app.test_execute(Command::RestoreFileHistorySelection);
+        said(&mut app, "Restored 2 lines").await;
+        assert_eq!(text(&app, file), V);
+        app.test_execute(Command::PrevTab);
+        app.test_execute(Command::Undo);
+        assert_eq!(text(&app, file), NOW, "both lines are one undo step");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hist_versions_restore_a_selection_ending_at_column_zero_leaves_that_line() {
+        let (_d, _root, mut app, file, _) = setup().await;
+        // From line 3's start to line 4's start: line 3 ("d", unchanged) only, not line 4 (E).
+        for _ in 0..3 {
+            app.press(K::Down, M::NONE);
+        }
+        app.press(K::Down, M::SHIFT);
+        app.test_execute(Command::RestoreFileHistorySelection);
+        said(&mut app, "No changes in the selection").await;
+        assert_eq!(text(&app, file), NOW);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hist_versions_restore_maps_through_a_file_edited_since() {
+        let (_d, _root, mut app, file, _) = setup().await;
+        // Two lines inserted at the top of the file's buffer, after the version.
+        app.test_execute(Command::PrevTab);
+        app.test_execute(Command::Move {
+            motion: Motion::DocStart,
+            select: false,
+        });
+        app.type_text("n1\nn2\n");
+        app.test_execute(Command::NextTab);
+        app.press(K::Down, M::NONE);
+        app.press(K::Down, M::NONE);
+        app.press(K::Down, M::NONE);
+        app.press(K::Down, M::NONE); // the version's line 4: "e"
+        app.test_execute(Command::RestoreFileHistorySelection);
+        said(&mut app, "Restored 1 line").await;
+        assert_eq!(text(&app, file), "n1\nn2\na\nB\nc\nd\ne\nf\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hist_versions_restore_refuses_when_the_buffer_changed_meanwhile() {
+        let (_d, _root, mut app, file, _) = setup().await;
+        app.press(K::Down, M::NONE);
+        app.test_execute(Command::RestoreFileHistorySelection);
+        // The diff runs off-thread and its result waits in the channel until the app pumps
+        // events (`settle`): this edit lands first, through the real key path.
+        app.test_execute(Command::PrevTab);
+        app.test_execute(Command::Move {
+            motion: Motion::DocStart,
+            select: false,
+        });
+        app.type_text("z");
+        said(&mut app, "the file changed, try again").await;
+        assert_eq!(text(&app, file), format!("z{NOW}"), "only the user's edit");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hist_versions_restore_of_unchanged_lines_says_so() {
+        let (_d, _root, mut app, file, _) = setup().await;
+        app.test_execute(Command::RestoreFileHistorySelection); // line 0: "a", unchanged
+        said(&mut app, "No changes in the selection").await;
+        assert_eq!(text(&app, file), NOW);
+        assert!(!app.buffers.get(file).unwrap().is_dirty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hist_versions_restore_refuses_a_read_only_buffer() {
+        let (_d, _root, mut app, file, _) = setup().await;
+        app.buffers.get_mut(file).unwrap().read_only = Some("locked".into());
+        app.press(K::Down, M::NONE);
+        app.test_execute(Command::RestoreFileHistorySelection);
+        // Refused at once, before anything is read off-thread.
+        assert!(msg(&app).contains("Read-only: locked"), "{}", msg(&app));
+        assert_eq!(app.file_history.restoring, 0);
+        said(&mut app, "Read-only: locked").await;
+        assert_eq!(text(&app, file), NOW);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hist_versions_restore_opens_a_file_that_isnt_open_then_restores() {
+        let (_d, _root, mut app, _file, _) = setup().await;
+        app.test_execute(Command::PrevTab);
+        app.test_execute(Command::CloseTab);
+        assert!(named(&app).is_none(), "the file is closed");
+        assert_eq!(app.group().tabs.len(), 1, "only the version tab is left");
+        app.press(K::Down, M::NONE);
+        app.test_execute(Command::RestoreFileHistorySelection);
+        assert!(app.settle(|a| named(a).is_some()).await, "the file opens");
+        said(&mut app, "Restored 1 line").await;
+        let id = named(&app).unwrap();
+        assert_eq!(text(&app, id), "a\nb\nc\nd\nE\nf\n");
+        assert!(app.buffers.get(id).unwrap().is_dirty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hist_versions_restore_outside_a_version_or_compare_tab_says_where() {
+        let (_d, _root, mut app, file, _) = setup().await;
+        app.test_execute(Command::PrevTab);
+        app.test_execute(Command::RestoreFileHistorySelection);
+        assert!(msg(&app).contains("Select lines in a version tab"), "{}", msg(&app));
+        assert_eq!(text(&app, file), NOW);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hist_versions_restore_from_a_history_compare_tab() {
+        let (_d, root, mut app, file, older) = setup().await;
+        // Two lines added on top and saved, so the file's line numbers differ from the entry's.
+        app.test_execute(Command::PrevTab);
+        app.test_execute(Command::Move {
+            motion: Motion::DocStart,
+            select: false,
+        });
+        app.type_text("n1\nn2\n");
+        save(&mut app).await;
+        app.open_diff(root.join("t.txt"), Pair::history(older));
+        assert!(app.settle(|a| a.diffs_settled()).await);
+        pick_rows(&mut app, false, 4, 4); // the entry's line 4: "e"
+        app.test_execute(Command::RestoreFileHistorySelection);
+        said(&mut app, "Restored 1 line").await;
+        assert_eq!(text(&app, file), "n1\nn2\na\nB\nc\nd\ne\nf\n", "only e is back");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hist_versions_restore_from_a_commit_diff_tab() {
+        use crate::git::test_repo::{commit_all, init};
+        let (_d, root, state) = dirs();
+        init(&root);
+        fs::write(root.join("t.txt"), "a\nb\nc\n").unwrap();
+        commit_all(&root, "first");
+        fs::write(root.join("t.txt"), "a\nB\nc\n").unwrap();
+        commit_all(&root, "second");
+        fs::write(root.join("t.txt"), "a\nX\nc\nd\n").unwrap();
+        let mut app = open_file_app(&root, &state, "t.txt");
+        let id = named(&app).unwrap();
+        let (c, p) = {
+            let out = |a: &str| crate::git::test_repo::git(&root, &["rev-parse", a]).trim().to_string();
+            (out("HEAD"), out("HEAD~1"))
+        };
+        let (c, p) = (git2::Oid::from_str(&c).unwrap(), git2::Oid::from_str(&p).unwrap());
+        assert!(app.settle(|a| a.git.status.is_some()).await);
+        app.open_diff(root.join("t.txt"), Pair::commit(c, Some(p)));
+        assert!(crate::milestone10_tests::settle_diffs(&mut app).await);
+        pick_rows(&mut app, true, 1, 1); // the commit's line 1: "B"
+        app.test_execute(Command::RestoreFileHistorySelection);
+        said(&mut app, "Restored 1 line").await;
+        assert_eq!(text(&app, id), "a\nB\nc\nd\n");
+        assert!(app.buffers.get(id).unwrap().is_dirty());
+        assert_eq!(fs::read_to_string(root.join("t.txt")).unwrap(), "a\nX\nc\nd\n");
+    }
+}

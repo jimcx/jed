@@ -95,6 +95,9 @@ pub(super) struct OpenRequest {
     /// A file history entry to restore into the buffer once it's loaded (Restore on a file
     /// that isn't open: `App::restore_history`).
     pub restore: Option<crate::history::Snapshot>,
+    /// Lines of a version to put back once it's loaded (Restore Selection on a file that isn't
+    /// open: `App::restore_lines`).
+    pub restore_lines: Option<Box<super::history::LinesPick>>,
     /// A crash backup to restore into the buffer once it's loaded (`App::restore_backup`).
     pub backup: Option<Box<crate::backup::Backup>>,
     /// Read the file's bytes as they are, for a hex tab ("View: Reopen as Hex").
@@ -205,6 +208,7 @@ impl App {
             background,
             edits,
             restore,
+            restore_lines,
             mut backup,
             raw: _,
             reopen,
@@ -226,7 +230,7 @@ impl App {
             // Opened behind a diff tab (review, diff edit): the diff shows the binary state itself.
             Ok(Loaded::Binary(_)) if background => {}
             Ok(Loaded::Binary(doc)) => {
-                if restore.is_some() {
+                if restore.is_some() || restore_lines.is_some() {
                     let text = format!("{}: binary file, its history entry not restored", path.display());
                     self.notify(Level::Error, text);
                 }
@@ -264,7 +268,10 @@ impl App {
                 if let Some(snapshot) = restore
                     && let Some(rel) = crate::history::relative(&self.workspace.root, &path)
                 {
-                    self.restore_history(path, rel, snapshot);
+                    self.restore_history(path.clone(), rel, snapshot);
+                }
+                if let Some(pick) = restore_lines {
+                    self.restore_lines(path, pick.source, pick.lines);
                 }
                 if let Some(b) = backup {
                     self.restore_backup(*b);

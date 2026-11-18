@@ -294,6 +294,7 @@ pub enum Command {
     /// "File History: Open": the active file's entries in the palette, one opened in a read-only
     /// tab (`Buffer::version`).
     OpenFileHistory,
+    RestoreFileHistorySelection,
     /// "Git: Open File at Commit": the file's full text in a commit as a read-only tab
     /// (`Buffer::version`): from a commit diff tab the commit it shows, from a commit tab the
     /// cursor's stat row. Anywhere else a message.
@@ -1284,6 +1285,7 @@ impl Command {
             Command::RestoreFileHistory,
             Command::CompareFileHistory,
             Command::OpenFileHistory,
+            Command::RestoreFileHistorySelection,
             Command::OpenFileAtCommit,
         ]);
         all.extend([
@@ -1636,6 +1638,7 @@ impl Command {
             Command::RestoreFileHistory => "fileHistory.restore".into(),
             Command::CompareFileHistory => "fileHistory.compare".into(),
             Command::OpenFileHistory => "fileHistory.openVersion".into(),
+            Command::RestoreFileHistorySelection => "fileHistory.restoreSelection".into(),
             Command::OpenFileAtCommit => "git.openFileAtCommit".into(),
             Command::OpenChange => "git.openChange".into(),
             Command::ToggleChanges => "git.toggleChanges".into(),
@@ -2101,6 +2104,7 @@ impl Command {
             Command::RestoreFileHistory => "File History: Restore",
             Command::CompareFileHistory => "File History: Compare",
             Command::OpenFileHistory => "File History: Open",
+            Command::RestoreFileHistorySelection => "File History: Restore Selection",
             Command::OpenFileAtCommit => "Git: Open File at Commit",
             Command::OpenChange => "Git: Open Changes",
             Command::ToggleChanges => "Git: Toggle Changes / File",
@@ -2424,6 +2428,7 @@ mod tests {
             Command::CompareFileHistory => 147,
             Command::OpenFileHistory => 187,
             Command::OpenFileAtCommit => 188,
+            Command::RestoreFileHistorySelection => 189,
             Command::RunTask => 79,
             Command::SelectEnvironment => 140,
             Command::NewShell => 119,

@@ -1550,6 +1550,7 @@ impl App {
             Command::CompareFileHistory => self.show_file_history(HistoryAction::Compare),
             Command::RestoreFileHistory => self.show_file_history(HistoryAction::Restore),
             Command::OpenFileHistory => self.show_file_history(HistoryAction::Open),
+            Command::RestoreFileHistorySelection => self.restore_selection(),
             Command::RunTask => self.show_run_task(),
             Command::SelectEnvironment => self.show_select_environment(),
             Command::NewShell => self.new_shell(),

@@ -29,7 +29,7 @@ pub(super) fn changed_lines(n: usize) -> String {
 /// The lines selections cover, as sorted, merged line ranges: an empty selection is its line, a
 /// selection ending at column 0 doesn't take that line. `ranges` are in order (`Selections`);
 /// the rope is walked with a `LineWalker`, not looked up per selection.
-fn line_ranges(rope: &ropey::Rope, ranges: &[(ByteIdx, ByteIdx)]) -> Vec<Range<usize>> {
+pub(super) fn line_ranges(rope: &ropey::Rope, ranges: &[(ByteIdx, ByteIdx)]) -> Vec<Range<usize>> {
     let mut walker = pos::LineWalker::new(rope);
     let mut out: Vec<Range<usize>> = Vec::new();
     for &(from, to) in ranges {
@@ -804,6 +804,50 @@ mod tests {
             &ropey::Rope::from_str(text),
             &spans.iter().map(|&(a, b)| (ByteIdx(a), ByteIdx(b))).collect::<Vec<_>>(),
         )
+    }
+
+    /// The buffer text `new` after putting back the version `old`'s `lines` (Restore Selection:
+    /// `diff` + `Pick::from_old_lines` + `revert_edits`, applied from the end).
+    fn restored(old: &[u8], new: &[u8], bom: bool, lines: &[Range<usize>]) -> Vec<u8> {
+        let found = diff::diff(old, new, 0).unwrap();
+        let pick = diff::Pick::from_old_lines(&found.hunks, lines.to_vec());
+        let shift = if bom { 3 } else { 0 };
+        let mut out = new.to_vec();
+        for (a, b, text) in revert_edits(old, new, &found.hunks, &pick, bom)
+            .unwrap()
+            .into_iter()
+            .rev()
+        {
+            out.splice(a.0 + shift..b.0 + shift, text.bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn restoring_a_versions_lines_puts_back_deleted_and_changed_lines() {
+        // A line deleted from the buffer comes back; the rest is left alone.
+        assert_eq!(restored(b"a\nb\nc\nd\n", b"a\nc\nD\n", false, &[1..2]), b"a\nb\nc\nD\n");
+        // Two hunks, two ranges.
+        assert_eq!(
+            restored(b"a\nb\nc\nd\n", b"a\nB\nc\nD\n", false, &[1..2, 3..4]),
+            b"a\nb\nc\nd\n"
+        );
+        // Lines added inside a selection's span go; those at its edge stay.
+        assert_eq!(restored(b"a\nb\nc\n", b"a\nb\nX\nc\n", false, &[1..3]), b"a\nb\nc\n");
+        assert_eq!(restored(b"a\nb\nc\n", b"a\nb\nX\nc\n", false, &[1..2]), b"a\nb\nX\nc\n");
+        // No terminator at the end of either text.
+        assert_eq!(restored(b"a\nb", b"a\nB", false, &[1..2]), b"a\nb");
+        assert_eq!(restored(b"a\nb\nc", b"a\nb\n", false, &[2..3]), b"a\nb\nc");
+        // CRLF stays as the version has it; a BOM on the buffer's side isn't touched.
+        assert_eq!(
+            restored(b"a\r\nb\r\nc\r\n", b"a\r\nB\r\nc\r\n", false, &[1..2]),
+            b"a\r\nb\r\nc\r\n"
+        );
+        let (old, new) = (b"a\nb\n".as_slice(), b"\xEF\xBB\xBFA\nb\n".as_slice());
+        assert_eq!(restored(old, new, true, &[0..1]), b"\xEF\xBB\xBFa\nb\n");
+        // An edit past the first line: offsets in the buffer don't count the BOM's bytes.
+        let (old, new) = (b"\xEF\xBB\xBFa\nb\nc\n".as_slice(), b"\xEF\xBB\xBFa\nB\nc\n".as_slice());
+        assert_eq!(restored(old, new, true, &[1..2]), b"\xEF\xBB\xBFa\nb\nc\n");
     }
 
     #[test]

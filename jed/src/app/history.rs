@@ -4,14 +4,16 @@
 //! (`crate::history` does the disk work, off-thread), or opened as a read-only version tab
 //! (`Buffer::version`).
 
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use super::{App, AppEvent, Level};
 use crate::buffer::change::ChangeSet;
 use crate::buffer::file::{self, LoadError};
+use crate::buffer::pos::ByteIdx;
 use crate::buffer::{Buffer, BufferId};
 use crate::command::FileHistoryCommand;
-use crate::diff_view::Pair;
+use crate::diff_view::{Pair, Text};
 use crate::history::{self, Entry, HistoryAction, Recorded, Snapshot};
 use crate::palette::Picker;
 use crate::version::{VersionDoc, VersionSource};
@@ -101,6 +103,30 @@ impl Job {
     }
 }
 
+/// Lines of a version to put back into its file's buffer (Restore Selection).
+#[derive(Debug)]
+pub(super) struct LinesPick {
+    pub source: VersionSource,
+    /// Line ranges of the version's text, sorted and merged.
+    pub lines: Vec<Range<usize>>,
+}
+
+/// An edit of a buffer: the bytes replaced and their new text.
+type Edit = (ByteIdx, ByteIdx, String);
+
+/// A version's lines diffed against the buffer for Restore Selection
+/// (`AppEvent::History(HistoryEvent::RestoreLines)`).
+pub(super) struct LinesRestore {
+    buffer: BufferId,
+    /// The buffer's revision the edits are for.
+    revision: u64,
+    path: PathBuf,
+    /// The version's title (`a.rs (History: 3 min ago)`).
+    title: String,
+    /// The buffer's edits and the version's lines they put back.
+    result: Result<(Vec<Edit>, usize), String>,
+}
+
 /// Results of file history background work (`AppEvent::History`).
 pub(super) enum HistoryEvent {
     /// A file history task (a save's snapshot, a rename's move) ended; `Err` = the message.
@@ -111,6 +137,8 @@ pub(super) enum HistoryEvent {
     Restore(Box<Restore>),
     /// A history entry's text was read, to open in a version tab.
     Version(Box<VersionRead>),
+    /// A version's lines were diffed against the buffer, to restore them.
+    RestoreLines(Box<LinesRestore>),
     /// The active file's history entries were read for the Explorer's File History section.
     Entries {
         path: PathBuf,
@@ -131,6 +159,7 @@ impl App {
             HistoryEvent::Listed(listed) => self.history_listed(*listed),
             HistoryEvent::Restore(restore) => self.history_restored(*restore),
             HistoryEvent::Version(read) => self.version_read(*read),
+            HistoryEvent::RestoreLines(r) => self.lines_restored(*r),
         }
     }
 }
@@ -573,6 +602,134 @@ impl App {
         self.apply_changes(r.buffer, changes);
         self.follow_edits();
         self.notify(Level::Info, format!("Restored {name} as it was {ago} (not saved)"));
+    }
+}
+
+impl App {
+    /// `fileHistory.restoreSelection`: the version's lines picked (a version tab's selections,
+    /// or a history / commit diff tab's selected rows) go back into the file's buffer.
+    pub(super) fn restore_selection(&mut self) {
+        const WHERE: &str = "Select lines in a version tab or a history / commit diff tab";
+        let picked: Option<(PathBuf, VersionSource, Vec<Range<usize>>)> = if let Some(d) = self.group().active_diff() {
+            let pick = d.selected_pick();
+            match d.pair.right {
+                Text::Commit(id) => self
+                    .git
+                    .status
+                    .as_ref()
+                    .and_then(|s| d.path.strip_prefix(&s.repo.workdir).ok())
+                    .map(|rel| {
+                        let source = VersionSource::Commit {
+                            id,
+                            rel: rel.to_path_buf(),
+                        };
+                        (d.path.clone(), source, pick.new_ranges().to_vec())
+                    }),
+                _ => d
+                    .pair
+                    .snapshot()
+                    .map(|s| (d.path.clone(), VersionSource::Snapshot(s), pick.old_ranges().to_vec())),
+            }
+        } else {
+            let tab = self.group().active_tab();
+            tab.and_then(|t| {
+                let buf = self.buffers.get(t.buffer)?;
+                let doc = buf.version.as_ref()?;
+                let ranges: Vec<_> = t.view.selections.iter().map(|s| (s.start(), s.end())).collect();
+                Some((
+                    doc.file.clone(),
+                    doc.source.clone(),
+                    super::quick_diff::line_ranges(&buf.rope, &ranges),
+                ))
+            })
+        };
+        let Some((path, source, lines)) = picked else {
+            return self.notify(Level::Info, WHERE.into());
+        };
+        if lines.is_empty() {
+            return self.notify(Level::Info, "No changes in the selection".into());
+        }
+        self.restore_lines(path, source, lines);
+    }
+
+    /// Reads `source` and diffs it against the open buffer of `path` off-thread, then
+    /// `HistoryEvent::RestoreLines` puts back the version's `lines` (and the buffer's lines the
+    /// same changes replaced). Refused for a read-only buffer; a file that isn't open opens
+    /// first (`OpenRequest::restore_lines`).
+    pub(super) fn restore_lines(&mut self, path: PathBuf, source: VersionSource, lines: Vec<Range<usize>>) {
+        let Some(buffer) = self.buffer_of(&path) else {
+            self.open_file(path.clone(), true, None);
+            if let Some(request) = self.opening.get_mut(&path) {
+                request.restore_lines = Some(Box::new(LinesPick { source, lines }));
+            }
+            return;
+        };
+        if self.history_read_only(&path) {
+            return;
+        }
+        let Some(buf) = self.buffers.get(buffer) else { return };
+        let (rope, bom, revision) = (buf.rope.clone(), buf.bom, buf.revision());
+        let title = VersionDoc::new(path.clone(), source.clone(), history::now_ms()).title();
+        let root = self.workspace.root.clone();
+        let tx = self.tx.clone();
+        self.file_history.restoring += 1;
+        let file = path.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = source.read(&root, &file).and_then(|old| {
+                let new = file::encode(&rope, bom);
+                let found = crate::git::diff::diff(&old, &new, 0).map_err(|e| e.to_string())?;
+                if found.binary {
+                    return Err("it is binary".to_string());
+                }
+                let pick = crate::git::diff::Pick::from_old_lines(&found.hunks, lines);
+                let edits = super::quick_diff::revert_edits(&old, &new, &found.hunks, &pick, bom)?;
+                Ok((edits, pick.count_old(&found.hunks)))
+            });
+            let restore = LinesRestore {
+                buffer,
+                revision,
+                path,
+                title,
+                result,
+            };
+            let _ = tx.send(AppEvent::History(HistoryEvent::RestoreLines(Box::new(restore))));
+        });
+    }
+
+    /// `HistoryEvent::RestoreLines`: the edits go into the buffer as one undo step (not saved),
+    /// unless it changed meanwhile.
+    fn lines_restored(&mut self, r: LinesRestore) {
+        self.file_history.restoring = self.file_history.restoring.saturating_sub(1);
+        let Some(buf) = self.buffers.get(r.buffer).filter(|b| b.path == r.path) else {
+            return;
+        };
+        let name = file_name(&r.path);
+        let (edits, lines) = match r.result {
+            Ok(done) => done,
+            Err(e) => return self.notify(Level::Error, format!("Can't restore lines in {name}: {e}")),
+        };
+        if edits.is_empty() {
+            return self.notify(Level::Info, "No changes in the selection".into());
+        }
+        if buf.revision() != r.revision {
+            let text = format!("Can't restore lines in {name}: the file changed, try again");
+            return self.notify(Level::Error, text);
+        }
+        if let Some(reason) = &buf.read_only {
+            return self.notify(Level::Error, format!("Read-only: {reason}"));
+        }
+        let mut changes = ChangeSet::with_capacity(edits.len(), edits.iter().map(|e| e.2.len()).sum());
+        for (start, end, text) in &edits {
+            changes.push(*start, *end, text);
+        }
+        self.apply_changes(r.buffer, changes);
+        self.follow_edits();
+        let n = if lines == 1 {
+            "1 line".to_string()
+        } else {
+            format!("{lines} lines")
+        };
+        self.notify(Level::Info, format!("Restored {n} from {} (not saved)", r.title));
     }
 }
 
