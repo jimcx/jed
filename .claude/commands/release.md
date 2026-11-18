@@ -4,8 +4,6 @@ description: Cut a release tag (v<N>) on main and push it plus main to GitHub, t
 
 Cut a release of jed and jmux (one tag, both binaries: the tag's `Build` run (`build.yml`) builds and tests them again on the tag, so they report version `v<N>`, then its `release` job publishes `jed-<os>-<arch>.tar.gz` and `jmux-<os>-<arch>.tar.gz` for macOS and Linux under it; the changelog groups jmux's tasks under `### jmux`). Versions are simple incrementing integers (not major.minor.patch); the release tag for version N is `vN`.
 
-The OpenCode twin of this command is `.opencode/commands/release.md`; a change to the steps belongs in both.
-
 Remote release tags right now:
 
 !`git ls-remote --tags github 'v*'`

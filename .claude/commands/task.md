@@ -9,8 +9,6 @@ A task is either **single** (one implementer, one validator and its mutation run
 
 Each task runs in its own git worktree, on its own branch. All the work and commits happen there; main is untouched; when the task is done the branch is pushed and a Gitea merge request opened (via `scripts/mr`) for the user to merge.
 
-The OpenCode twin of this workflow is `.opencode/commands/task.md`; a change to the steps belongs in both.
-
 ## Find where we are
 
 1. `git log --oneline -15`, `git status`, and the task list without its bodies: `scripts/tasks list` (and `scripts/tasks list --status done` for finished ones); `scripts/tasks check` is the sanity check. Also `git worktree list` to see whether this task already has one. Then read the chosen task's entry with `scripts/tasks show <id>` (and read `tasks/<id>.md`). Tasks have **no order**; ✅ marks finished ones (and finished subtasks).

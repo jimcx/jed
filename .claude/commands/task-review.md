@@ -5,7 +5,7 @@ argument-hint: "[task id or name, branch, or git range; empty = uncommitted chan
 
 Review one task's work and fix what is local. You do the review yourself: **no subagents**. The target: $ARGUMENTS
 
-This is the review half of `/task` on its own: the criteria of its validator and reviewer and the checks of its commit step, applied to work that already exists. review-bot (jim-bots) reads this file from the base branch as its criteria for task MRs (`worktree-*` branches): it applies [Validator](#validator-task-step-7), [Reviewer](#reviewer-task-step-8), [Hygiene](#hygiene-task-step-9) and [Failing tests](#failing-tests), keeps those headings' names, and reports findings instead of fixing them. The OpenCode twin is `.opencode/commands/task-review.md`; a change to the steps belongs in both.
+This is the review half of `/task` on its own: the criteria of its validator and reviewer and the checks of its commit step, applied to work that already exists. review-bot (jim-bots) reads this file from the base branch as its criteria for task MRs (`worktree-*` branches): it applies [Validator](#validator-task-step-7), [Reviewer](#reviewer-task-step-8), [Hygiene](#hygiene-task-step-9) and [Failing tests](#failing-tests), keeps those headings' names, and reports findings instead of fixing them.
 
 ## Find the diff
 
