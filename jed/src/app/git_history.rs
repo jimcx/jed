@@ -87,7 +87,7 @@ impl App {
         if tokio::runtime::Handle::try_current().is_err() {
             return;
         }
-        let path = self.active_path();
+        let path = self.history_path();
         let shown = self.ui.side_visible && self.ui.side_panel == SidePanel::Explorer && !self.git_history.collapsed();
         if path != self.git_history.path {
             let found = path.as_deref().and_then(|p| self.history_repo(p));

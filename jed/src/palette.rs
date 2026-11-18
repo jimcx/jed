@@ -28,8 +28,8 @@ pub enum Picker {
     /// "Set Log Level": a level, or a typed filter.
     LogLevel,
     /// "File History: Compare" / "Restore": an entry of the active file's history (the entries are
-    /// the app's: `app.file_history.picker`). Accepting compares, or with `restore` restores.
-    History { restore: bool },
+    /// the app's: `app.file_history.picker`). Accepting compares, opens or restores, by `action`.
+    History { action: crate::history::HistoryAction },
     /// "Run Task": a task template (`App::task_templates`); accepting runs it.
     Tasks,
     /// "Tasks: Select Environment": an environment (`App::task_environments`) or none; accepting

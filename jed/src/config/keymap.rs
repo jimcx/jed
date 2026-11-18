@@ -848,6 +848,7 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::End, none, Fh::Last),
         (KeyCode::Enter, none, Fh::Open),
         (KeyCode::Enter, alt, Fh::Restore),
+        (KeyCode::Char(' '), none, Fh::OpenVersion),
         (KeyCode::Left, none, Fh::FocusTree),
         (KeyCode::Esc, none, Fh::FocusTree),
     ];

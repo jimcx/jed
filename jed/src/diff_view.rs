@@ -787,8 +787,7 @@ fn read(job: &Job, text: Text, path: Option<&Path>) -> Result<Vec<u8>, stage::Er
         Text::Disk => disk(&job.path)?,
         Text::Buffer => disk(&job.path)?,
         Text::History(snapshot) => {
-            let rel = history::relative(&job.root, &job.path).ok_or_else(|| not_found("outside the workspace"))?;
-            let bytes = history::read_snapshot(&job.root, &rel, snapshot)
+            let bytes = crate::version::read_snapshot(&job.root, &job.path, snapshot)
                 .map_err(|e| stage::Error::Io(std::io::Error::other(e)))?;
             Some(bytes)
         }
@@ -796,12 +795,7 @@ fn read(job: &Job, text: Text, path: Option<&Path>) -> Result<Vec<u8>, stage::Er
         // root commit's empty-tree side).
         Text::Commit(id) => {
             let (repo, rel) = rel()?;
-            let r = repo.open()?;
-            let tree = r.find_commit(id)?.tree()?;
-            match tree.get_path(&rel) {
-                Ok(entry) => r.find_blob(entry.id()).ok().map(|b| b.content().to_vec()),
-                Err(_) => None,
-            }
+            crate::version::commit_blob(&repo.open()?, id, &rel)?
         }
         Text::Empty => Some(Vec::new()),
         Text::Replaced => unreachable!("read above"),

@@ -291,6 +291,9 @@ pub enum Command {
     RestoreFileHistory,
     /// "File History: Compare": the active file's entries in the palette, one compared in a diff tab.
     CompareFileHistory,
+    /// "File History: Open": the active file's entries in the palette, one opened in a read-only
+    /// tab (`Buffer::version`).
+    OpenFileHistory,
     /// "Run Task": a picker of the task templates; picking one runs it in a new panel tab.
     RunTask,
     /// "Tasks: Select Environment": a picker of the environments (or none); the picked one fills
@@ -1037,12 +1040,14 @@ pub enum FileHistoryCommand {
     Open,
     /// "File History: Restore Entry" (Alt+Enter): the selected entry replaces the buffer's text.
     Restore,
+    /// Space: "File History: Open Entry", the entry's text in a read-only tab.
+    OpenVersion,
     /// Left / Esc: back to the tree; the side panel keeps the keys.
     FocusTree,
 }
 
 impl FileHistoryCommand {
-    pub const ALL: [FileHistoryCommand; 9] = [
+    pub const ALL: [FileHistoryCommand; 10] = [
         FileHistoryCommand::Up,
         FileHistoryCommand::Down,
         FileHistoryCommand::PageUp,
@@ -1051,6 +1056,7 @@ impl FileHistoryCommand {
         FileHistoryCommand::Last,
         FileHistoryCommand::Open,
         FileHistoryCommand::Restore,
+        FileHistoryCommand::OpenVersion,
         FileHistoryCommand::FocusTree,
     ];
 }
@@ -1271,6 +1277,7 @@ impl Command {
             Command::ShowFileHistory,
             Command::RestoreFileHistory,
             Command::CompareFileHistory,
+            Command::OpenFileHistory,
         ]);
         all.extend([
             Command::RunTask,
@@ -1621,6 +1628,7 @@ impl Command {
             Command::ShowFileHistory => "fileHistory.show".into(),
             Command::RestoreFileHistory => "fileHistory.restore".into(),
             Command::CompareFileHistory => "fileHistory.compare".into(),
+            Command::OpenFileHistory => "fileHistory.openVersion".into(),
             Command::OpenChange => "git.openChange".into(),
             Command::ToggleChanges => "git.toggleChanges".into(),
             Command::StageFile => "git.stageFile".into(),
@@ -1697,6 +1705,7 @@ impl Command {
                     FileHistoryCommand::Last => "last",
                     FileHistoryCommand::Open => "open",
                     FileHistoryCommand::Restore => "restoreEntry",
+                    FileHistoryCommand::OpenVersion => "openEntry",
                     FileHistoryCommand::FocusTree => "focusTree",
                 }
             ),
@@ -2082,6 +2091,7 @@ impl Command {
             Command::ShowFileHistory => "File History: Show",
             Command::RestoreFileHistory => "File History: Restore",
             Command::CompareFileHistory => "File History: Compare",
+            Command::OpenFileHistory => "File History: Open",
             Command::OpenChange => "Git: Open Changes",
             Command::ToggleChanges => "Git: Toggle Changes / File",
             Command::StageFile => "Git: Stage File",
@@ -2144,6 +2154,7 @@ impl Command {
                 FileHistoryCommand::Last => "File History: Select Last Entry",
                 FileHistoryCommand::Open => "File History: Compare Entry",
                 FileHistoryCommand::Restore => "File History: Restore Entry",
+                FileHistoryCommand::OpenVersion => "File History: Open Entry",
                 FileHistoryCommand::FocusTree => "File History: Back to the Explorer",
             },
             Command::Commit(c) => match c {
@@ -2400,6 +2411,7 @@ mod tests {
             Command::ShowFileHistory => 77,
             Command::RestoreFileHistory => 78,
             Command::CompareFileHistory => 147,
+            Command::OpenFileHistory => 187,
             Command::RunTask => 79,
             Command::SelectEnvironment => 140,
             Command::NewShell => 119,

@@ -66,6 +66,17 @@ pub struct Snapshot {
     pub hash: u64,
 }
 
+/// What picking an entry of the file history list does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HistoryAction {
+    /// A diff tab, the entry against the buffer.
+    Compare,
+    /// A read-only tab holding the entry's text.
+    Open,
+    /// The entry replaces the buffer's text.
+    Restore,
+}
+
 fn hash_prefix(hash: &str) -> u64 {
     hash.get(..16)
         .and_then(|h| u64::from_str_radix(h, 16).ok())

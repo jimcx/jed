@@ -297,6 +297,15 @@ impl App {
         self.active_buffer().filter(|b| b.has_file()).map(|b| b.path.clone())
     }
 
+    /// The file the Explorer's File History / Git History sections follow: `active_path`, and a
+    /// version tab counts as the file it is a version of (as a diff tab does).
+    pub(super) fn history_path(&self) -> Option<PathBuf> {
+        if let Some(v) = self.active_buffer().and_then(|b| b.version.as_ref()) {
+            return Some(v.file.clone());
+        }
+        self.active_path()
+    }
+
     /// The buffer open on `path`.
     pub(super) fn buffer_of(&self, path: &Path) -> Option<BufferId> {
         self.buffers
@@ -1088,7 +1097,7 @@ impl App {
                 }
                 if h.restore.is_some_and(|r| r.contains(p)) {
                     self.focus_group(g);
-                    self.show_file_history(true);
+                    self.show_file_history(crate::history::HistoryAction::Restore);
                     return true;
                 }
                 let button = h.buttons.iter().find(|(r, _)| r.contains(p)).map(|(_, k)| *k);

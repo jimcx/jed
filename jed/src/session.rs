@@ -159,6 +159,14 @@ pub enum TabState {
     Commit {
         commit: String,
     },
+    /// An earlier version of a file from its file history entry `time` / `hash` (dropped at
+    /// restore, with a log line, when the entry is gone).
+    Version {
+        /// Relative to the root.
+        path: PathBuf,
+        time: u64,
+        hash: u64,
+    },
     /// A hex tab (dropped at restore when its file is gone).
     Hex {
         /// Relative to the root when inside it.
@@ -324,6 +332,8 @@ pub struct Restore {
     pub session: Session,
     /// Each text tab's file (absolute path), once.
     pub buffers: Vec<(PathBuf, Buffer)>,
+    /// Each version tab's buffer, by its file (absolute path) and entry, once.
+    pub versions: Vec<((PathBuf, Snapshot), Buffer)>,
     /// Each hex tab's bytes (absolute path), once.
     pub hex: Vec<(PathBuf, HexDoc)>,
     /// Each untitled tab's crash backup, once (by its `untitled` id).
@@ -348,6 +358,8 @@ pub fn read(
     };
     let mut hex_docs: Vec<(PathBuf, HexDoc)> = Vec::new();
     let mut hex_failed = HashSet::new();
+    let mut versions: Vec<((PathBuf, Snapshot), Buffer)> = Vec::new();
+    let mut versions_gone = HashSet::new();
     let mut buffers = Vec::new();
     let mut untitled: Vec<crate::backup::Backup> = Vec::new();
     let mut untitled_gone = HashSet::new();
@@ -407,6 +419,34 @@ pub fn read(
                 }
             }
             TabState::Commit { commit } => commit_still_there(root, commit),
+            TabState::Version { path, time, hash } => {
+                let key = (
+                    resolve(root, path),
+                    Snapshot {
+                        time: *time,
+                        hash: *hash,
+                    },
+                );
+                if versions.iter().any(|(k, _)| *k == key) {
+                    return true;
+                }
+                if versions_gone.contains(&key) {
+                    return false;
+                }
+                let source = crate::version::VersionSource::Snapshot(key.1);
+                let doc = crate::version::VersionDoc::new(key.0.clone(), source.clone(), crate::history::now_ms());
+                match source.read(root, &key.0).and_then(|bytes| Buffer::version(doc, bytes)) {
+                    Ok(buf) => {
+                        versions.push((key, buf));
+                        true
+                    }
+                    Err(e) => {
+                        tracing::info!(path = %key.0.display(), "session: version tab not restored: {e}");
+                        versions_gone.insert(key);
+                        false
+                    }
+                }
+            }
             // Kept (or not) once every group's text tabs are known, below.
             TabState::Markdown { .. } => true,
             TabState::Hex { path, .. } => {
@@ -466,6 +506,7 @@ pub fn read(
     Ok(Some(Restore {
         session,
         buffers,
+        versions,
         hex: hex_docs,
         untitled,
     }))

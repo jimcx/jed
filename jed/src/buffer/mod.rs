@@ -27,6 +27,7 @@ use crate::quick_diff::QuickDiff;
 use crate::selection::Selections;
 use crate::semantic::Semantic;
 use crate::syntax::{Language, Syntax};
+use crate::version::VersionDoc;
 
 pub type BufferId = u64;
 
@@ -92,6 +93,9 @@ pub struct Buffer {
     /// A commit tab's text (`Buffer::commit`): no file either, read-only, changed only by
     /// `append`; what the text was rendered from.
     pub commit: Option<CommitDoc>,
+    /// An earlier version of a file (`Buffer::version`): no file either (an empty `path`),
+    /// read-only; the file it is of, for its title and language, and what it was read from.
+    pub version: Option<VersionDoc>,
     /// What the text said about its indentation when it was read (load, disk reload):
     /// `edit::Settings::for_buffer` applies it unless `detect_indentation` is off.
     guess: Guess,
@@ -218,6 +222,7 @@ impl Buffer {
             conflicts: Conflicts::default(),
             log: None,
             commit: None,
+            version: None,
             guess: Guess::default(),
             indentation: None,
             tab_display: None,
@@ -269,6 +274,23 @@ impl Buffer {
         buf
     }
 
+    /// A read-only buffer holding an earlier version of `doc.file` (`bytes`, decoded as loading the
+    /// file would): no path, so nothing keyed by one takes it; its language comes from `doc.file`.
+    pub fn version(doc: VersionDoc, bytes: Vec<u8>) -> Result<Self, String> {
+        let mut loaded = match file::decode(bytes) {
+            Ok(l) => l,
+            Err(LoadError::Binary(_)) => return Err("that version is a binary file".into()),
+            Err(LoadError::Io(e)) => return Err(e.to_string()),
+        };
+        if loaded.read_only.is_some() {
+            return Err("that version isn't valid UTF-8".into());
+        }
+        loaded.read_only = Some("an earlier version can't be edited".into());
+        let mut buf = Self::from_loaded(loaded, PathBuf::new());
+        buf.version = Some(doc);
+        Ok(buf)
+    }
+
     /// A read-only page titled `title` holding `text` (About): no path, like a log's or a commit's.
     pub fn document(title: &str, text: &str) -> Self {
         let mut loaded = file::decode(text.as_bytes().to_vec()).expect("text decodes");
@@ -301,7 +323,11 @@ impl Buffer {
     /// Whether the buffer is a file's: it has a path on disk (not a log's, a commit's or an
     /// untitled buffer's, which have none).
     pub fn has_file(&self) -> bool {
-        self.log.is_none() && self.commit.is_none() && self.document.is_none() && self.untitled.is_none()
+        self.log.is_none()
+            && self.commit.is_none()
+            && self.version.is_none()
+            && self.document.is_none()
+            && self.untitled.is_none()
     }
 
     /// Whether the buffer is untitled (no path yet).
@@ -321,6 +347,9 @@ impl Buffer {
         }
         if let Some(commit) = &self.commit {
             return commit.title();
+        }
+        if let Some(version) = &self.version {
+            return version.title();
         }
         if let Some(title) = &self.document {
             return title.clone();

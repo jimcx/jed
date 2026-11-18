@@ -1,18 +1,20 @@
 //! File history: snapshots recorded after saves, moved with explorer renames, and "File
-//! History: Show" / "Restore": the active file's entries in the palette, an entry compared
+//! History: Show" / "Open" / "Restore": the active file's entries in the palette, an entry compared
 //! with the buffer in a diff tab (`Pair::history`), or restored into the buffer as one undo step
-//! (`crate::history` does the disk work, off-thread).
+//! (`crate::history` does the disk work, off-thread), or opened as a read-only version tab
+//! (`Buffer::version`).
 
 use std::path::{Path, PathBuf};
 
 use super::{App, AppEvent, Level};
-use crate::buffer::BufferId;
 use crate::buffer::change::ChangeSet;
 use crate::buffer::file::{self, LoadError};
+use crate::buffer::{Buffer, BufferId};
 use crate::command::FileHistoryCommand;
 use crate::diff_view::Pair;
-use crate::history::{self, Entry, Recorded, Snapshot};
+use crate::history::{self, Entry, HistoryAction, Recorded, Snapshot};
 use crate::palette::Picker;
+use crate::version::{VersionDoc, VersionSource};
 use crate::workspace::config::HistoryConfig;
 
 /// History tasks in flight and finished (tests wait on these), and the history picker's list.
@@ -34,8 +36,8 @@ pub struct HistoryPicker {
     pub path: PathBuf,
     /// Workspace-relative.
     pub rel: PathBuf,
-    /// Accepting restores the entry instead of comparing it.
-    pub restore: bool,
+    /// What accepting does with the entry.
+    pub action: HistoryAction,
     pub entries: Vec<Entry>,
 }
 
@@ -44,8 +46,14 @@ pub(super) struct Listed {
     listing: u64,
     path: PathBuf,
     rel: PathBuf,
-    restore: bool,
+    action: HistoryAction,
     result: Result<Vec<Entry>, String>,
+}
+
+/// A version's bytes read for a version tab (`AppEvent::History(HistoryEvent::Version)`).
+pub(super) struct VersionRead {
+    doc: VersionDoc,
+    result: Result<Vec<u8>, String>,
 }
 
 /// An entry read and diffed against the buffer for a restore (`AppEvent::History(HistoryEvent::Restore)`).
@@ -101,6 +109,8 @@ pub(super) enum HistoryEvent {
     Listed(Box<Listed>),
     /// A history entry was read and diffed against its buffer, to restore it.
     Restore(Box<Restore>),
+    /// A history entry's text was read, to open in a version tab.
+    Version(Box<VersionRead>),
     /// The active file's history entries were read for the Explorer's File History section.
     Entries {
         path: PathBuf,
@@ -120,6 +130,7 @@ impl App {
             } => self.file_history_entries(path, generation, result),
             HistoryEvent::Listed(listed) => self.history_listed(*listed),
             HistoryEvent::Restore(restore) => self.history_restored(*restore),
+            HistoryEvent::Version(read) => self.version_read(*read),
         }
     }
 }
@@ -183,7 +194,7 @@ impl App {
         if tokio::runtime::Handle::try_current().is_err() {
             return;
         }
-        let path = self.active_path();
+        let path = self.history_path();
         let shown = self.ui.side_visible
             && self.ui.side_panel == super::SidePanel::Explorer
             && !self.file_history_view.collapsed();
@@ -255,11 +266,11 @@ impl App {
 }
 
 impl App {
-    /// "File History: Compare" / "Restore" (`restore`): lists the active tab's file's entries (read
-    /// off-thread) in the palette; a diff tab's file needn't be open. On a history diff tab, it
-    /// restores its entry.
-    pub(super) fn show_file_history(&mut self, restore: bool) {
-        if restore
+    /// "File History: Compare" / "Open" / "Restore" (`action`): lists the active tab's file's
+    /// entries (read off-thread) in the palette; a diff tab's file needn't be open. On a history
+    /// diff tab, "Restore" restores its entry.
+    pub(super) fn show_file_history(&mut self, action: HistoryAction) {
+        if action == HistoryAction::Restore
             && let Some(d) = self.group().active_diff()
             && let Some(snapshot) = d.pair.snapshot()
         {
@@ -269,8 +280,8 @@ impl App {
             }
             return;
         }
-        let Some(path) = self.active_path() else { return };
-        self.list_history(path, restore);
+        let Some(path) = self.history_path() else { return };
+        self.list_history(path, action);
     }
 
     /// "File History: Show": the Explorer with the File History section expanded and holding the
@@ -308,7 +319,7 @@ impl App {
             C::First => view.first(),
             C::Last => view.last(),
             C::FocusTree => view.set_focused(false),
-            C::Open | C::Restore => {
+            C::Open | C::Restore | C::OpenVersion => {
                 // Nothing selected (the section was just focused): the first entry, as a click.
                 if view.selected().is_none() {
                     view.select_row(0);
@@ -323,6 +334,8 @@ impl App {
                 let Some(path) = view.path.clone() else { return };
                 if cmd == C::Open {
                     self.open_diff(path, Pair::history(snapshot));
+                } else if cmd == C::OpenVersion {
+                    self.open_version(path, VersionSource::Snapshot(snapshot));
                 } else if let Some(rel) = history::relative(&self.workspace.root, &path) {
                     self.restore_history(path, rel, snapshot);
                 }
@@ -344,11 +357,11 @@ impl App {
             );
             return;
         }
-        self.list_history(path, false);
+        self.list_history(path, HistoryAction::Compare);
     }
 
     /// Lists `path`'s entries off-thread; the picker opens on `AppEvent::History(HistoryEvent::Listed)`.
-    fn list_history(&mut self, path: PathBuf, restore: bool) {
+    fn list_history(&mut self, path: PathBuf, action: HistoryAction) {
         let name = file_name(&path);
         let root = self.workspace.root.clone();
         let Some(rel) = history::relative(&root, &path) else {
@@ -358,7 +371,7 @@ impl App {
             );
             return;
         };
-        if restore && self.history_read_only(&path) {
+        if action == HistoryAction::Restore && self.history_read_only(&path) {
             return;
         }
         self.file_history.listing += 1;
@@ -370,7 +383,7 @@ impl App {
                 listing,
                 path,
                 rel,
-                restore,
+                action,
                 result,
             };
             let _ = tx.send(AppEvent::History(HistoryEvent::Listed(Box::new(listed))));
@@ -413,23 +426,79 @@ impl App {
             self.notify(Level::Info, format!("{rel} has no file history yet: {off}"));
             return;
         }
-        let restore = listed.restore;
-        self.open_palette(Picker::History { restore }, "");
+        let action = listed.action;
+        self.open_palette(Picker::History { action }, "");
         self.file_history.picker = Some(HistoryPicker {
             path: listed.path,
             rel: listed.rel,
-            restore,
+            action,
             entries,
         });
         self.refresh_palette();
     }
 
-    /// The picker's choice: compare (a diff tab, entry against the buffer) or restore.
+    /// The picker's choice: compare (a diff tab, entry against the buffer), open (a version tab)
+    /// or restore.
     pub(super) fn history_picked(&mut self, picker: HistoryPicker, snapshot: Snapshot) {
-        if picker.restore {
-            self.restore_history(picker.path, picker.rel, snapshot);
-        } else {
-            self.open_diff(picker.path, Pair::history(snapshot));
+        match picker.action {
+            HistoryAction::Restore => self.restore_history(picker.path, picker.rel, snapshot),
+            HistoryAction::Open => self.open_version(picker.path, VersionSource::Snapshot(snapshot)),
+            HistoryAction::Compare => self.open_diff(picker.path, Pair::history(snapshot)),
+        }
+    }
+
+    /// Opens version `source` of `path` in a read-only tab: shown again when open (in whichever
+    /// group), else read off-thread, then `AppEvent::History(HistoryEvent::Version)` opens it
+    /// (a gone entry is reported and opens nothing).
+    pub fn open_version(&mut self, path: PathBuf, source: VersionSource) {
+        if let Some(id) = self.find_version_buffer(&path, &source) {
+            self.show_or_open_tab(id);
+            return;
+        }
+        let doc = VersionDoc::new(path, source, history::now_ms());
+        let root = self.workspace.root.clone();
+        let tx = self.tx.clone();
+        self.file_history.restoring += 1;
+        tokio::task::spawn_blocking(move || {
+            let result = doc.source.read(&root, &doc.file);
+            let _ = tx.send(AppEvent::History(HistoryEvent::Version(Box::new(VersionRead {
+                doc,
+                result,
+            }))));
+        });
+    }
+
+    fn find_version_buffer(&self, path: &Path, source: &VersionSource) -> Option<BufferId> {
+        self.buffers
+            .iter()
+            .find(|(_, b)| {
+                b.version
+                    .as_ref()
+                    .is_some_and(|v| v.file == path && v.source == *source)
+            })
+            .map(|(id, _)| id)
+    }
+
+    /// `HistoryEvent::Version`: the version tab opens beside the active one.
+    fn version_read(&mut self, read: VersionRead) {
+        self.file_history.restoring = self.file_history.restoring.saturating_sub(1);
+        let VersionRead { doc, result } = read;
+        let name = file_name(&doc.file);
+        // Opened meanwhile (two requests for the same entry): show that one.
+        if let Some(id) = self.find_version_buffer(&doc.file, &doc.source) {
+            self.show_or_open_tab(id);
+            return;
+        }
+        match result.and_then(|bytes| Buffer::version(doc, bytes)) {
+            Ok(buffer) => {
+                let (id, view) = self.register_buffer(buffer, None);
+                if let Some((buf, _)) = self.active_mut() {
+                    buf.seal_undo();
+                }
+                self.group_mut().open(id, view);
+                self.ui.focus = super::Focus::Editor;
+            }
+            Err(e) => self.notify(Level::Error, format!("Can't open that version of {name}: {e}")),
         }
     }
 

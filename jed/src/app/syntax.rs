@@ -62,13 +62,16 @@ impl App {
         if let Some(picked) = buf.language_override {
             return picked;
         }
-        if !buf.has_file() {
-            return Language::PlainText;
-        }
+        // A version of a file reads as the file does.
+        let path = match &buf.version {
+            Some(v) => &v.file,
+            None if buf.has_file() => &buf.path,
+            None => return Language::PlainText,
+        };
         let rope = &buf.rope;
         let head = rope.slice(..rope.floor_char_boundary(rope.len().min(256))).to_string();
         let first_line = head.lines().next().unwrap_or("");
-        syntax::detect(&buf.path, &self.workspace.root, first_line, &self.associations)
+        syntax::detect(path, &self.workspace.root, first_line, &self.associations)
     }
 
     /// "Change Language Mode": a picker of every language for the active buffer.

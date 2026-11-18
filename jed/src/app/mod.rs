@@ -44,6 +44,7 @@ mod palette;
 mod problems;
 mod prompt;
 mod quick_diff;
+use crate::history::HistoryAction;
 pub use quick_diff::What;
 mod recent;
 mod rename;
@@ -1543,8 +1544,9 @@ impl App {
             Command::FileHistory(c) => self.file_history_command(c),
             Command::Commit(crate::command::CommitCommand::Open) => self.open_commit_line(),
             Command::ShowFileHistory => self.focus_file_history(),
-            Command::CompareFileHistory => self.show_file_history(false),
-            Command::RestoreFileHistory => self.show_file_history(true),
+            Command::CompareFileHistory => self.show_file_history(HistoryAction::Compare),
+            Command::RestoreFileHistory => self.show_file_history(HistoryAction::Restore),
+            Command::OpenFileHistory => self.show_file_history(HistoryAction::Open),
             Command::RunTask => self.show_run_task(),
             Command::SelectEnvironment => self.show_select_environment(),
             Command::NewShell => self.new_shell(),

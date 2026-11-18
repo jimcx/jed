@@ -91,6 +91,7 @@ impl Mode {
                     | Command::ShowFileHistory
                     | Command::RestoreFileHistory
                     | Command::CompareFileHistory
+                    | Command::OpenFileHistory
                     // Git.
                     | Command::StageHunk
                     | Command::UnstageHunk

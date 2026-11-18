@@ -1,6 +1,7 @@
 //! The palette: opening it, its keys and mouse, filling its rows, and what accepting a row does.
 //! Also the commands only the palette reaches: trust, log file, log level.
 
+use crate::history::HistoryAction;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -117,10 +118,14 @@ impl App {
                     let rel = h.rel.display();
                     hint = Some(if rows.is_empty() {
                         "No matching entries".into()
-                    } else if h.restore {
-                        format!("{rel}: Enter restores the entry into the buffer (not saved)")
                     } else {
-                        format!("{rel}: Enter compares the entry with yours")
+                        match h.action {
+                            HistoryAction::Restore => {
+                                format!("{rel}: Enter restores the entry into the buffer (not saved)")
+                            }
+                            HistoryAction::Open => format!("{rel}: Enter opens the entry in a read-only tab"),
+                            HistoryAction::Compare => format!("{rel}: Enter compares the entry with yours"),
+                        }
                     });
                     rows
                 }

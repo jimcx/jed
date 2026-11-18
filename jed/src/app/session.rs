@@ -1,5 +1,4 @@
 //! Sessions (`crate::session`): the layout restored at start, saved at quit.
-
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -9,6 +8,7 @@ use crate::buffer::{Buffer, BufferId};
 use crate::diff_view::DiffTab;
 use crate::group::{self, Group, Groups, Tab, TextTab};
 use crate::hex::{HexDoc, HexTab};
+use crate::history::Snapshot;
 use crate::layout::{MIN_SIDE_WIDTH, PanelTab};
 use crate::markdown_tab::MarkdownTab;
 use crate::selection::{Selection, Selections};
@@ -96,6 +96,7 @@ impl App {
         let Restore {
             session,
             buffers,
+            versions,
             hex,
             untitled,
         } = match result {
@@ -136,6 +137,7 @@ impl App {
         }
         let kept = tree.groups();
         let mut loaded: HashMap<PathBuf, Buffer> = buffers.into_iter().collect();
+        let mut versions: HashMap<_, _> = versions.into_iter().collect();
         // Hex tabs' bytes: read for the restore, else those of a hex tab open before it.
         let mut hex: HashMap<PathBuf, HexDoc> = hex.into_iter().collect();
         for h in self.groups.hex_tabs() {
@@ -214,6 +216,13 @@ impl App {
                             buffer: id,
                             view: View::new(),
                         }));
+                    }
+                    TabState::Version { path, time, hash } => {
+                        let key = (session::resolve(&root, &path), Snapshot { time, hash });
+                        // Opened twice (or not read): the tab of the first stays.
+                        let Some(buffer) = versions.remove(&key) else { continue };
+                        let (id, view) = self.register_buffer(buffer, None);
+                        tabs.push(Tab::Text(TextTab { buffer: id, view }));
                     }
                     TabState::Hex {
                         path,
@@ -385,6 +394,16 @@ impl App {
                             if let Some(c) = &buf.commit {
                                 tabs.push(TabState::Commit {
                                     commit: c.commit.clone(),
+                                });
+                                continue;
+                            }
+                            if let Some(v) = &buf.version {
+                                // Only a history entry's version is stored so far.
+                                let crate::version::VersionSource::Snapshot(s) = v.source;
+                                tabs.push(TabState::Version {
+                                    path: session::stored(root, &v.file),
+                                    time: s.time,
+                                    hash: s.hash,
                                 });
                                 continue;
                             }

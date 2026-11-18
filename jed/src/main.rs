@@ -72,6 +72,8 @@ mod hex;
 mod hex_more_tests;
 #[cfg(test)]
 mod hex_tests;
+#[cfg(test)]
+mod hist_versions_tests;
 mod history;
 #[cfg(test)]
 mod history_stream_tests;
@@ -214,6 +216,7 @@ mod ui;
 #[cfg(test)]
 mod untitled_tests;
 mod url;
+mod version;
 mod view;
 mod watcher;
 mod word_completion;
