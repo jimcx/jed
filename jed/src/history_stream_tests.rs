@@ -169,8 +169,10 @@ async fn history_stream_file_first_chunk_arrives_before_the_walk_ends() {
     );
 
     probe.hold(false);
+    // The local file history section above draws its own "Reading history…" row until its
+    // listing (off the UI thread) arrives, so wait for that too before checking no row says it.
     assert!(
-        app.settle(|a| !a.git_history.loading && a.git_history.commits.len() == 2)
+        app.settle(|a| !a.git_history.loading && a.git_history.commits.len() == 2 && !a.file_history_view.loading)
             .await
     );
     assert!(!app.git_history.more);

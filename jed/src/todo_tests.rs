@@ -7089,7 +7089,25 @@ mod mru {
         let opened = app
             .settle(|a| a.active_buffer().is_some_and(|b| b.name() == name))
             .await;
-        assert!(opened, "{name} opened");
+        // FLAKE: 2026-11-18, failed once in CI (opened_files_come_back_first_in_quick_open: c.txt
+        // listed first, Enter, never the active tab within 30 s); not reproduced locally in 8 full
+        // runs or 48 concurrent runs of the test. Says what the app shows if it happens again.
+        assert!(
+            opened,
+            "{name} opened; tabs {:?} (active {}), focus {:?}, palette {:?}, message {:?}",
+            app.group()
+                .tabs
+                .iter()
+                .map(|t| t
+                    .buffer()
+                    .and_then(|b| app.buffers.get(b))
+                    .map(|b| b.name().to_string()))
+                .collect::<Vec<_>>(),
+            app.group().active,
+            app.ui.focus,
+            app.palette.as_ref().map(|p| (p.query().to_string(), p.rows.len())),
+            app.message.as_ref().map(|m| &m.text),
+        );
     }
 
     /// Cmd+Shift+P on an empty query: the rows' labels, then Esc.

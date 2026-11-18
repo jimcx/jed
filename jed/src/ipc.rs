@@ -741,13 +741,40 @@ mod tests {
         assert!(seen.lock().unwrap().is_empty());
     }
 
+    /// A stream socket bound to `path` without `listen`: every connect to it is refused.
+    fn bind_unlistened(path: &Path) -> std::os::fd::OwnedFd {
+        use std::os::fd::FromRawFd;
+        use std::os::unix::ffi::OsStrExt;
+        let bytes = path.as_os_str().as_bytes();
+        // SAFETY: a zeroed sockaddr_un is valid; the path fits (asserted) and stays
+        // NUL-terminated; the fd is checked before it's owned.
+        unsafe {
+            let fd = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0);
+            assert!(fd >= 0, "socket: {}", io::Error::last_os_error());
+            let fd = std::os::fd::OwnedFd::from_raw_fd(fd);
+            let mut addr: libc::sockaddr_un = std::mem::zeroed();
+            addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+            assert!(bytes.len() < addr.sun_path.len(), "socket path too long");
+            for (dst, &src) in addr.sun_path.iter_mut().zip(bytes) {
+                *dst = src as libc::c_char;
+            }
+            let len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+            let rc = libc::bind(std::os::fd::AsRawFd::as_raw_fd(&fd), (&raw const addr).cast(), len);
+            assert!(rc == 0, "bind: {}", io::Error::last_os_error());
+            fd
+        }
+    }
+
     #[test]
     fn dead_sockets_fall_back() {
         let tmp = tempfile::tempdir().unwrap();
         let missing = tmp.path().join("missing.sock");
         assert!(matches!(open(&missing, &request(true)), Outcome::Fallback(_)));
+        // A socket file nobody listens on. Not a `UnixListener` bound and dropped: a test running
+        // alongside that forks (a PTY's shell) can hold a copy of its fd until the child execs,
+        // and until then a connect is accepted.
         let dead = tmp.path().join("dead.sock");
-        drop(std::os::unix::net::UnixListener::bind(&dead).unwrap());
+        let _unlistened = bind_unlistened(&dead);
         assert!(dead.exists());
         assert!(matches!(open(&dead, &request(true)), Outcome::Fallback(_)));
         let file = tmp.path().join("file");
