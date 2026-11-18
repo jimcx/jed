@@ -5,6 +5,7 @@
 //! right (splitting one when there is none, reusing the group's commit diff). A commit tab is a
 //! read-only text tab, so everything else — keys, mouse, find, copy, splits — is the editor's.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use git2::Oid;
@@ -22,10 +23,13 @@ use crate::group::Tab;
 use crate::layout::{GroupId, SplitDir};
 use crate::quick_diff::Want;
 use crate::selection::{Selection, Selections};
+use crate::version::VersionSource;
 use crate::view::View;
 
 /// The width a commit is rendered at before any frame has given its view one.
 const UNDRAWN_WIDTH: usize = 80;
+
+const NOT_COMMIT: &str = "Not in a commit or a commit's diff";
 
 impl App {
     /// Each loop turn (`start`, `run`, `pump` / `settle`): starts the loads due (a new commit
@@ -163,6 +167,45 @@ impl App {
         match c.file_at(line) {
             Some(k) => self.open_commit_diff(self.groups.active, k),
             None => self.notify(Level::Info, "No file on this line".into()),
+        }
+    }
+
+    /// `git.openFileAtCommit` / Alt+Enter in a commit tab / the commit diff header's button: the
+    /// whole file at the commit as a version tab. From a commit tab the cursor line's stat row's
+    /// file; from a commit diff tab its file at the commit the right side shows. Anything else, or
+    /// a path the commit doesn't have, is a message.
+    pub(super) fn open_file_at_commit(&mut self) {
+        let Some(workdir) = self.git.status.as_ref().map(|s| s.repo.workdir.clone()) else {
+            self.notify(Level::Info, "Not in a git repository".into());
+            return;
+        };
+        let target: Result<(Oid, PathBuf), &str> = if let Some(d) = self.group().active_diff() {
+            match d.pair.right {
+                Text::Commit(id) => d
+                    .path
+                    .strip_prefix(&workdir)
+                    .map(|rel| (id, rel.to_path_buf()))
+                    .map_err(|_| "Outside the repository"),
+                _ => Err(NOT_COMMIT),
+            }
+        } else if let Some((buf, view)) = self.active_mut() {
+            match &buf.commit {
+                None => Err(NOT_COMMIT),
+                Some(c) => {
+                    let line = pos::line_of(&buf.rope, view.selections.primary().head);
+                    let file = c.file_at(line).and_then(|k| c.show.as_ref()?.files.get(k));
+                    match (file, Oid::from_str(&c.commit)) {
+                        (Some(f), Ok(id)) => Ok((id, PathBuf::from(&f.path))),
+                        _ => Err("No file on this line"),
+                    }
+                }
+            }
+        } else {
+            Err(NOT_COMMIT)
+        };
+        match target {
+            Ok((id, rel)) => self.open_version(workdir.join(&rel), VersionSource::Commit { id, rel }),
+            Err(m) => self.notify(Level::Info, m.into()),
         }
     }
 

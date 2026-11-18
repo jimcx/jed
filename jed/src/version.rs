@@ -10,10 +10,12 @@ use git2::{Oid, Repository};
 use crate::history::{self, Snapshot};
 
 /// Where a version's text comes from.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum VersionSource {
     /// A file history entry (`history::read_snapshot`).
     Snapshot(Snapshot),
+    /// The file's blob in a commit; `rel` is its work-tree-relative path there.
+    Commit { id: Oid, rel: PathBuf },
 }
 
 /// What a version tab (`Buffer::version`) shows and can be read again from.
@@ -49,6 +51,7 @@ impl VersionSource {
     pub fn label(&self, now: u64) -> String {
         match self {
             VersionSource::Snapshot(s) => format!("History: {}", history::ago(s.time, now)),
+            VersionSource::Commit { id, .. } => crate::diff_view::short_commit(*id),
         }
     }
 
@@ -58,6 +61,7 @@ impl VersionSource {
     pub fn read(&self, root: &Path, file: &Path) -> Result<Vec<u8>, String> {
         match self {
             VersionSource::Snapshot(s) => read_snapshot(root, file, *s),
+            VersionSource::Commit { id, rel } => read_commit_file(root, *id, rel),
         }
     }
 }
@@ -68,6 +72,23 @@ impl VersionSource {
 pub fn read_snapshot(root: &Path, file: &Path, snapshot: Snapshot) -> Result<Vec<u8>, String> {
     let rel = history::relative(root, file).ok_or("outside the workspace")?;
     history::read_snapshot(root, &rel, snapshot)
+}
+
+/// The blob of `rel` in commit `id` of the repository containing `root`, as an error message
+/// when the repository, the commit or the path is gone.
+///
+/// Blocking: call from spawn_blocking.
+pub fn read_commit_file(root: &Path, id: Oid, rel: &Path) -> Result<Vec<u8>, String> {
+    let short = crate::diff_view::short_commit(id);
+    let repo = crate::git::Repo::discover(root).ok_or("not in a git repository")?;
+    let repo = repo.open().map_err(|e| e.to_string())?;
+    if repo.find_commit(id).is_err() {
+        return Err(format!("commit {short} is gone"));
+    }
+    match commit_blob(&repo, id, rel).map_err(|e| e.to_string())? {
+        Some(bytes) => Ok(bytes),
+        None => Err(format!("{} isn't in commit {short}", rel.display())),
+    }
 }
 
 /// The blob of `rel` in commit `id`'s tree; `None` when the commit has no such path (a deleted

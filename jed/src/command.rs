@@ -294,6 +294,10 @@ pub enum Command {
     /// "File History: Open": the active file's entries in the palette, one opened in a read-only
     /// tab (`Buffer::version`).
     OpenFileHistory,
+    /// "Git: Open File at Commit": the file's full text in a commit as a read-only tab
+    /// (`Buffer::version`): from a commit diff tab the commit it shows, from a commit tab the
+    /// cursor's stat row. Anywhere else a message.
+    OpenFileAtCommit,
     /// "Run Task": a picker of the task templates; picking one runs it in a new panel tab.
     RunTask,
     /// "Tasks: Select Environment": a picker of the environments (or none); the picked one fills
@@ -1068,10 +1072,12 @@ pub enum CommitCommand {
     /// Enter: the diff of the file whose stat line the cursor is on, in the group to the right
     /// (splitting one when there is none). Not on a stat line: a message.
     Open,
+    /// Alt+Enter: the whole file at the commit, as a read-only version tab.
+    OpenFile,
 }
 
 impl CommitCommand {
-    pub const ALL: [CommitCommand; 1] = [CommitCommand::Open];
+    pub const ALL: [CommitCommand; 2] = [CommitCommand::Open, CommitCommand::OpenFile];
 }
 
 /// The completion list (`Context::Suggest`, while it's shown).
@@ -1278,6 +1284,7 @@ impl Command {
             Command::RestoreFileHistory,
             Command::CompareFileHistory,
             Command::OpenFileHistory,
+            Command::OpenFileAtCommit,
         ]);
         all.extend([
             Command::RunTask,
@@ -1629,6 +1636,7 @@ impl Command {
             Command::RestoreFileHistory => "fileHistory.restore".into(),
             Command::CompareFileHistory => "fileHistory.compare".into(),
             Command::OpenFileHistory => "fileHistory.openVersion".into(),
+            Command::OpenFileAtCommit => "git.openFileAtCommit".into(),
             Command::OpenChange => "git.openChange".into(),
             Command::ToggleChanges => "git.toggleChanges".into(),
             Command::StageFile => "git.stageFile".into(),
@@ -1713,6 +1721,7 @@ impl Command {
                 "commit.{}",
                 match c {
                     CommitCommand::Open => "open",
+                    CommitCommand::OpenFile => "openFile",
                 }
             ),
             Command::PreviousChange => "editor.previousChange".into(),
@@ -2092,6 +2101,7 @@ impl Command {
             Command::RestoreFileHistory => "File History: Restore",
             Command::CompareFileHistory => "File History: Compare",
             Command::OpenFileHistory => "File History: Open",
+            Command::OpenFileAtCommit => "Git: Open File at Commit",
             Command::OpenChange => "Git: Open Changes",
             Command::ToggleChanges => "Git: Toggle Changes / File",
             Command::StageFile => "Git: Stage File",
@@ -2159,6 +2169,7 @@ impl Command {
             },
             Command::Commit(c) => match c {
                 CommitCommand::Open => "Commit: Open the File's Changes",
+                CommitCommand::OpenFile => "Commit: Open File at Commit",
             },
             Command::PreviousChange => "Go to Previous Change",
             Command::RunTask => "Tasks: Run Task",
@@ -2412,6 +2423,7 @@ mod tests {
             Command::RestoreFileHistory => 78,
             Command::CompareFileHistory => 147,
             Command::OpenFileHistory => 187,
+            Command::OpenFileAtCommit => 188,
             Command::RunTask => 79,
             Command::SelectEnvironment => 140,
             Command::NewShell => 119,

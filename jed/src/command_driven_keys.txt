@@ -2,6 +2,7 @@ linux CodeActions Down CodeActions(Down)
 linux CodeActions Enter CodeActions(Accept)
 linux CodeActions Esc CodeActions(Close)
 linux CodeActions Up CodeActions(Up)
+linux Commit Alt+Enter Commit(OpenFile)
 linux Commit Enter Commit(Open)
 linux Composer Alt+Enter ReviewSaveComment
 linux Composer Ctrl+Enter ReviewSaveComment
@@ -320,6 +321,7 @@ macos CodeActions Down CodeActions(Down)
 macos CodeActions Enter CodeActions(Accept)
 macos CodeActions Esc CodeActions(Close)
 macos CodeActions Up CodeActions(Up)
+macos Commit Alt+Enter Commit(OpenFile)
 macos Commit Enter Commit(Open)
 macos Composer Alt+Enter ReviewSaveComment
 macos Composer Ctrl+Enter ReviewSaveComment

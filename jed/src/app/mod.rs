@@ -1543,6 +1543,9 @@ impl App {
             Command::GitHistory(c) => self.git_history_command(c),
             Command::FileHistory(c) => self.file_history_command(c),
             Command::Commit(crate::command::CommitCommand::Open) => self.open_commit_line(),
+            Command::Commit(crate::command::CommitCommand::OpenFile) | Command::OpenFileAtCommit => {
+                self.open_file_at_commit()
+            }
             Command::ShowFileHistory => self.focus_file_history(),
             Command::CompareFileHistory => self.show_file_history(HistoryAction::Compare),
             Command::RestoreFileHistory => self.show_file_history(HistoryAction::Restore),

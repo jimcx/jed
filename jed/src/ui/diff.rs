@@ -41,6 +41,8 @@ const TO_LEFT: &str = " ← ";
 const OPEN_FILE: &str = " Open File ";
 /// A file-history entry's tab: restores the file to the entry (`fileHistory.restore`).
 const RESTORE: &str = " Restore ";
+/// A commit diff tab's button: the file at the commit (`git.openFileAtCommit`).
+const OPEN_VERSION: &str = " Open Version ";
 /// A review diff's floating button on a selection's last line (`review.comment`).
 const COMMENT: &str = " + Comment ";
 
@@ -259,6 +261,18 @@ pub fn render(
                 header.patch(theme.get("diffEditor.revertAction")),
             );
             hit.restore = Some(r);
+        }
+        let vw = OPEN_VERSION.width() as u16;
+        if matches!(d.pair.right, crate::diff_view::Text::Commit(_)) && rect.x >= area.x + vw + 20 {
+            let r = Rect::new(rect.x - vw, area.y, vw, 1);
+            out.set_stringn(
+                r.x,
+                r.y,
+                OPEN_VERSION,
+                vw as usize,
+                header.patch(theme.get("quickDiff.action")),
+            );
+            hit.open_version = Some(r);
         }
     }
 

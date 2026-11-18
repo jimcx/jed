@@ -13,6 +13,7 @@ use crate::layout::{MIN_SIDE_WIDTH, PanelTab};
 use crate::markdown_tab::MarkdownTab;
 use crate::selection::{Selection, Selections};
 use crate::session::{self, GroupState, PanelState, Restore, Session, Side, SideState, TabState};
+use crate::version::VersionSource;
 use crate::view::View;
 
 /// The session's restore and save (`app.session`).
@@ -217,8 +218,18 @@ impl App {
                             view: View::new(),
                         }));
                     }
-                    TabState::Version { path, time, hash } => {
-                        let key = (session::resolve(&root, &path), Snapshot { time, hash });
+                    TabState::Version { .. } | TabState::CommitFile { .. } => {
+                        let (path, source) = match tab {
+                            TabState::Version { path, time, hash } => {
+                                (path, VersionSource::Snapshot(Snapshot { time, hash }))
+                            }
+                            TabState::CommitFile { path, commit, rel } => {
+                                let Ok(id) = git2::Oid::from_str(&commit) else { continue };
+                                (path, VersionSource::Commit { id, rel })
+                            }
+                            _ => unreachable!(),
+                        };
+                        let key = (session::resolve(&root, &path), source);
                         // Opened twice (or not read): the tab of the first stays.
                         let Some(buffer) = versions.remove(&key) else { continue };
                         let (id, view) = self.register_buffer(buffer, None);
@@ -398,12 +409,18 @@ impl App {
                                 continue;
                             }
                             if let Some(v) = &buf.version {
-                                // Only a history entry's version is stored so far.
-                                let crate::version::VersionSource::Snapshot(s) = v.source;
-                                tabs.push(TabState::Version {
-                                    path: session::stored(root, &v.file),
-                                    time: s.time,
-                                    hash: s.hash,
+                                let path = session::stored(root, &v.file);
+                                tabs.push(match &v.source {
+                                    VersionSource::Snapshot(s) => TabState::Version {
+                                        path,
+                                        time: s.time,
+                                        hash: s.hash,
+                                    },
+                                    VersionSource::Commit { id, rel } => TabState::CommitFile {
+                                        path,
+                                        commit: id.to_string(),
+                                        rel: rel.clone(),
+                                    },
                                 });
                                 continue;
                             }

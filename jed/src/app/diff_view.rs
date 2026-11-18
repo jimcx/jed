@@ -1095,6 +1095,11 @@ impl App {
                     self.open_commit(&id, None);
                     return true;
                 }
+                if h.open_version.is_some_and(|r| r.contains(p)) {
+                    self.focus_group(g);
+                    self.open_file_at_commit();
+                    return true;
+                }
                 if h.restore.is_some_and(|r| r.contains(p)) {
                     self.focus_group(g);
                     self.show_file_history(crate::history::HistoryAction::Restore);

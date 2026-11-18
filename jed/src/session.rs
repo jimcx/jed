@@ -30,6 +30,7 @@ use crate::hex::{self, Column, HexDoc};
 use crate::history::Snapshot;
 use crate::indentation::Indentation;
 use crate::layout::{GroupId, SidePanel, SplitTree};
+use crate::version::VersionSource;
 
 /// The format's version; a file with another is ignored. Version 1 gained commit tabs, hex tabs
 /// and the history section's `SideState` fields, all serde-defaulted or new variants so older
@@ -166,6 +167,14 @@ pub enum TabState {
         path: PathBuf,
         time: u64,
         hash: u64,
+    },
+    /// A file's text in commit `commit` (full id), `rel` its work-tree-relative path (dropped at
+    /// restore, with a log line, when the commit or the path is gone).
+    CommitFile {
+        /// Relative to the root.
+        path: PathBuf,
+        commit: String,
+        rel: PathBuf,
     },
     /// A hex tab (dropped at restore when its file is gone).
     Hex {
@@ -333,7 +342,7 @@ pub struct Restore {
     /// Each text tab's file (absolute path), once.
     pub buffers: Vec<(PathBuf, Buffer)>,
     /// Each version tab's buffer, by its file (absolute path) and entry, once.
-    pub versions: Vec<((PathBuf, Snapshot), Buffer)>,
+    pub versions: Vec<((PathBuf, VersionSource), Buffer)>,
     /// Each hex tab's bytes (absolute path), once.
     pub hex: Vec<(PathBuf, HexDoc)>,
     /// Each untitled tab's crash backup, once (by its `untitled` id).
@@ -358,7 +367,7 @@ pub fn read(
     };
     let mut hex_docs: Vec<(PathBuf, HexDoc)> = Vec::new();
     let mut hex_failed = HashSet::new();
-    let mut versions: Vec<((PathBuf, Snapshot), Buffer)> = Vec::new();
+    let mut versions: Vec<((PathBuf, VersionSource), Buffer)> = Vec::new();
     let mut versions_gone = HashSet::new();
     let mut buffers = Vec::new();
     let mut untitled: Vec<crate::backup::Backup> = Vec::new();
@@ -419,23 +428,33 @@ pub fn read(
                 }
             }
             TabState::Commit { commit } => commit_still_there(root, commit),
-            TabState::Version { path, time, hash } => {
-                let key = (
-                    resolve(root, path),
-                    Snapshot {
-                        time: *time,
-                        hash: *hash,
-                    },
-                );
+            TabState::Version { .. } | TabState::CommitFile { .. } => {
+                let (path, source) = match tab {
+                    TabState::Version { path, time, hash } => (
+                        path,
+                        Some(VersionSource::Snapshot(Snapshot {
+                            time: *time,
+                            hash: *hash,
+                        })),
+                    ),
+                    TabState::CommitFile { path, commit, rel } => (
+                        path,
+                        git2::Oid::from_str(commit)
+                            .ok()
+                            .map(|id| VersionSource::Commit { id, rel: rel.clone() }),
+                    ),
+                    _ => unreachable!(),
+                };
+                let Some(source) = source else { return false };
+                let key = (resolve(root, path), source);
                 if versions.iter().any(|(k, _)| *k == key) {
                     return true;
                 }
                 if versions_gone.contains(&key) {
                     return false;
                 }
-                let source = crate::version::VersionSource::Snapshot(key.1);
-                let doc = crate::version::VersionDoc::new(key.0.clone(), source.clone(), crate::history::now_ms());
-                match source.read(root, &key.0).and_then(|bytes| Buffer::version(doc, bytes)) {
+                let doc = crate::version::VersionDoc::new(key.0.clone(), key.1.clone(), crate::history::now_ms());
+                match key.1.read(root, &key.0).and_then(|bytes| Buffer::version(doc, bytes)) {
                     Ok(buf) => {
                         versions.push((key, buf));
                         true

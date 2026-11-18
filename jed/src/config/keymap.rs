@@ -853,9 +853,12 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Esc, none, Fh::FocusTree),
     ];
 
-    // A commit tab: Enter opens the cursor's stat row's diff (falls back to the editor's
+    // A commit tab: Enter opens the cursor's stat row's diff, Alt+Enter its file (falls back to the editor's
     // movement, Home / End, Cmd+C and Cmd+A).
-    let commit = [(KeyCode::Enter, none, Command::Commit(Cc::Open))];
+    let commit = [
+        (KeyCode::Enter, none, Command::Commit(Cc::Open)),
+        (KeyCode::Enter, alt, Command::Commit(Cc::OpenFile)),
+    ];
 
     let review = [
         (KeyCode::Up, none, Rv::Up),

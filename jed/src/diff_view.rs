@@ -115,7 +115,7 @@ impl Text {
 }
 
 /// A commit id's short form (7 hex digits, as the tab titles show it).
-fn short_commit(id: Oid) -> String {
+pub(crate) fn short_commit(id: Oid) -> String {
     let id = id.to_string();
     id[..7.min(id.len())].to_string()
 }
