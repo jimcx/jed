@@ -119,6 +119,7 @@ impl App {
             return;
         }
         self.review.loading = true;
+        self.review.drafts.looked_writes = self.review.drafts.forge_writes;
         let req = Request {
             repo: status.repo.clone(),
             config: self.review.config.clone(),
@@ -127,6 +128,7 @@ impl App {
             viewed_from: self.review.viewed.is_none().then(|| self.state_dir.clone()).flatten(),
             log: self.logs.tool(Tool::Review),
             blobs: self.review.blobs.clone(),
+            forge_drafts: self.settings.review_drafts_on_forge,
         };
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
@@ -192,6 +194,7 @@ impl App {
                 d.mark_stale();
             }
         }
+        self.reconcile_drafts();
         self.check_drafts();
         self.review_fetch_user();
         if std::mem::take(&mut self.review.queued) {

@@ -45,6 +45,18 @@ pub(crate) fn server_with_routes(
     body: &str,
     extra: Vec<(String, Reply)>,
 ) -> FakeServer {
+    server_pending(main, head, publish, (author, body), "[]", extra)
+}
+
+/// [`server_with_routes`] whose draft notes (the user's pending review) are `notes` (a JSON array).
+pub(crate) fn server_pending(
+    main: &str,
+    head: &str,
+    publish: Reply,
+    (author, body): (&str, &str),
+    notes: &str,
+    extra: Vec<(String, Reply)>,
+) -> FakeServer {
     let mr = format!(
         r#"{{"iid":7,"title":"Add review panel","description":"","state":"opened","draft":false,
         "author":{{"username":"ann"}},"web_url":"https://git.example.com/alice/project/-/merge_requests/7",
@@ -80,7 +92,7 @@ pub(crate) fn server_with_routes(
         ),
         (format!("{API}/merge_requests/7"), Reply::json(&mr)),
         (format!("{API}/merge_requests/7/diffs"), Reply::json("[]")),
-        (format!("{API}/merge_requests/7/draft_notes"), Reply::json("[]")),
+        (format!("{API}/merge_requests/7/draft_notes"), Reply::json(notes)),
         (format!("{API}/merge_requests/7/discussions"), Reply::json(&discussions)),
         ("/api/v4/user".into(), Reply::json(r#"{"username":"sam"}"#)),
         (

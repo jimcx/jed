@@ -64,7 +64,11 @@ pub struct FakeServer {
     addr: std::net::SocketAddr,
     seen: Arc<Mutex<Vec<Request>>>,
     stop: Arc<AtomicBool>,
+    overrides: Overrides,
 }
+
+/// Replies set while the server runs ([`FakeServer::set`]), by the route's key.
+type Overrides = Arc<Mutex<Vec<(String, Reply)>>>;
 
 impl FakeServer {
     /// `routes` maps a request target (`/path?query`) or just a path to its reply; anything else is a 404.
@@ -73,7 +77,8 @@ impl FakeServer {
         let addr = listener.local_addr().unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
-        let (seen2, stop2) = (seen.clone(), stop.clone());
+        let overrides = Overrides::default();
+        let (seen2, stop2, over2) = (seen.clone(), stop.clone(), overrides.clone());
         std::thread::spawn(move || {
             let hits = Hits::default();
             for stream in listener.incoming() {
@@ -81,16 +86,29 @@ impl FakeServer {
                     break;
                 }
                 if let Ok(stream) = stream {
-                    let _ = serve(stream, &routes, &seen2, &hits);
+                    let _ = serve(stream, &routes, &seen2, &hits, &over2);
                 }
             }
         });
-        FakeServer { addr, seen, stop }
+        FakeServer {
+            addr,
+            seen,
+            stop,
+            overrides,
+        }
     }
 
     /// `http://127.0.0.1:port`
     pub fn url(&self) -> String {
         format!("http://{}", self.addr)
+    }
+
+    /// From now on `key` (a route as given to `start`, without a body needle) answers `reply`
+    /// every time, whatever the routes say (a forge whose state changed).
+    pub fn set(&self, key: &str, reply: Reply) {
+        let mut o = self.overrides.lock().unwrap();
+        o.retain(|(k, _)| k != key);
+        o.push((key.to_string(), reply));
     }
 
     pub fn requests(&self) -> Vec<Request> {
@@ -112,6 +130,7 @@ fn serve(
     routes: &[(String, Reply)],
     seen: &Mutex<Vec<Request>>,
     hits: &Hits,
+    overrides: &Overrides,
 ) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut line = String::new();
@@ -159,18 +178,24 @@ fn serve(
         let specific: Vec<_> = all.iter().filter(|(t, _)| t.contains(" ~")).cloned().collect();
         if specific.is_empty() { all } else { specific }
     };
-    let reply = [&with_target, &with_path, &target, &path]
-        .iter()
-        .map(|k| matching(k))
-        .find(|m| !m.is_empty())
-        .map(|m| {
-            let mut hits = hits.lock().unwrap();
-            let n = hits.entry(m[0].0.clone()).or_insert(0);
-            let reply = m[(*n).min(m.len() - 1)].1.clone();
-            *n += 1;
-            reply
-        })
-        .unwrap_or_else(|| Reply::status(404).with_body("{\"message\":\"not found\"}"));
+    let set = [&with_target, &with_path, &target, &path].iter().find_map(|k| {
+        let o = overrides.lock().unwrap();
+        o.iter().find(|(key, _)| key == *k).map(|(_, r)| r.clone())
+    });
+    let reply = set.unwrap_or_else(|| {
+        [&with_target, &with_path, &target, &path]
+            .iter()
+            .map(|k| matching(k))
+            .find(|m| !m.is_empty())
+            .map(|m| {
+                let mut hits = hits.lock().unwrap();
+                let n = hits.entry(m[0].0.clone()).or_insert(0);
+                let reply = m[(*n).min(m.len() - 1)].1.clone();
+                *n += 1;
+                reply
+            })
+            .unwrap_or_else(|| Reply::status(404).with_body("{\"message\":\"not found\"}"))
+    });
     seen.lock().unwrap().push(Request {
         method,
         target,

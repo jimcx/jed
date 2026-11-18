@@ -470,7 +470,7 @@ Review a Gitea, GitHub or GitLab merge request (MR) on its checked-out branch (t
 - A Code Review view in the activity bar: the MR's summary, the files changed since the merge base, and its conversations
 - Clicking a file opens an inline diff in a new tab; its new side is the file's own buffer, so definition, references and hover work on every line that isn't deleted
 - Other people's comments appear between the code lines; comments on lines changed since are listed as outdated
-- Selecting lines starts a comment in an inline box; comments stay as drafts until Submit Review (Comment, Approve or Request Changes)
+- Selecting lines starts a comment in an inline box; a saved comment goes into the user's pending review on the forge (GitHub's PENDING review, GitLab's draft notes, Gitea's PENDING review; `review_drafts_on_forge`, on by default) and is kept locally as the record of its lines and text. A refresh reads the pending review back (drafts made on the website appear, ones submitted elsewhere go); Submit Review (Comment, Approve or Request Changes) publishes it in one step and Discard Review deletes it. A draft the forge can't hold stays local and is posted the old way; Claude's drafts reach the forge only through the user's Submit or the user's own edit
 - Apply Suggestion edits the buffer as one undo step, without committing; it refuses when the lines have changed
 - Hosts and token variables come only from `~/.config/jed/forges.toml`, never from a workspace
 
@@ -713,7 +713,6 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Open File by path** (`open_file_path`): open a file by typing a path with completion — [tasks/open_file_path.md](tasks/open_file_path.md)
 - **Performance pass** (`performance_pass`): startup time, memory, and 1 MB file performance; check slow-frame warnings — [tasks/performance_pass.md](tasks/performance_pass.md)
 - **PTY smoke tests** (`pty`): end-to-end tests running the real binary in a pseudo-terminal — [tasks/pty.md](tasks/pty.md)
-- **Review drafts on the forge** (`review_forge_drafts`): a saved review comment goes into the user's pending review on the forge (visible there as a draft) instead of only jed's local store; Submit Review submits that pending review, and drafts made on the website show in PENDING — [tasks/review_forge_drafts.md](tasks/review_forge_drafts.md)
 - **SCons: a real SCons for `site_scons` in the docs** (`scons_docs`): document a real SCons install for ty's `site_scons` helpers — [tasks/scons_docs.md](tasks/scons_docs.md)
 - **Self-update from GitHub releases** (`update`): check for and install a newer release from GitHub — [tasks/update.md](tasks/update.md)
 - **Separate untracked files in Source Control** (`scm_untracked_section`): a `[settings] untracked_changes` option splitting the Source Control view's Changes into tracked changes and an Untracked section — [tasks/scm_untracked_section.md](tasks/scm_untracked_section.md)
@@ -797,6 +796,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - ✅ **Render whitespace** (`render_whitespace`): VS Code's `editor.renderWhitespace` setting, plus a View: Toggle Render Whitespace command — [tasks/render_whitespace.md](tasks/render_whitespace.md)
 - ✅ **Reopen closed tab** (`reopen_closed_tab`): reopen the last closed tab (Cmd+Shift+T) — [tasks/reopen_closed_tab.md](tasks/reopen_closed_tab.md)
 - ✅ **Revert hunks in the diff view** (`revert_hunks`): a Revert button on each hunk of an unstaged diff, restoring the working tree — [tasks/revert_hunks.md](tasks/revert_hunks.md)
+- ✅ **Review drafts on the forge** (`review_forge_drafts`): a saved review comment goes into the user's pending review on the forge (visible there as a draft) instead of only jed's local store; Submit Review submits that pending review, and drafts made on the website show in PENDING — [tasks/review_forge_drafts.md](tasks/review_forge_drafts.md)
 - ✅ **Rust language server** (`rust_lsp`): `rust-analyzer` as a built-in server for Rust — [tasks/rust_lsp.md](tasks/rust_lsp.md)
 - ✅ **SCons settings in `.workspace`** (`scons_settings`): a `[scons]` table for `sconstruct`, `scons_path` and `enabled` — [tasks/scons_settings.md](tasks/scons_settings.md)
 - ✅ **Scroll bars in the editors** (`editor_scrollbars`): a vertical scroll bar per editor group, click and drag to scroll — [tasks/editor_scrollbars.md](tasks/editor_scrollbars.md)

@@ -397,8 +397,6 @@ struct RestReview {
 
 #[derive(Deserialize, Default)]
 struct RestComment {
-    #[allow(dead_code)] // until review_forge_drafts-c uses it
-    id: u64,
     #[serde(default)]
     node_id: String,
     #[serde(default)]

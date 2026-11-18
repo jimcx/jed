@@ -112,7 +112,12 @@ fn review_items(spot: ReviewSpot) -> Vec<MenuItem> {
             MenuItem::new("Edit Draft", Command::ReviewEditDraft),
             MenuItem::new("Delete Draft", Command::ReviewDeleteDraft),
         ],
-        ReviewSpot::Pending => submit(),
+        ReviewSpot::Pending => {
+            let mut items = submit();
+            items.push(MenuItem::Separator);
+            items.push(MenuItem::new("Discard Review", Command::ReviewDiscardPending));
+            items
+        }
         ReviewSpot::Panel { withdraw } => {
             let mut items = vec![
                 MenuItem::new("Refresh", Command::ReviewRefresh),
@@ -274,6 +279,15 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_pending_menu_offers_discard_review() {
+        let items = review_items(ReviewSpot::Pending);
+        assert!(items.iter().any(|i| matches!(
+            i,
+            MenuItem::Item { label, command: Command::ReviewDiscardPending, .. } if label == "Discard Review"
+        )));
+    }
 
     #[test]
     fn menu_commands_are_listed_with_the_palette_commands() {

@@ -277,7 +277,6 @@ pub struct DraftRef {
 
 /// The thread a pending reply answers, as the forge names it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // until review_forge_drafts-c uses it
 pub enum ReplyTo {
     /// A `Thread::id` (GitLab: the draft note's discussion).
     Thread(String),
@@ -287,7 +286,6 @@ pub enum ReplyTo {
 
 /// One comment of a pending review, as the forge holds it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // until review_forge_drafts-c uses it
 pub struct PendingComment {
     /// The forge's id, as `DraftRef::comment_id`.
     pub id: String,
@@ -303,7 +301,6 @@ pub struct PendingComment {
 
 /// The user's pending review and its comments.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // until review_forge_drafts-c uses it
 pub struct PendingReview {
     /// As `DraftRef::review_id`.
     pub id: String,
@@ -406,7 +403,6 @@ pub trait Forge: Send + Sync {
     fn submit_review(&self, repo: &RepoRef, number: u64, head_sha: &str, review: &DraftReview) -> SubmitOutcome;
     /// The user's pending review (GitHub's PENDING review, Gitea's, GitLab's draft notes) with
     /// its comments; `None` when there is none. `comments` never returns these.
-    #[allow(dead_code)] // until review_forge_drafts-c uses it
     fn pending_review(&self, repo: &RepoRef, number: u64, user: &str) -> Result<Option<PendingReview>>;
     /// Saves `draft` in the pending review (`pending`: its id from `pending_review` or an earlier
     /// `DraftRef`; `None` starts one where the forge needs that, or reuses the user's existing
@@ -433,7 +429,6 @@ pub trait Forge: Send + Sync {
     fn delete_draft(&self, repo: &RepoRef, number: u64, draft: &DraftRef) -> Result<()>;
     /// Publishes the pending review `review_id` with the verdict. GitLab approves in a request of
     /// its own after the publish.
-    #[allow(dead_code)] // until review_forge_drafts-c uses it
     fn submit_pending(
         &self,
         repo: &RepoRef,
@@ -443,7 +438,6 @@ pub trait Forge: Send + Sync {
         body: &str,
     ) -> Result<()>;
     /// Deletes the pending review with all its comments.
-    #[allow(dead_code)] // until review_forge_drafts-c uses it
     fn discard_pending(&self, repo: &RepoRef, number: u64, review_id: &str) -> Result<()>;
     /// Replies in the thread (`thread_id` is `Thread::id`); posted at once. `lines`: the
     /// thread's first and last line (GitLab spells a plain suggestion fence out with them).

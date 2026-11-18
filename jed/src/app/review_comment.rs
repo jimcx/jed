@@ -573,6 +573,7 @@ impl App {
             Some(store) => store.merge(loaded),
             None => d.store = Some(loaded),
         }
+        self.reconcile_drafts();
         self.check_drafts();
     }
 

@@ -26,6 +26,26 @@ pub enum Job {
         /// Reply drafts, posted after the review (`posted` / `failed` name them too).
         replies: Vec<ReplyDraft>,
     },
+    /// Submits through the forge's pending review: `push` (local only drafts, by id) are added to
+    /// it first (`review_id`: the pending review, if there is one); then the review is published
+    /// with the verdict. A draft the forge can't hold goes the old way (`submit_review` for a
+    /// line comment, a reply after the review). `on_forge` are the drafts already in it.
+    SubmitPending {
+        number: u64,
+        head_sha: String,
+        review_id: Option<String>,
+        push: Vec<(String, NewDraft)>,
+        on_forge: Vec<String>,
+        event: forge::ReviewEvent,
+        body: String,
+    },
+    /// Deletes the pending review on the forge.
+    DiscardPending {
+        number: u64,
+        review_id: String,
+        /// Delete these local only drafts too (their ids).
+        local: Vec<String>,
+    },
     Reply {
         number: u64,
         thread_id: String,
@@ -115,7 +135,8 @@ impl Job {
     pub fn done_text(&self) -> &'static str {
         match self {
             Job::User => "",
-            Job::Submit { .. } => "Review submitted",
+            Job::Submit { .. } | Job::SubmitPending { .. } => "Review submitted",
+            Job::DiscardPending { .. } => "Pending review discarded",
             Job::Reply { .. } => "Reply posted",
             Job::Resolve { resolved: true, .. } => "Thread resolved",
             Job::Resolve { .. } => "Thread reopened",
@@ -133,7 +154,8 @@ impl Job {
     fn what(&self) -> &'static str {
         match self {
             Job::User => "reading the user",
-            Job::Submit { .. } => "submitting the review",
+            Job::Submit { .. } | Job::SubmitPending { .. } => "submitting the review",
+            Job::DiscardPending { .. } => "discarding the pending review",
             Job::Reply { .. } => "replying",
             Job::Resolve { .. } => "resolving",
             Job::Edit { .. } => "editing the comment",
@@ -165,6 +187,14 @@ pub enum Done {
         failed: Vec<(String, String)>,
         error: Option<String>,
     },
+    /// A `Job::SubmitPending` finished: `pushed` are the drafts it added to the pending review
+    /// (they have forge ids now, whatever else happened); the rest as in `Submitted`.
+    SubmittedPending {
+        pushed: Vec<(String, DraftRef)>,
+        posted: Vec<String>,
+        failed: Vec<(String, String)>,
+        error: Option<String>,
+    },
     /// The job worked.
     Wrote(Job),
     /// A draft job worked (`id`: the draft; `r`: where an add put it).
@@ -191,6 +221,149 @@ fn draft_failed(log: &ToolLog, job: Job, e: forge::ForgeError) -> Done {
         job,
         error: e.to_string(),
         gone,
+    }
+}
+
+/// What a submit confirmed: draft ids posted, refused with the reason, and the review's own failure.
+#[derive(Default)]
+struct Sent {
+    posted: Vec<String>,
+    failed: Vec<(String, String)>,
+    error: Option<String>,
+}
+
+/// Posts `review` the old way (one `submit_review`); `ids[i]` is the draft of comment `i`.
+#[allow(clippy::too_many_arguments)]
+fn post_review(
+    api: &dyn forge::Forge,
+    repo: &RepoRef,
+    log: &ToolLog,
+    number: u64,
+    head_sha: &str,
+    review: &DraftReview,
+    ids: &[String],
+    sent: &mut Sent,
+) {
+    let id = |i: usize| ids.get(i).cloned().unwrap_or_default();
+    let out = api.submit_review(repo, number, head_sha, review);
+    for (i, e) in &out.failed {
+        log.error(&format!("draft {}: {e}", id(*i)));
+    }
+    sent.posted.extend(out.posted.iter().map(|&i| id(i)));
+    sent.failed.extend(out.failed.iter().map(|(i, e)| (id(*i), e.clone())));
+    sent.error = out.error;
+}
+
+/// Each reply has its own outcome. One whose thread resolve fails was posted: it is confirmed (a
+/// retry would post it twice) and the failure is the submit's `error`.
+fn post_replies(
+    api: &dyn forge::Forge,
+    repo: &RepoRef,
+    log: &ToolLog,
+    number: u64,
+    replies: &[ReplyDraft],
+    sent: &mut Sent,
+) {
+    for r in replies {
+        match api.reply(repo, number, &r.thread_id, &r.body, r.lines) {
+            Err(e) => {
+                log.error(&format!("reply {}: {e}", r.id));
+                sent.failed.push((r.id.clone(), e.to_string()));
+            }
+            Ok(()) => {
+                sent.posted.push(r.id.clone());
+                if r.resolve
+                    && let Err(e) = api.set_resolved(repo, &r.thread_id, true)
+                {
+                    log.error(&format!("resolving {}: {e}", r.thread_id));
+                    sent.error
+                        .get_or_insert(format!("replied, but resolving the thread failed: {e}"));
+                }
+            }
+        }
+    }
+}
+
+/// Blocking (network): a `Job::SubmitPending`.
+#[allow(clippy::too_many_arguments)]
+fn submit_pending(
+    api: &dyn forge::Forge,
+    repo: &RepoRef,
+    log: &ToolLog,
+    (number, head_sha): (u64, &str),
+    mut review_id: Option<String>,
+    push: &[(String, NewDraft)],
+    on_forge: &[String],
+    (event, body): (forge::ReviewEvent, &str),
+) -> Done {
+    let (mut pushed, mut old, mut replies) = (Vec::new(), Vec::new(), Vec::new());
+    for (id, draft) in push {
+        match api.add_draft(repo, number, head_sha, review_id.as_deref(), draft) {
+            Ok(r) => {
+                review_id = Some(r.review_id.clone());
+                pushed.push((id.clone(), r));
+            }
+            Err(e) => {
+                log.info(&format!(
+                    "draft {id} can't join the pending review ({e}): posting it the old way"
+                ));
+                match draft {
+                    NewDraft::Line(c) => old.push((id.clone(), c.clone())),
+                    NewDraft::Reply {
+                        thread_id,
+                        body,
+                        lines,
+                        resolve,
+                    } => replies.push(ReplyDraft {
+                        id: id.clone(),
+                        thread_id: thread_id.clone(),
+                        body: body.clone(),
+                        resolve: *resolve,
+                        lines: *lines,
+                    }),
+                }
+            }
+        }
+    }
+    let mut sent = Sent::default();
+    let mut published = false;
+    if let Some(rid) = &review_id {
+        log.info(&format!("Publishing the pending review of !{number} ({event:?})"));
+        if let Err(e) = api.submit_pending(repo, number, rid, event, body) {
+            log.error(&format!("submitting the pending review: {e}"));
+            return Done::SubmittedPending {
+                pushed,
+                posted: Vec::new(),
+                failed: Vec::new(),
+                error: Some(e.to_string()),
+            };
+        }
+        published = true;
+        sent.posted.extend(on_forge.iter().cloned());
+        sent.posted.extend(pushed.iter().map(|(id, _)| id.clone()));
+    }
+    // Without a pending review the verdict goes with the old path's review; with one, only what
+    // the forge couldn't hold is left (a plain comment review).
+    let verdict = if published {
+        (forge::ReviewEvent::Comment, "")
+    } else {
+        (event, body)
+    };
+    if !old.is_empty() || (!published && (verdict.0 != forge::ReviewEvent::Comment || !verdict.1.is_empty())) {
+        let review = DraftReview {
+            body: verdict.1.to_string(),
+            event: verdict.0,
+            comments: old.iter().map(|(_, c)| c.clone()).collect(),
+        };
+        let ids: Vec<String> = old.iter().map(|(id, _)| id.clone()).collect();
+        post_review(api, repo, log, number, head_sha, &review, &ids, &mut sent);
+    }
+    post_replies(api, repo, log, number, &replies, &mut sent);
+    Done::SubmittedPending {
+        pushed,
+        posted: sent.posted,
+        failed: sent.failed,
+        error: sent.error,
     }
 }
 
@@ -252,6 +425,27 @@ pub fn run(req: Request, job: Job) -> Done {
                 Err(e) => draft_failed(log, job.clone(), e),
             };
         }
+        Job::SubmitPending {
+            number,
+            head_sha,
+            review_id,
+            push,
+            on_forge,
+            event,
+            body,
+        } => {
+            return submit_pending(
+                &*api,
+                repo,
+                log,
+                (*number, head_sha),
+                review_id.clone(),
+                push,
+                on_forge,
+                (*event, body),
+            );
+        }
+        Job::DiscardPending { number, review_id, .. } => api.discard_pending(repo, *number, review_id),
         Job::User => {
             return match api.current_user() {
                 Ok(u) => Done::User(u),
@@ -271,38 +465,17 @@ pub fn run(req: Request, job: Job) -> Done {
                 replies.len(),
                 review.event
             ));
-            let id = |i: usize| ids.get(i).cloned().unwrap_or_default();
+            let mut sent = Sent::default();
             // Replies only (no verdict, no line comments, no summary): there is no review to post.
-            let (mut posted, mut failed, mut error) = (Vec::new(), Vec::new(), None);
             if !review.comments.is_empty() || review.event != forge::ReviewEvent::Comment || !review.body.is_empty() {
-                let out = api.submit_review(repo, *number, head_sha, review);
-                for (i, e) in &out.failed {
-                    log.error(&format!("draft {}: {e}", id(*i)));
-                }
-                posted = out.posted.iter().map(|&i| id(i)).collect();
-                failed = out.failed.iter().map(|(i, e)| (id(*i), e.clone())).collect();
-                error = out.error;
+                post_review(&*api, repo, log, *number, head_sha, review, ids, &mut sent);
             }
-            // Each reply has its own outcome. One whose thread resolve fails was posted: it is
-            // confirmed (a retry would post it twice) and the failure is the submit's `error`.
-            for r in replies {
-                match api.reply(repo, *number, &r.thread_id, &r.body, r.lines) {
-                    Err(e) => {
-                        log.error(&format!("reply {}: {e}", r.id));
-                        failed.push((r.id.clone(), e.to_string()));
-                    }
-                    Ok(()) => {
-                        posted.push(r.id.clone());
-                        if r.resolve
-                            && let Err(e) = api.set_resolved(repo, &r.thread_id, true)
-                        {
-                            log.error(&format!("resolving {}: {e}", r.thread_id));
-                            error.get_or_insert(format!("replied, but resolving the thread failed: {e}"));
-                        }
-                    }
-                }
-            }
-            return Done::Submitted { posted, failed, error };
+            post_replies(&*api, repo, log, *number, replies, &mut sent);
+            return Done::Submitted {
+                posted: sent.posted,
+                failed: sent.failed,
+                error: sent.error,
+            };
         }
         Job::Reply {
             number,

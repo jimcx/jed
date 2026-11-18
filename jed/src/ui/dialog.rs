@@ -201,6 +201,29 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) -> Option<R
             lines.push(Line::raw(""));
             lines.push(buttons(&[("W", "ithdraw"), ("C", "ancel")]));
         }
+        Prompt::ConfirmDiscardReview {
+            what,
+            on_forge,
+            local_only,
+            ..
+        } => {
+            lines.push(Line::raw(format!(
+                " Discard your pending review of {what} on the forge ({on_forge} comment(s))?"
+            )));
+            lines.push(Line::raw(" The forge deletes it; this can't be undone."));
+            if !local_only.is_empty() {
+                lines.push(Line::raw(format!(
+                    " {} draft(s) only on this machine are kept (L deletes them too).",
+                    local_only.len()
+                )));
+            }
+            lines.push(Line::raw(""));
+            if local_only.is_empty() {
+                lines.push(buttons(&[("D", "iscard"), ("C", "ancel")]));
+            } else {
+                lines.push(buttons(&[("D", "iscard"), ("L", "ocal drafts too"), ("C", "ancel")]));
+            }
+        }
         Prompt::InstallShellIntegration { snippet, init, line } => {
             let home = crate::paths::home();
             let short = |p: &std::path::Path| match p.strip_prefix(&home) {

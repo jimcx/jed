@@ -2452,6 +2452,19 @@ pub(crate) mod write {
         review: Reply,
         extra: Vec<(String, Reply)>,
     ) -> FakeServer {
+        let reviews = r#"[{"id":1,"user":{"login":"bob"},"body":"","state":"COMMENT","comments_count":9}]"#;
+        server_reviews(main, head, mr_head, review, reviews, extra)
+    }
+
+    /// [`server_extra`] with this list of the merge request's reviews (a JSON array).
+    pub(crate) fn server_reviews(
+        main: &str,
+        head: &str,
+        mr_head: &str,
+        review: Reply,
+        reviews: &str,
+        extra: Vec<(String, Reply)>,
+    ) -> FakeServer {
         let pr = pr_json(7, "Add review panel", main).replace(
             r#""ref":"feature","sha":"h0""#,
             &format!(r#""ref":"feature","sha":"{mr_head}""#),
@@ -2468,10 +2481,7 @@ pub(crate) mod write {
                     Reply::json(&format!("[{pr}]")),
                 ),
                 (format!("{PULLS}/7"), Reply::json(&pr)),
-                (
-                    format!("{PULLS}/7/reviews?page=1&limit=50"),
-                    Reply::json(r#"[{"id":1,"user":{"login":"bob"},"body":"","state":"COMMENT","comments_count":9}]"#),
-                ),
+                (format!("{PULLS}/7/reviews?page=1&limit=50"), Reply::json(reviews)),
                 (format!("{PULLS}/7/reviews/1/comments"), Reply::json(&comments)),
                 (
                     "/api/v1/repos/alice/project/issues/7/comments?page=1&limit=50".into(),

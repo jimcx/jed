@@ -81,6 +81,18 @@ pub enum Prompt {
         what: String,
         approved: bool,
     },
+    /// Discarding the pending review on the forge (`Job::DiscardPending`): Discard keeps the
+    /// local only drafts, "and local drafts" deletes them too.
+    ConfirmDiscardReview {
+        number: u64,
+        review_id: String,
+        /// `!7`, as the question names the merge request.
+        what: String,
+        /// How many comments the forge holds.
+        on_forge: usize,
+        /// The drafts with no place on the forge (ids).
+        local_only: Vec<String>,
+    },
     /// "Terminal: Install Shell Integration": the snippet to source, the shell's init file and the
     /// line that sources it; C copies the line, A appends it, Esc closes.
     InstallShellIntegration {
@@ -313,6 +325,37 @@ impl App {
                 _ if esc || ch == Some('c') => self.close_prompt(),
                 _ => self.prompt = Some(Prompt::ConfirmWithdraw { job, what, approved }),
             },
+            Prompt::ConfirmDiscardReview {
+                number,
+                review_id,
+                what,
+                on_forge,
+                local_only,
+            } => {
+                let local = match ch {
+                    _ if enter || ch == Some('d') => Some(Vec::new()),
+                    Some('l') if !local_only.is_empty() => Some(local_only.clone()),
+                    _ => None,
+                };
+                if let Some(local) = local {
+                    self.close_prompt();
+                    self.review_write(crate::review_write::Job::DiscardPending {
+                        number,
+                        review_id,
+                        local,
+                    });
+                } else if esc || ch == Some('c') {
+                    self.close_prompt();
+                } else {
+                    self.prompt = Some(Prompt::ConfirmDiscardReview {
+                        number,
+                        review_id,
+                        what,
+                        on_forge,
+                        local_only,
+                    });
+                }
+            }
             Prompt::InstallShellIntegration { snippet, init, line } => match ch {
                 Some('c') => {
                     self.clipboard.write(Copied {

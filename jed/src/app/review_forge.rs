@@ -15,8 +15,25 @@ use super::{App, Level};
 use crate::forge::{DraftComment, NewDraft};
 use crate::review::DraftOp;
 use crate::review_blocks::SubmitLabel;
-use crate::review_drafts::ForgeDraft;
+use crate::review_drafts::{Draft, FileHunks, ForgeDraft};
 use crate::review_write::{Done, Job};
+
+/// What the forge is asked to hold for `d`.
+pub(super) fn new_draft(d: &Draft, hunks: &std::collections::BTreeMap<String, FileHunks>) -> NewDraft {
+    match &d.reply_to {
+        Some(thread) => NewDraft::Reply {
+            thread_id: thread.clone(),
+            body: d.body.clone(),
+            lines: (d.start, d.end),
+            resolve: d.resolve,
+        },
+        None => NewDraft::Line(DraftComment {
+            anchor: d.anchor(),
+            body: d.body.clone(),
+            other: super::review_write::other_lines(d, hunks),
+        }),
+    }
+}
 
 impl App {
     /// The comment box's save button.
@@ -37,6 +54,90 @@ impl App {
     pub(crate) fn pending_review_id(&self) -> Option<&str> {
         let (key, id) = self.review.drafts.pending.as_ref()?;
         (self.review.drafts_key().as_deref() == Some(key.as_str())).then_some(id.as_str())
+    }
+
+    /// Folds the pending review the last lookup read into the drafts (`DraftStore::reconcile`):
+    /// drafts made on the website appear, ones submitted or deleted there go (one notice), bodies
+    /// changed there win. Nothing is done when the setting is off, the read failed, a write to the
+    /// forge is on its way or finished since the lookup started, or the drafts aren't read yet.
+    pub(super) fn reconcile_drafts(&mut self) {
+        let d = &self.review.drafts;
+        if !self.settings.review_drafts_on_forge
+            || self.review.writing
+            || d.inflight.is_some()
+            || !d.queue.is_empty()
+            || d.forge_writes != d.looked_writes
+        {
+            return;
+        }
+        let (Some(review), Some(key)) = (self.review.review(), self.review.drafts_key()) else {
+            return;
+        };
+        if review.pending_error.is_some() || d.store.is_none() {
+            return;
+        }
+        let forge_name = review.kind.display_name();
+        let pending = review.pending.clone();
+        let threads = review.threads.clone();
+        let Some(pending) = pending else {
+            // Nothing pending there: every draft that was is gone.
+            let gone: Vec<String> = d
+                .store
+                .as_ref()
+                .map(|s| {
+                    s.get(&key)
+                        .iter()
+                        .filter(|x| x.forge.is_some())
+                        .map(|x| x.id.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            self.review.drafts.pending = None;
+            return self.reconciled(gone, 0, 0, forge_name);
+        };
+        self.review.drafts.pending = Some((key.clone(), pending.review.id.clone()));
+        let Some(store) = self.review.drafts.store.as_mut() else {
+            return;
+        };
+        let r = store.reconcile(&key, &pending, &threads, &|_| false);
+        self.reconciled(r.dropped, r.added, r.changed, forge_name);
+    }
+
+    fn reconciled(&mut self, dropped: Vec<String>, added: usize, changed: usize, forge_name: &str) {
+        let key = self.review.drafts_key();
+        if let (Some(store), Some(key)) = (self.review.drafts.store.as_mut(), key) {
+            for id in &dropped {
+                store.remove(&key, id);
+            }
+        }
+        if dropped.is_empty() && added == 0 && changed == 0 {
+            return;
+        }
+        let d = &mut self.review.drafts;
+        for id in &dropped {
+            d.drift.remove(id);
+            d.live.remove(id);
+            d.at.remove(id);
+            d.errors.remove(id);
+            d.local_why.remove(id);
+        }
+        self.save_drafts();
+        if !dropped.is_empty() {
+            let n = dropped.len();
+            let text = if n == 1 {
+                format!("1 draft was submitted or deleted on {forge_name}")
+            } else {
+                format!("{n} drafts were submitted or deleted on {forge_name}")
+            };
+            self.notify(Level::Info, text);
+        }
+        let len = self.review.draft_rows().len();
+        let p = &mut self.review.view.pending;
+        p.select(len, p.selected(len).unwrap_or(0));
+        if len == 0 {
+            p.focused = false;
+        }
+        self.review_blocks_changed();
     }
 
     fn add_pending(&self, id: &str) -> bool {
@@ -117,25 +218,12 @@ impl App {
                 if d.by_claude || d.forge.is_some() {
                     return None;
                 }
-                let draft = match &d.reply_to {
-                    Some(thread) => NewDraft::Reply {
-                        thread_id: thread.clone(),
-                        body: d.body.clone(),
-                        lines: (d.start, d.end),
-                        resolve: d.resolve,
-                    },
-                    None => NewDraft::Line(DraftComment {
-                        anchor: d.anchor(),
-                        body: d.body.clone(),
-                        other: super::review_write::other_lines(d, &review.hunks),
-                    }),
-                };
                 Some(Job::AddDraft {
                     number,
                     head_sha: review.mr.head.sha.clone(),
                     pending: self.pending_review_id().map(str::to_string),
                     id: id.clone(),
-                    draft,
+                    draft: new_draft(d, &review.hunks),
                 })
             }
             DraftOp::Edit(id) => {

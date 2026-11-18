@@ -32,6 +32,8 @@ const FILE: &str = "review-drafts.json";
 pub const LINE_CHANGED: &str = "line changed";
 pub const LINES_CHANGED: &str = "lines changed";
 pub const FILE_CHANGED: &str = "file changed";
+/// A draft found in the forge's pending review whose commit the clone lacks (so its lines are unknown).
+pub const COMMIT_MISSING: &str = "commit not in the clone: fetch";
 /// GitHub refuses a comment on a line outside the merge request's diff hunks.
 pub const NOT_IN_DIFF: &str = "not in the merge request's diff";
 
@@ -239,6 +241,17 @@ pub struct DraftRow<'a> {
     pub held: Option<&'a str>,
 }
 
+/// What [`DraftStore::reconcile`] changed.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Reconciled {
+    /// Drafts made from comments found in the pending review.
+    pub added: usize,
+    /// The ids of drafts that were on the forge and are gone (removed from the store).
+    pub dropped: Vec<String>,
+    /// Drafts whose body the forge's text replaced.
+    pub changed: usize,
+}
+
 /// Every merge request's drafts, by [`DraftStore::key`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DraftStore {
@@ -370,6 +383,98 @@ impl DraftStore {
                 }
             }
         }
+    }
+
+    /// Folds the forge's pending review `pending` into merge request `key`'s drafts: a comment
+    /// with no draft of its own (made on the website or another machine) becomes a draft with its
+    /// forge ids; a draft that was on the forge and no longer is (submitted or deleted there) is
+    /// dropped; a body changed there wins; a draft whose lines weren't known gets them once the
+    /// commit is read. `busy(id)`: a draft with a write on its way is left alone.
+    pub fn reconcile(
+        &mut self,
+        key: &str,
+        pending: &crate::review::Pending,
+        threads: &[crate::review::ThreadRow],
+        busy: &dyn Fn(&str) -> bool,
+    ) -> Reconciled {
+        let mut out = Reconciled::default();
+        let list = self.map.entry(key.to_string()).or_default();
+        let comment = |id: &str| pending.review.comments.iter().find(|c| c.id == id);
+        list.retain_mut(|d| {
+            let Some(f) = d.forge.as_mut() else { return true };
+            if busy(&d.id) {
+                return true;
+            }
+            let Some(c) = comment(&f.comment_id) else {
+                out.dropped.push(d.id.clone());
+                return false;
+            };
+            f.review_id = pending.review.id.clone();
+            if c.body != d.body {
+                d.body = c.body.clone();
+                out.changed += 1;
+            }
+            if d.reply_to.is_none()
+                && d.lines.is_empty()
+                && let Some(Some(lines)) = pending.lines.get(&c.id)
+            {
+                d.lines = lines.clone();
+            }
+            true
+        });
+        for c in &pending.review.comments {
+            if list
+                .iter()
+                .any(|d| d.forge.as_ref().is_some_and(|f| f.comment_id == c.id))
+            {
+                continue;
+            }
+            let place = ForgeDraft {
+                review_id: pending.review.id.clone(),
+                comment_id: c.id.clone(),
+            };
+            let mut draft = match &c.reply_to {
+                Some(to) => {
+                    let thread = threads.iter().find(|t| match to {
+                        crate::forge::ReplyTo::Thread(id) => &t.thread.id == id,
+                        crate::forge::ReplyTo::Comment(id) => t.thread.comments.iter().any(|m| &m.id == id),
+                    });
+                    let Some(t) = thread else { continue };
+                    if list.iter().any(|d| d.reply_to.as_deref() == Some(t.thread.id.as_str())) {
+                        continue;
+                    }
+                    let a = &t.thread.anchor;
+                    Draft::reply(
+                        a.path.clone(),
+                        a.side == Side::Right,
+                        (a.start_line, a.end_line),
+                        t.thread.id.clone(),
+                        c.body.clone(),
+                        c.resolve,
+                    )
+                }
+                None => {
+                    let Some(a) = &c.anchor else { continue };
+                    let lines = pending.lines.get(&c.id).cloned().flatten().unwrap_or_default();
+                    Draft::new(
+                        a.path.clone(),
+                        a.side == Side::Right,
+                        a.start_line,
+                        a.end_line,
+                        a.commit.clone(),
+                        lines,
+                        c.body.clone(),
+                    )
+                }
+            };
+            draft.forge = Some(place);
+            list.push(draft);
+            out.added += 1;
+        }
+        if list.is_empty() {
+            self.map.remove(key);
+        }
+        out
     }
 
     /// Blocking: the drafts saved in `dir` (none when absent; an unreadable or corrupt file is
@@ -541,7 +646,10 @@ pub fn check(
                     Some(head.and_then(|head| crate::review_anchor::Compared::new(&anchored, &head)))
                 })
                 .flatten();
+            // A draft found on the forge whose commit isn't here has no lines to compare.
+            let unread = d.reply_to.is_none() && d.lines.is_empty() && d.forge.is_some();
             let held = match compared {
+                _ if unread => Some(COMMIT_MISSING),
                 Some(Some(c)) => match c.place(Side::Right, d.start, d.end) {
                     crate::review_anchor::Placement::Placed { .. } => None,
                     _ => Some(d.changed()),
@@ -623,6 +731,153 @@ mod tests {
         b.set_summary("j", "j's");
         a.merge(b);
         assert_eq!((a.summary("k"), a.summary("j")), ("mine", "j's"));
+    }
+
+    fn pending_comment(id: &str, body: &str, line: u32) -> crate::forge::PendingComment {
+        crate::forge::PendingComment {
+            id: id.into(),
+            reply_to: None,
+            anchor: Some(Anchor {
+                path: "a.txt".into(),
+                side: Side::Right,
+                start_line: line,
+                end_line: line,
+                commit: "c1".into(),
+            }),
+            body: body.into(),
+            resolve: false,
+        }
+    }
+
+    fn pending(comments: Vec<crate::forge::PendingComment>, lines: &[(&str, Option<&str>)]) -> crate::review::Pending {
+        crate::review::Pending {
+            review: crate::forge::PendingReview {
+                id: "5".into(),
+                comments,
+            },
+            lines: lines
+                .iter()
+                .map(|(id, l)| (id.to_string(), l.map(|l| vec![l.to_string()])))
+                .collect(),
+        }
+    }
+
+    fn on_forge(id: &str, body: &str) -> Draft {
+        let mut d = draft("a.txt", 1, 1, &["x"], body);
+        d.forge = Some(ForgeDraft {
+            review_id: "5".into(),
+            comment_id: id.into(),
+        });
+        d
+    }
+
+    #[test]
+    fn reconcile_adds_drops_and_updates_by_forge_id() {
+        let mut store = DraftStore::default();
+        store.add("k", on_forge("1", "old text"));
+        store.add("k", on_forge("2", "submitted elsewhere"));
+        store.add("k", draft("a.txt", 4, 4, &["local"], "never pushed"));
+        let p = pending(
+            vec![
+                pending_comment("1", "new text", 1),
+                pending_comment("3", "from the web", 7),
+            ],
+            &[("1", Some("x")), ("3", Some("seven"))],
+        );
+        let r = store.reconcile("k", &p, &[], &|_| false);
+        assert_eq!((r.added, r.changed, r.dropped.len()), (1, 1, 1));
+        let bodies: Vec<_> = store.get("k").iter().map(|d| d.body.as_str()).collect();
+        assert_eq!(bodies, ["new text", "never pushed", "from the web"]);
+        let web = &store.get("k")[2];
+        assert_eq!(
+            (web.start, web.lines.clone(), web.by_claude),
+            (7, vec!["seven".to_string()], false)
+        );
+        assert_eq!(web.forge.as_ref().unwrap().comment_id, "3");
+        assert_eq!(web.commit, "c1");
+        // Again: nothing changes.
+        assert_eq!(store.reconcile("k", &p, &[], &|_| false), Reconciled::default());
+    }
+
+    #[test]
+    fn reconcile_leaves_a_busy_draft_alone_and_drops_everything_when_nothing_is_pending() {
+        let mut store = DraftStore::default();
+        let mut busy = on_forge("1", "mine, being edited");
+        busy.id = "busy".into();
+        store.add("k", busy);
+        let p = pending(vec![pending_comment("1", "forge text", 1)], &[]);
+        store.reconcile("k", &p, &[], &|id| id == "busy");
+        assert_eq!(store.get("k")[0].body, "mine, being edited");
+        let r = store.reconcile("k", &pending(Vec::new(), &[]), &[], &|id| id == "busy");
+        assert!(r.dropped.is_empty(), "a draft with a write on its way stays");
+        let r = store.reconcile("k", &pending(Vec::new(), &[]), &[], &|_| false);
+        assert_eq!(r.dropped.len(), 1);
+        assert!(store.get("k").is_empty());
+    }
+
+    #[test]
+    fn reconcile_without_the_commit_has_no_lines_until_it_can_read_them() {
+        let mut store = DraftStore::default();
+        let p = pending(vec![pending_comment("9", "web", 2)], &[("9", None)]);
+        store.reconcile("k", &p, &[], &|_| false);
+        assert!(store.get("k")[0].lines.is_empty());
+        let p = pending(vec![pending_comment("9", "web", 2)], &[("9", Some("two"))]);
+        store.reconcile("k", &p, &[], &|_| false);
+        assert_eq!(store.get("k")[0].lines, vec!["two".to_string()]);
+    }
+
+    #[test]
+    fn reconcile_makes_a_reply_draft_in_its_thread_by_thread_or_comment_id() {
+        use crate::forge::{Comment, ReplyTo, Thread};
+        let comment = |id: &str| Comment {
+            id: id.into(),
+            author: "bob".into(),
+            body: "q".into(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            url: String::new(),
+        };
+        let row = crate::review::ThreadRow {
+            thread: Thread {
+                id: "T1".into(),
+                anchor: Anchor {
+                    path: "a.txt".into(),
+                    side: Side::Right,
+                    start_line: 2,
+                    end_line: 3,
+                    commit: "c1".into(),
+                },
+                resolved: false,
+                outdated: false,
+                comments: vec![comment("501")],
+                hunk: None,
+            },
+            place: crate::review_anchor::Placement::Missing,
+            code: None,
+            behind: false,
+        };
+        let reply = |id: &str, to: ReplyTo| {
+            let mut c = pending_comment(id, "answer", 1);
+            c.anchor = None;
+            c.reply_to = Some(to);
+            c.resolve = true;
+            c
+        };
+        for to in [ReplyTo::Thread("T1".into()), ReplyTo::Comment("501".into())] {
+            let mut store = DraftStore::default();
+            let p = pending(vec![reply("r1", to)], &[]);
+            let r = store.reconcile("k", &p, std::slice::from_ref(&row), &|_| false);
+            assert_eq!(r.added, 1);
+            let d = &store.get("k")[0];
+            assert_eq!(
+                (d.reply_to.as_deref(), d.resolve, d.start, d.end),
+                (Some("T1"), true, 2, 3)
+            );
+        }
+        // A reply to a thread that isn't known is skipped.
+        let mut store = DraftStore::default();
+        let p = pending(vec![reply("r2", ReplyTo::Thread("nope".into()))], &[]);
+        assert_eq!(store.reconcile("k", &p, &[row], &|_| false).added, 0);
     }
 
     #[test]

@@ -64,6 +64,20 @@ pub struct Review {
     /// Each file's hunks from the merge base to the head, by path (a file whose commits or
     /// blobs weren't readable is missing).
     pub hunks: Arc<BTreeMap<String, FileHunks>>,
+    /// The user's pending review on the forge, when the setting asked for it and it was read.
+    pub pending: Option<Pending>,
+    /// Why the pending review couldn't be read (nothing is reconciled then).
+    pub pending_error: Option<String>,
+}
+
+/// The forge's pending review as a lookup read it: what [`review_drafts::reconcile`] folds into
+/// the drafts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pending {
+    pub review: forge::PendingReview,
+    /// The text of each line comment's lines, by comment id, read from the commit it is anchored
+    /// on; `None` when that commit (or the file there) isn't in the clone.
+    pub lines: BTreeMap<String, Option<Vec<String>>>,
 }
 
 /// A thread and where [`review_anchor`] put it.
@@ -160,6 +174,8 @@ pub struct Request {
     pub log: ToolLog,
     /// The host's blob ids already asked for (shared across lookups).
     pub blobs: review_anchor::BlobCache,
+    /// Also read the user's pending review (`review_drafts_on_forge`).
+    pub forge_drafts: bool,
 }
 
 /// The given `forges.toml`, else the user's file.
@@ -287,6 +303,18 @@ pub fn lookup(req: Request) -> Outcome {
         }
     };
     let hunks = review_drafts::file_hunks(&req.repo, merge_base.as_deref(), &mr.head.sha, &files);
+    let (pending, pending_error) = if req.forge_drafts {
+        match read_pending(&*api, &repo_ref, number, &req.repo, merge_base.as_deref(), &files) {
+            Ok(p) => (p, None),
+            Err(e) => {
+                let e = format!("pending review: {e}");
+                log.error(&e);
+                (None, Some(e))
+            }
+        }
+    } else {
+        (None, None)
+    };
     let viewed = req.viewed_from.as_deref().map(Viewed::load);
     let relation = range::head_relation(&req.repo, &mr.head.sha);
     let mcp_read_only = config.mcp_read_only(&repo_ref.host);
@@ -307,9 +335,56 @@ pub fn lookup(req: Request) -> Outcome {
             kind: resolved.kind,
             allow_http: resolved.allow_http,
             hunks: Arc::new(hunks),
+            pending,
+            pending_error,
         }),
         viewed,
     )
+}
+
+/// Blocking (network, files): the token user's pending review, each line comment's lines read at
+/// its commit.
+fn read_pending(
+    api: &dyn forge::Forge,
+    repo: &RepoRef,
+    number: u64,
+    local: &Repo,
+    merge_base: Option<&str>,
+    files: &[FileChange],
+) -> forge::Result<Option<Pending>> {
+    let user = api.current_user()?;
+    let Some(review) = api.pending_review(repo, number, &user)? else {
+        return Ok(None);
+    };
+    let opened = local.open().ok();
+    let lines = review
+        .comments
+        .iter()
+        .filter(|c| c.reply_to.is_none())
+        .filter_map(|c| {
+            let a = c.anchor.as_ref()?;
+            let text = opened.as_ref().and_then(|g| {
+                // A left-side comment's lines are numbered in the old file at the merge base.
+                let (commit, path) = if a.side == forge::Side::Left {
+                    let old = files
+                        .iter()
+                        .find(|f| f.path == a.path)
+                        .and_then(|f| f.old_path.as_deref());
+                    (merge_base?, old.unwrap_or(&a.path))
+                } else {
+                    (a.commit.as_str(), a.path.as_str())
+                };
+                let commit = g.find_commit(git2::Oid::from_str(commit).ok()?).ok()?;
+                let blob = review_anchor::blob_at(g, &commit, path)?;
+                let all = String::from_utf8_lossy(&blob);
+                let all: Vec<&str> = all.lines().collect();
+                let (s, e) = (a.start_line.max(1) as usize, a.end_line.max(a.start_line) as usize);
+                (e <= all.len()).then(|| all[s - 1..e].iter().map(|l| l.to_string()).collect())
+            });
+            Some((c.id.clone(), text))
+        })
+        .collect();
+    Ok(Some(Pending { review, lines }))
 }
 
 fn fail(log: &ToolLog, message: String) -> Outcome {
@@ -501,6 +576,11 @@ pub struct Drafts {
     pub queue: std::collections::VecDeque<DraftOp>,
     /// The draft write on its way.
     pub inflight: Option<DraftOp>,
+    /// Counts the forge writes that finished; a lookup that started before one is not reconciled
+    /// (it may not have seen it).
+    pub forge_writes: u64,
+    /// `forge_writes` when the shown lookup started.
+    pub looked_writes: u64,
 }
 
 /// A queued write of a draft to the forge's pending review. Ids and text are read from the

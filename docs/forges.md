@@ -73,6 +73,19 @@ as before. Claude's drafts are never sent when made; they reach the forge only w
 review or edit and save one. With the setting off the button reads `[Save Draft]` and nothing is sent
 until Submit Review.
 
+Each refresh also reads your pending review: a comment made on the website or another machine becomes
+a draft in PENDING (its lines read from the commit it is on; held back with "commit not in the clone:
+fetch" when that commit isn't here), a text changed there replaces the local one, and a draft that was
+on the forge and no longer is (submitted or deleted there) is dropped with one notice. Submit Review
+first adds the `local only` drafts that aren't held back (Claude's too: this is your submit) to the
+pending review, then submits it in one step with the verdict and summary (GitLab publishes, then
+approves). A draft the forge can't hold is posted the old way, a reply after the review. With nothing
+pending on the forge it posts the review as before. Drafts leave PENDING only when the forge confirms.
+A held back draft that is already in the pending review blocks Submit (it would be published too):
+edit or delete it first. "Code Review: Discard Review" (also in PENDING's menu) asks, then deletes the
+pending review on the forge and the drafts that were in it; the prompt's `L` also deletes the `local
+only` ones. "Open on Forge" with a PENDING row selected opens the merge request's files page.
+
 ## Forks
 
 The panel shows the merge request whose source branch is the checked-out branch *in the repository

@@ -74,7 +74,36 @@ impl App {
 
     /// A write finished.
     pub(super) fn review_wrote(&mut self, done: Done) {
+        if !matches!(done, Done::User(_)) {
+            self.review.drafts.forge_writes += 1;
+        }
         match done {
+            Done::SubmittedPending {
+                pushed,
+                posted,
+                failed,
+                error,
+            } => {
+                self.review.writing = false;
+                let key = self.review.drafts_key();
+                if let (Some(store), Some(key)) = (self.review.drafts.store.as_mut(), &key) {
+                    for (id, r) in &pushed {
+                        store.set_forge(key, id, Some(crate::review_drafts::ForgeDraft::of(r)));
+                    }
+                }
+                self.review.drafts.pending = match (error.is_none(), key, pushed.last()) {
+                    // Published: there is no pending review any more.
+                    (true, ..) => None,
+                    (false, Some(key), Some((_, r))) => Some((key, r.review_id.clone())),
+                    _ => self.review.drafts.pending.take(),
+                };
+                self.submitted(posted, failed, error);
+                self.draft_pump();
+            }
+            Done::Wrote(Job::DiscardPending { local, .. }) => {
+                self.review.writing = false;
+                self.discarded(local);
+            }
             Done::User(u) => {
                 self.review.user = Some(u);
                 self.review.user_loading = false;
@@ -173,6 +202,59 @@ impl App {
         }
     }
 
+    /// The pending review is gone on the forge: the drafts that were on it go, and `local` too.
+    fn discarded(&mut self, local: Vec<String>) {
+        let key = self.review.drafts_key();
+        let gone: Vec<String> = match (&self.review.drafts.store, &key) {
+            (Some(store), Some(key)) => store
+                .get(key)
+                .iter()
+                .filter(|d| d.forge.is_some() || local.contains(&d.id))
+                .map(|d| d.id.clone())
+                .collect(),
+            _ => Vec::new(),
+        };
+        self.review.drafts.pending = None;
+        for id in &gone {
+            self.drop_draft(id);
+        }
+        self.notify(
+            Level::Info,
+            format!("Pending review discarded ({} drafts removed)", gone.len()),
+        );
+        self.review_refresh();
+    }
+
+    /// "Code Review: Discard Review": asks, then deletes the pending review on the forge.
+    pub(super) fn review_discard_pending(&mut self) {
+        let Some(review) = self.review.review() else {
+            return self.notify(Level::Info, "No merge request".into());
+        };
+        let Some(id) = self.pending_review_id().map(str::to_string) else {
+            return self.notify(Level::Info, "There is no pending review on the forge".into());
+        };
+        let (Some(store), Some(key)) = (self.review.drafts.store.as_ref(), self.review.drafts_key()) else {
+            return self.notify(Level::Info, "The saved drafts are still being read".into());
+        };
+        let list = store.get(&key);
+        let on_forge = review.pending.as_ref().map_or_else(
+            || list.iter().filter(|d| d.forge.is_some()).count(),
+            |p| p.review.comments.len(),
+        );
+        let local_only = list
+            .iter()
+            .filter(|d| d.forge.is_none())
+            .map(|d| d.id.clone())
+            .collect();
+        self.prompt = Some(Prompt::ConfirmDiscardReview {
+            number: review.mr.number,
+            review_id: id,
+            what: format!("!{}", review.mr.number),
+            on_forge,
+            local_only,
+        });
+    }
+
     /// Keeps `text` (trimmed; empty removes) as this merge request's review summary.
     pub(super) fn keep_summary(&mut self, text: &str) {
         let key = self.review.drafts_key();
@@ -225,6 +307,59 @@ impl App {
             return self.notify(Level::Info, why);
         }
         let hunks = review.hunks.clone();
+        let via_pending = self.settings.review_drafts_on_forge || rows.iter().any(|r| r.draft.forge.is_some());
+        if via_pending {
+            // A draft on the forge that is held back would be published with the review.
+            let held_there = rows
+                .iter()
+                .filter(|r| r.held.is_some() && r.draft.forge.is_some())
+                .count();
+            if held_there > 0 {
+                return self.notify(
+                    Level::Error,
+                    format!("{held_there} held back draft(s) are in the pending review on the forge: edit or delete them first"),
+                );
+            }
+            let on_forge: Vec<String> = rows
+                .iter()
+                .filter(|r| r.draft.forge.is_some())
+                .map(|r| r.draft.id.clone())
+                .collect();
+            let push: Vec<_> = rows
+                .iter()
+                .filter(|r| r.held.is_none() && r.draft.forge.is_none())
+                .map(|r| (r.draft.id.clone(), super::review_forge::new_draft(r.draft, &hunks)))
+                .collect();
+            if on_forge.is_empty() && push.is_empty() && event == forge::ReviewEvent::Comment && body.is_empty() {
+                let why = if held > 0 {
+                    format!("{held} draft(s) are held back (see PENDING)")
+                } else {
+                    "No drafts to submit".into()
+                };
+                return self.notify(Level::Info, why);
+            }
+            let n = on_forge.len() + push.len();
+            let job = Job::SubmitPending {
+                number: review.mr.number,
+                head_sha: review.mr.head.sha.clone(),
+                review_id: self.pending_review_id().map(str::to_string),
+                push,
+                on_forge,
+                event,
+                body: body.clone(),
+            };
+            let held_note = if held > 0 {
+                format!(", {held} held back")
+            } else {
+                String::new()
+            };
+            if self.review_write(job) {
+                self.keep_summary(&body);
+                self.review.drafts.errors.clear();
+                self.notify(Level::Info, format!("Submitting {n} comment(s){held_note}…"));
+            }
+            return;
+        }
         let job = Job::Submit {
             number: review.mr.number,
             head_sha: review.mr.head.sha.clone(),
@@ -297,6 +432,15 @@ impl App {
     fn review_link_url(&self) -> Option<String> {
         let review = self.review.review()?;
         let thread_url = |row: &ThreadRow| row.thread.comments.first().map(|c| c.url.clone());
+        // A pending comment has no link of its own on every forge: the files page shows them all.
+        if self.review.view.pending.focused && !self.review.draft_rows().is_empty() {
+            let page = if review.kind == forge::Kind::GitLab {
+                "diffs"
+            } else {
+                "files"
+            };
+            return Some(format!("{}/{page}", review.mr.url.trim_end_matches('/')));
+        }
         if self.review.view.conv.focused
             && let Some(i) = self.review.view.conv.selected(review.conv_len())
         {
