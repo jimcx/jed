@@ -39,7 +39,34 @@ pub enum Role {
     /// `caret`: the byte of the text the caret is at.
     Composer {
         caret: usize,
+        /// The save button's label.
+        submit: SubmitLabel,
     },
+}
+
+/// What the comment box's first button says (it depends on where a saved draft goes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SubmitLabel {
+    /// Posted at once (a reply, an edit, a conversation comment, the review summary).
+    #[default]
+    Comment,
+    /// A draft joins the forge's pending review.
+    AddToReview,
+    /// A draft starts the forge's pending review (none yet).
+    StartReview,
+    /// A draft stays local until Submit Review.
+    SaveDraft,
+}
+
+impl SubmitLabel {
+    pub fn text(self) -> &'static str {
+        match self {
+            SubmitLabel::Comment => "[Comment Ctrl+Enter]",
+            SubmitLabel::AddToReview => "[Add to Review Ctrl+Enter]",
+            SubmitLabel::StartReview => "[Start Review Ctrl+Enter]",
+            SubmitLabel::SaveDraft => "[Save Draft Ctrl+Enter]",
+        }
+    }
 }
 
 /// A review thread as the tab shows it.
@@ -599,7 +626,6 @@ pub fn lines(t: &ThreadBlock, collapsed: bool, width: usize, now: i64) -> Vec<Bl
 
 /// The composer's buttons: labels and their columns from the block's left edge on the buttons row
 /// (`│ [Comment Ctrl+Enter] [Cancel Esc]`).
-pub const SUBMIT_LABEL: &str = "[Comment Ctrl+Enter]";
 pub const INSERT_LABEL: &str = "[Insert Suggestion]";
 pub const CANCEL_LABEL: &str = "[Cancel Esc]";
 
@@ -610,8 +636,8 @@ pub enum ComposerButton {
     Insert,
 }
 
-pub fn composer_button_cols() -> [(std::ops::Range<usize>, ComposerButton); 3] {
-    let submit = 2..2 + SUBMIT_LABEL.width();
+pub fn composer_button_cols(label: SubmitLabel) -> [(std::ops::Range<usize>, ComposerButton); 3] {
+    let submit = 2..2 + label.text().width();
     let cancel = submit.end + 1..submit.end + 1 + CANCEL_LABEL.width();
     let insert = cancel.end + 1..cancel.end + 1 + INSERT_LABEL.width();
     [
@@ -623,6 +649,10 @@ pub fn composer_button_cols() -> [(std::ops::Range<usize>, ComposerButton); 3] {
 
 fn composer_lines(t: &ThreadBlock, width: usize) -> Vec<BlockLine> {
     let (heading, body) = t.comments.first().map_or(("", ""), |c| (c.0.as_str(), c.1.as_str()));
+    let submit = match t.role {
+        Role::Composer { submit, .. } => submit,
+        _ => SubmitLabel::Comment,
+    };
     let mut out = vec![BlockLine {
         kind: Kind::Header,
         text: rule(&format!("┌ {heading}"), "", width),
@@ -635,7 +665,7 @@ fn composer_lines(t: &ThreadBlock, width: usize) -> Vec<BlockLine> {
     }
     out.push(BlockLine {
         kind: Kind::Buttons,
-        text: format!("│ {SUBMIT_LABEL} {CANCEL_LABEL} {INSERT_LABEL}"),
+        text: format!("│ {} {CANCEL_LABEL} {INSERT_LABEL}", submit.text()),
     });
     out.push(BlockLine {
         kind: Kind::Footer,
@@ -988,7 +1018,10 @@ mod tests {
     #[test]
     fn a_composer_has_a_header_body_buttons_and_footer_and_never_collapses() {
         let t = ThreadBlock {
-            role: Role::Composer { caret: 0 },
+            role: Role::Composer {
+                caret: 0,
+                submit: SubmitLabel::AddToReview,
+            },
             id: "composer".into(),
             right: true,
             line: 2,
@@ -1008,10 +1041,10 @@ mod tests {
         );
         assert_eq!(ls.len(), height(&t, false, 40));
         assert!(ls[0].text.starts_with("┌ Comment on lines 3–4 ─"));
-        assert!(ls[3].text.contains("[Comment Ctrl+Enter] [Cancel Esc]"));
-        let [(submit, _), (cancel, _), _] = composer_button_cols();
+        assert!(ls[3].text.contains("[Add to Review Ctrl+Enter] [Cancel Esc]"));
+        let [(submit, _), (cancel, _), _] = composer_button_cols(SubmitLabel::AddToReview);
         let at = |r: std::ops::Range<usize>| ls[3].text.chars().skip(r.start).take(r.len()).collect::<String>();
-        assert_eq!(at(submit), SUBMIT_LABEL);
+        assert_eq!(at(submit), SubmitLabel::AddToReview.text());
         assert_eq!(at(cancel), CANCEL_LABEL);
         let mut ts = Threads::default();
         ts.set(vec![t]);

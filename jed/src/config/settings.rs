@@ -31,6 +31,7 @@
 //! | `spell_check_ignore_words` | str list | `[]` | Extra words accepted everywhere (case-insensitive)   |
 //! | `spell_check_off_languages` | str list | `[]` | Language ids not spell-checked, e.g. `["log"]`       |
 //! | `scrollback_compression` | bool | false | Keep old scrollback lines zstd-compressed (less memory)     |
+//! | `review_drafts_on_forge` | bool | true | A saved review comment goes to the forge's pending review     |
 //!
 //! Precedence, per key: defaults ← `settings.toml` ← `.workspace` (`layer`). `[window]` (`title`, `status_bar`) layers the same way (`WindowConfig::layered`).
 //!
@@ -119,6 +120,8 @@ pub struct SettingsOverrides {
     pub spell_check_off_languages: Option<Vec<String>>,
     /// Keep old scrollback lines compressed (less memory, a little CPU), read when the run is created.
     pub scrollback_compression: Option<bool>,
+    /// Saved review comments go to the forge's pending review.
+    pub review_drafts_on_forge: Option<bool>,
 }
 
 fn spell_check_language<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
@@ -238,6 +241,9 @@ impl SettingsOverrides {
         }
         if let Some(on) = self.scrollback_compression {
             s.scrollback_compression = on;
+        }
+        if let Some(on) = self.review_drafts_on_forge {
+            s.review_drafts_on_forge = on;
         }
     }
 }
@@ -433,6 +439,7 @@ pub const TEMPLATE: &str = "\
 # spell_check_ignore_words = []  # extra accepted words, e.g. [\"tokio\"]; more in dictionary.txt
 # spell_check_off_languages = []  # language ids not checked, e.g. [\"log\"]
 # scrollback_compression = false  # keep old scrollback lines compressed: less memory, a little CPU
+# review_drafts_on_forge = true  # a saved review comment goes to the forge's pending review
 
 # The language server for a language id (a built-in one's, such as python, or a syntax plugin's),
 # in every workspace. A trusted .workspace [lsp.<id>] wins over this; this wins over the built-in
@@ -525,6 +532,7 @@ mod tests {
                 rulers: Some(vec![80, 100]),
                 scrollback: Some(50),
                 scrollback_compression: None,
+                review_drafts_on_forge: None,
                 word_wrap: Some(WordWrap::On),
                 tabs_at_bottom: Some(true),
                 spell_check_scope: Some(SpellScope::CommentsAndStrings),
@@ -807,6 +815,7 @@ mod tests {
             rulers: Some(Vec::new()),
             scrollback: Some(5_000),
             scrollback_compression: Some(false),
+            review_drafts_on_forge: Some(true),
             word_wrap: Some(WordWrap::Off),
             tabs_at_bottom: Some(false),
             spell_check_scope: Some(SpellScope::All),

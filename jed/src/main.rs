@@ -157,6 +157,8 @@ mod review_fixes_tests;
 #[cfg(test)]
 mod review_followups_tests;
 #[cfg(test)]
+mod review_forge_drafts_tests;
+#[cfg(test)]
 mod review_forge_fixes_tests;
 #[cfg(test)]
 mod review_links_tests;

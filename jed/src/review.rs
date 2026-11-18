@@ -492,6 +492,36 @@ pub struct Drafts {
     pub at: HashMap<String, usize>,
     /// Why the forge refused a draft at the last submit, by id (until the next submit).
     pub errors: HashMap<String, String>,
+    /// The forge's pending review the drafts go to, with the merge request's drafts key (from the
+    /// last draft the forge took).
+    pub pending: Option<(String, String)>,
+    /// Why the forge didn't take a draft (it stays local only), by id.
+    pub local_why: HashMap<String, String>,
+    /// Draft writes to the forge, in order (`app/review_forge.rs`): one runs at a time.
+    pub queue: std::collections::VecDeque<DraftOp>,
+    /// The draft write on its way.
+    pub inflight: Option<DraftOp>,
+}
+
+/// A queued write of a draft to the forge's pending review. Ids and text are read from the
+/// store when the write starts, so an edit queued behind its add uses the ids the add returned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DraftOp {
+    Add(String),
+    Edit(String),
+    /// `r`: the draft's place, when it is no longer in the store (deleted while its add ran).
+    Delete {
+        id: String,
+        r: Option<crate::review_drafts::ForgeDraft>,
+    },
+}
+
+impl DraftOp {
+    pub fn id(&self) -> &str {
+        match self {
+            DraftOp::Add(id) | DraftOp::Edit(id) | DraftOp::Delete { id, .. } => id,
+        }
+    }
 }
 
 impl Default for ReviewState {

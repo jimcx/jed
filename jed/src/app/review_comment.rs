@@ -139,7 +139,7 @@ impl Composer {
         self.buf.rope.to_string()
     }
 
-    pub fn block(&self) -> ThreadBlock {
+    pub fn block(&self, submit: review_blocks::SubmitLabel) -> ThreadBlock {
         let verb = match (&self.kind, self.editing.is_some()) {
             (ComposerKind::Reply { .. }, _) => "Reply (posted at once)",
             (ComposerKind::Edit { .. }, _) => "Edit your comment (saved at once)",
@@ -156,6 +156,7 @@ impl Composer {
         ThreadBlock {
             role: Role::Composer {
                 caret: self.view.selections.primary().head.0,
+                submit,
             },
             id: "composer".into(),
             right: self.right,
@@ -382,22 +383,7 @@ impl App {
         let Some(draft) = self.target_draft() else {
             return self.notify(Level::Info, "No draft here".into());
         };
-        let key = self.review.drafts_key();
-        if let (Some(store), Some(key)) = (self.review.drafts.store.as_mut(), key) {
-            store.remove(&key, &draft.id);
-        }
-        self.review.drafts.drift.remove(&draft.id);
-        self.review.drafts.live.remove(&draft.id);
-        self.review.drafts.at.remove(&draft.id);
-        self.save_drafts();
-        let len = self.review.draft_rows().len();
-        let p = &mut self.review.view.pending;
-        p.select(len, p.selected(len).unwrap_or(0));
-        if len == 0 {
-            p.focused = false;
-        }
-        self.review_blocks_changed();
-        self.notify(Level::Info, "Draft deleted".into());
+        self.draft_deleted(&draft.id);
     }
 
     /// A command while the box has the keys: whether it was the box's (moves, edits, select all).
@@ -493,13 +479,19 @@ impl App {
             .editing
             .as_ref()
             .is_some_and(|id| store.set_body(&key, id, body.clone()));
-        if !edited {
-            store.add(
-                &key,
-                Draft::new(c.path, c.right, c.start, c.end, c.commit, c.lines, body),
-            );
-        }
+        let id = if edited {
+            // The user saved it: a Claude draft is theirs now (and may go to the forge).
+            let id = c.editing.clone().unwrap_or_default();
+            store.set_by_user(&key, &id);
+            id
+        } else {
+            let draft = Draft::new(c.path, c.right, c.start, c.end, c.commit, c.lines, body);
+            let id = draft.id.clone();
+            store.add(&key, draft);
+            id
+        };
         self.save_drafts();
+        self.draft_saved(&id);
         self.review_blocks_changed();
         let n = self.review.draft_rows().len();
         self.notify(Level::Info, format!("Draft saved ({n} pending)"));
@@ -519,6 +511,7 @@ impl App {
     /// A click in a comment box's block `b` of group `g` at screen `(col, row)`: the caret to the
     /// text under it, or a button.
     pub(super) fn composer_click(&mut self, g: GroupId, b: &BlockHit, col: u16, row: u16) {
+        let label = self.submit_label();
         let Some(c) = &self.composer else { return };
         let active = self
             .groups
@@ -540,7 +533,7 @@ impl App {
             }
             self.composer_changed();
         } else if rel == rows + 1 {
-            for (cols, button) in review_blocks::composer_button_cols() {
+            for (cols, button) in review_blocks::composer_button_cols(label) {
                 if cols.contains(&x) {
                     match button {
                         review_blocks::ComposerButton::Submit => self.composer_save(),

@@ -59,6 +59,20 @@ stale (a push came after it) still shows as approved. GitLab's change requests c
 request's reviewers (`requested_changes`); an older GitLab without that shows approvals only. Request
 Changes with no comments is sent with the body "Changes requested", which Gitea and GitHub require.
 
+## Drafts on the forge
+
+With `review_drafts_on_forge` on (the default; `[settings]` in `settings.toml` or `.workspace`), saving a
+comment adds it to your pending review on the forge (GitHub's PENDING review, GitLab's draft notes,
+Gitea's PENDING review): nobody else sees it until you submit the review, it survives on another
+machine and shows on the merge request's page. The box's button reads `[Add to Review]`
+(`[Start Review]` before the first one). Editing or deleting a draft in jed does the same there; a draft
+the forge no longer has is dropped with a notice. PENDING tags each row `on GitHub`, `local only` or
+`claude`. If the forge can't take a draft (Gitea can't hold a reply; GitHub can't resolve a thread with
+a pending reply; any network error) it stays a local draft, `local only: why`, and Submit Review posts it
+as before. Claude's drafts are never sent when made; they reach the forge only when you submit the
+review or edit and save one. With the setting off the button reads `[Save Draft]` and nothing is sent
+until Submit Review.
+
 ## Forks
 
 The panel shows the merge request whose source branch is the checked-out branch *in the repository

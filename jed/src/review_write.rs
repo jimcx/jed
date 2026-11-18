@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use crate::forge::config::ForgeConfig;
-use crate::forge::{self, DraftReview, RepoRef};
+use crate::forge::{self, DraftRef, DraftReview, NewDraft, RepoRef};
 use crate::logs::ToolLog;
 use crate::review::Env;
 
@@ -65,6 +65,29 @@ pub enum Job {
         number: u64,
         approval: forge::Approval,
     },
+    /// Saves draft `id` in the forge's pending review (`pending`: its id, once known).
+    AddDraft {
+        number: u64,
+        head_sha: String,
+        pending: Option<String>,
+        id: String,
+        draft: NewDraft,
+    },
+    /// A draft's new text in the pending review.
+    EditDraft {
+        number: u64,
+        id: String,
+        r: DraftRef,
+        body: String,
+        range: Option<(u32, u32)>,
+        /// The draft's first and last line.
+        lines: (u32, u32),
+    },
+    DeleteDraft {
+        number: u64,
+        id: String,
+        r: DraftRef,
+    },
 }
 
 /// A reply draft as Submit Review posts it.
@@ -80,6 +103,14 @@ pub struct ReplyDraft {
 }
 
 impl Job {
+    /// A write of a draft to the forge's pending review.
+    pub fn is_draft(&self) -> bool {
+        matches!(
+            self,
+            Job::AddDraft { .. } | Job::EditDraft { .. } | Job::DeleteDraft { .. }
+        )
+    }
+
     /// Said in the status bar after it worked.
     pub fn done_text(&self) -> &'static str {
         match self {
@@ -93,6 +124,9 @@ impl Job {
             Job::Comment { .. } => "Comment posted",
             Job::EditConversation { .. } => "Comment edited",
             Job::Withdraw { .. } => "Review withdrawn",
+            Job::AddDraft { .. } => "Draft added to the review",
+            Job::EditDraft { .. } => "Draft updated on the forge",
+            Job::DeleteDraft { .. } => "Draft deleted on the forge",
         }
     }
 
@@ -107,6 +141,9 @@ impl Job {
             Job::Comment { .. } => "commenting",
             Job::EditConversation { .. } => "editing the comment",
             Job::Withdraw { .. } => "withdrawing the review",
+            Job::AddDraft { .. } => "adding a draft to the review",
+            Job::EditDraft { .. } => "editing a draft",
+            Job::DeleteDraft { .. } => "deleting a draft",
         }
     }
 }
@@ -130,10 +167,31 @@ pub enum Done {
     },
     /// The job worked.
     Wrote(Job),
+    /// A draft job worked (`id`: the draft; `r`: where an add put it).
+    Draft {
+        id: String,
+        r: Option<DraftRef>,
+    },
+    /// A draft job failed; `gone`: the forge answered 404 (the draft is not there any more).
+    DraftFailed {
+        job: Job,
+        error: String,
+        gone: bool,
+    },
     Failed {
         job: Job,
         error: String,
     },
+}
+
+fn draft_failed(log: &ToolLog, job: Job, e: forge::ForgeError) -> Done {
+    log.error(&format!("{}: {e}", job.what()));
+    let gone = matches!(e, forge::ForgeError::Status { status: 404, .. });
+    Done::DraftFailed {
+        job,
+        error: e.to_string(),
+        gone,
+    }
 }
 
 /// Blocking (network): call from spawn_blocking.
@@ -151,6 +209,49 @@ pub fn run(req: Request, job: Job) -> Done {
     };
     let repo = &req.repo;
     let result = match &job {
+        Job::AddDraft {
+            number,
+            head_sha,
+            pending,
+            id,
+            draft,
+        } => {
+            return match api.add_draft(repo, *number, head_sha, pending.as_deref(), draft) {
+                Ok(r) => {
+                    log.info(&format!("draft {id} added to the pending review"));
+                    Done::Draft {
+                        id: id.clone(),
+                        r: Some(r),
+                    }
+                }
+                Err(e) => draft_failed(log, job.clone(), e),
+            };
+        }
+        Job::EditDraft {
+            number,
+            id,
+            r,
+            body,
+            range,
+            lines,
+        } => {
+            return match api.edit_draft(repo, *number, r, body, *range, *lines) {
+                Ok(()) => Done::Draft {
+                    id: id.clone(),
+                    r: None,
+                },
+                Err(e) => draft_failed(log, job.clone(), e),
+            };
+        }
+        Job::DeleteDraft { number, id, r } => {
+            return match api.delete_draft(repo, *number, r) {
+                Ok(()) => Done::Draft {
+                    id: id.clone(),
+                    r: None,
+                },
+                Err(e) => draft_failed(log, job.clone(), e),
+            };
+        }
         Job::User => {
             return match api.current_user() {
                 Ok(u) => Done::User(u),

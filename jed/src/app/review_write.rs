@@ -36,7 +36,7 @@ impl App {
     }
 
     /// Runs `job` off-thread (false: nothing started).
-    fn review_start(&mut self, job: Job) -> bool {
+    pub(super) fn review_start(&mut self, job: Job) -> bool {
         let Some(review) = self.review.review() else {
             return false;
         };
@@ -58,7 +58,8 @@ impl App {
 
     /// Starts a write (one at a time).
     pub(super) fn review_write(&mut self, job: Job) -> bool {
-        if self.review.writing {
+        let d = &self.review.drafts;
+        if self.review.writing || d.inflight.is_some() || !d.queue.is_empty() {
             self.notify(Level::Info, "Another change is still on its way".into());
             return false;
         }
@@ -79,9 +80,16 @@ impl App {
                 self.review.user_loading = false;
                 self.review_blocks_changed();
             }
+            Done::Draft { .. } | Done::DraftFailed { .. } => self.draft_done(done),
+            Done::Failed { job, error } if job.is_draft() => self.draft_done(Done::DraftFailed {
+                job,
+                error,
+                gone: false,
+            }),
             Done::Submitted { posted, failed, error } => {
                 self.review.writing = false;
                 self.submitted(posted, failed, error);
+                self.draft_pump();
             }
             Done::Wrote(job) => {
                 self.review.writing = false;
@@ -94,6 +102,7 @@ impl App {
                 }
                 self.notify(Level::Info, job.done_text().into());
                 self.review_refresh();
+                self.draft_pump();
             }
             Done::Failed { job: Job::User, .. } => self.review.user_loading = false,
             Done::Failed { error, .. } => {
@@ -101,6 +110,7 @@ impl App {
                 let text = format!("The forge refused it: {error}");
                 self.review.error = Some(text.clone());
                 self.notify(Level::Error, text);
+                self.draft_pump();
             }
         }
     }
@@ -677,7 +687,7 @@ impl App {
 }
 
 /// The other side's numbers of `d`'s first and last line, where they are unchanged lines.
-fn other_lines(
+pub(super) fn other_lines(
     d: &crate::review_drafts::Draft,
     hunks: &std::collections::BTreeMap<String, crate::review_drafts::FileHunks>,
 ) -> (Option<u32>, Option<u32>) {

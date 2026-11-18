@@ -52,6 +52,7 @@ mod reopen;
 mod replace;
 mod review;
 mod review_comment;
+mod review_forge;
 mod review_suggest;
 mod review_write;
 mod scm;

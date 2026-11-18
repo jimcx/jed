@@ -28,6 +28,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
         return (None, None);
     }
     let look = scrollbar::look(app, ScrollTarget::Side(SidePanel::Review));
+    let forge_name = app.review.review().map(|r| r.kind.display_name());
+    let pending_on = app.pending_review_id().and(forge_name);
+    let drafts_on_forge = app.settings.review_drafts_on_forge;
     let theme = &app.theme;
     let base = theme.get("sideBar");
     // Foreground only, for text over a highlighted row (the row's background stays).
@@ -408,7 +411,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
             height: 1,
             ..area
         };
-        let label = format!(" {} PENDING ({len})", if p.collapsed { '▸' } else { '▾' });
+        let arrow = if p.collapsed { '▸' } else { '▾' };
+        let label = match pending_on {
+            Some(name) => format!(" {arrow} PENDING ({len}, on {name})"),
+            None => format!(" {arrow} PENDING ({len})"),
+        };
         out.set_stringn(area.x, divider_y + 1, &label, width, header);
         let body_end = divider_y + pending_h;
         let mut by = divider_y + 2;
@@ -484,7 +491,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
                     ),
                     None => (
                         format!(
-                            "{}{}",
+                            "{}{}{}",
+                            where_tag(
+                                row.draft,
+                                forge_name,
+                                drafts_on_forge,
+                                state.drafts.local_why.get(&row.draft.id)
+                            ),
                             row.draft.tags(),
                             row.draft.body.lines().next().unwrap_or("").trim()
                         ),
@@ -502,6 +515,21 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
         }
     }
     (Some(hit), bar)
+}
+
+/// Where a draft is kept, before its text: `on GitHub · ` once the forge has it, `local only: why · `
+/// when it was refused (`local only · ` for any other draft that isn't on it), nothing with
+/// the setting off or for Claude's, which carry their `[claude]` tag.
+fn where_tag(d: &crate::review_drafts::Draft, forge: Option<&str>, on: bool, why: Option<&String>) -> String {
+    if let (Some(_), Some(name)) = (&d.forge, forge) {
+        format!("on {name} · ")
+    } else if let Some(why) = why {
+        format!("local only: {why} · ")
+    } else if on && !d.by_claude {
+        "local only · ".into()
+    } else {
+        String::new()
+    }
 }
 
 /// `s` cut to `width` columns, ending in `…` when it was.
@@ -570,5 +598,28 @@ mod tests {
     fn truncate_ends_in_an_ellipsis() {
         assert_eq!(truncate("abcdef", 4), "abc…");
         assert_eq!(truncate("abc", 4), "abc");
+    }
+}
+
+#[cfg(test)]
+mod where_tests {
+    use super::where_tag;
+    use crate::review_drafts::{Draft, ForgeDraft};
+
+    #[test]
+    fn a_draft_says_where_it_is_kept() {
+        let mut d = Draft::new("p".into(), true, 1, 1, "c".into(), vec![], "b".into());
+        assert_eq!(where_tag(&d, Some("GitHub"), false, None), "");
+        assert_eq!(where_tag(&d, Some("GitHub"), true, None), "local only · ");
+        let why = "no".to_string();
+        assert_eq!(where_tag(&d, Some("GitHub"), true, Some(&why)), "local only: no · ");
+        d.forge = Some(ForgeDraft {
+            review_id: "1".into(),
+            comment_id: "2".into(),
+        });
+        assert_eq!(where_tag(&d, Some("GitHub"), true, None), "on GitHub · ");
+        d.forge = None;
+        d.by_claude = true;
+        assert_eq!(where_tag(&d, Some("GitHub"), true, None), "");
     }
 }

@@ -246,6 +246,11 @@ const SETTINGS_KEYS: &[KeySchema] = &[
         "Language ids that are not spell-checked",
     ),
     key(
+        "review_drafts_on_forge",
+        ValueKind::Bool,
+        "Save review comments in the forge's pending review (off: local drafts, posted by Submit Review)",
+    ),
+    key(
         "scrollback_compression",
         ValueKind::Bool,
         "Keep old scrollback lines compressed (less memory, a little CPU)",

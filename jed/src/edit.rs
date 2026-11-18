@@ -99,6 +99,9 @@ pub struct Settings {
     /// Keep a terminal's old scrollback lines zstd-compressed, read when the run is created:
     /// `[settings] scrollback_compression`.
     pub scrollback_compression: bool,
+    /// Code Review: a saved comment goes to the forge's pending review (else it stays a local
+    /// draft until Submit Review): `[settings] review_drafts_on_forge`.
+    pub review_drafts_on_forge: bool,
 }
 
 /// What the spell checker looks at (`spell_scope`): `[settings] spell_check_scope`.
@@ -209,6 +212,7 @@ impl Default for Settings {
             spell_check_ignore_words: Vec::new(),
             spell_check_off_languages: Vec::new(),
             scrollback_compression: false,
+            review_drafts_on_forge: true,
         }
     }
 }

@@ -65,6 +65,33 @@ pub struct Draft {
     /// Written by Claude through the MCP tool (PENDING tags it `claude`).
     #[serde(default)]
     pub by_claude: bool,
+    /// Where the draft lives in the forge's pending review, once the forge took it (old store
+    /// files have none: local only).
+    #[serde(default)]
+    pub forge: Option<ForgeDraft>,
+}
+
+/// A draft's place in the forge's pending review (`forge::DraftRef`, saved with the draft).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForgeDraft {
+    pub review_id: String,
+    pub comment_id: String,
+}
+
+impl ForgeDraft {
+    pub fn of(r: &crate::forge::DraftRef) -> ForgeDraft {
+        ForgeDraft {
+            review_id: r.review_id.clone(),
+            comment_id: r.comment_id.clone(),
+        }
+    }
+
+    pub fn to_ref(&self) -> crate::forge::DraftRef {
+        crate::forge::DraftRef {
+            review_id: self.review_id.clone(),
+            comment_id: self.comment_id.clone(),
+        }
+    }
 }
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -96,6 +123,7 @@ impl Draft {
             reply_to: None,
             resolve: false,
             by_claude: false,
+            forge: None,
         }
     }
 
@@ -110,7 +138,6 @@ impl Draft {
     }
 
     /// What the forge calls the draft's place (Submit Review posts it there).
-    #[allow(dead_code)] // consumed by the submit subtask
     pub fn anchor(&self) -> Anchor {
         Anchor {
             path: self.path.clone(),
@@ -297,6 +324,27 @@ impl DraftStore {
         };
         d.body = body;
         true
+    }
+
+    /// The draft `id` of merge request `key`.
+    pub fn find(&self, key: &str, id: &str) -> Option<&Draft> {
+        self.get(key).iter().find(|d| d.id == id)
+    }
+
+    /// Records where the forge keeps draft `id` (`None`: it is local only); whether it exists.
+    pub fn set_forge(&mut self, key: &str, id: &str, forge: Option<ForgeDraft>) -> bool {
+        let Some(d) = self.map.get_mut(key).and_then(|v| v.iter_mut().find(|d| d.id == id)) else {
+            return false;
+        };
+        d.forge = forge;
+        true
+    }
+
+    /// Makes draft `id` the user's (an edit of Claude's draft): it is no longer tagged `claude`.
+    pub fn set_by_user(&mut self, key: &str, id: &str) {
+        if let Some(d) = self.map.get_mut(key).and_then(|v| v.iter_mut().find(|d| d.id == id)) {
+            d.by_claude = false;
+        }
     }
 
     pub fn remove(&mut self, key: &str, id: &str) -> Option<Draft> {
@@ -605,6 +653,7 @@ mod tests {
         let store = DraftStore::load(dir.path(), &logs.tool(Tool::Review));
         let d = &store.get("k")[0];
         assert_eq!((d.reply_to.clone(), d.resolve, d.by_claude), (None, false, false));
+        assert_eq!(d.forge, None);
         let mut r = Draft::reply("p.rs".into(), true, (3, 3), "t1".into(), "ok".into(), true);
         r.by_claude = true;
         assert_eq!(r.drift_in(None), None);
@@ -615,6 +664,26 @@ mod tests {
         assert!(store.set_reply("k", r));
         assert_eq!(store.get("k").len(), 2);
         assert_eq!(store.reply_for("k", "t1").unwrap().body, "again");
+    }
+
+    #[test]
+    fn forge_ids_are_kept_with_the_draft_and_round_trip() {
+        let mut store = DraftStore::default();
+        store.add(
+            "k",
+            Draft::new("p.rs".into(), true, 1, 1, "c".into(), vec![], "b".into()),
+        );
+        let id = store.get("k")[0].id.clone();
+        let r = crate::forge::DraftRef {
+            review_id: "5".into(),
+            comment_id: "99".into(),
+        };
+        assert!(store.set_forge("k", &id, Some(ForgeDraft::of(&r))));
+        assert!(!store.set_forge("k", "nope", None));
+        let dir = tempfile::tempdir().unwrap();
+        store.save(dir.path(), DraftStore::next_seq()).unwrap();
+        let back = DraftStore::load(dir.path(), &Logs::default().tool(Tool::Review));
+        assert_eq!(back.find("k", &id).unwrap().forge.as_ref().unwrap().to_ref(), r);
     }
 
     #[test]

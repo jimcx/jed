@@ -371,7 +371,7 @@ pub fn render(
                 draw_block_line(out, body, y, line, block, block_width, theme);
                 let x = body.x + review_blocks::INDENT as u16;
                 let w = (block_width as u16).min(body.width.saturating_sub(review_blocks::INDENT as u16));
-                if let review_blocks::Role::Composer { caret } = block.role
+                if let review_blocks::Role::Composer { caret, .. } = block.role
                     && line.kind == BlockKind::Body
                 {
                     // The caret in the box: its row is body row `offset - 1`.
@@ -698,9 +698,11 @@ fn draw_block_line(
         BlockKind::Body | BlockKind::Buttons => {
             out.set_stringn(x, y, &line.text, room, text);
             out.set_stringn(x, y, "│", 1.min(room), border);
-            if line.kind == BlockKind::Buttons && matches!(block.role, Role::Composer { .. }) {
+            if line.kind == BlockKind::Buttons
+                && let Role::Composer { submit, .. } = block.role
+            {
                 let style = theme.get("review.composer.button");
-                for (cols, _) in review_blocks::composer_button_cols() {
+                for (cols, _) in review_blocks::composer_button_cols(submit) {
                     let w = cols.len().min(room.saturating_sub(cols.start));
                     out.set_style(Rect::new(x + cols.start as u16, y, w as u16, 1), style);
                 }

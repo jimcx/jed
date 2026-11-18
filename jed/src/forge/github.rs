@@ -101,18 +101,14 @@ const ISSUE_COMMENT_FIELDS: &str = "databaseId body createdAt updatedAt url auth
 
 const REPLY_MUTATION: &str = "mutation($thread:ID!,$body:String!){addPullRequestReviewThreadReply(\
     input:{pullRequestReviewThreadId:$thread,body:$body}){comment{id}}}";
-#[allow(dead_code)] // until review_forge_drafts-b uses it
 const ADD_THREAD_MUTATION: &str = "mutation($review:ID!,$path:String!,$body:String!,$line:Int!,$side:DiffSide!,\
 $startLine:Int,$startSide:DiffSide){addPullRequestReviewThread(input:{pullRequestReviewId:$review,path:$path,\
 body:$body,line:$line,side:$side,startLine:$startLine,startSide:$startSide,subjectType:LINE}){thread{id \
 comments(first:1){nodes{id}}}}}";
-#[allow(dead_code)] // until review_forge_drafts-b uses it
 const ADD_REPLY_MUTATION: &str = "mutation($review:ID!,$thread:ID!,$body:String!){addPullRequestReviewThreadReply(\
 input:{pullRequestReviewId:$review,pullRequestReviewThreadId:$thread,body:$body}){comment{id}}}";
-#[allow(dead_code)] // until review_forge_drafts-b uses it
 const UPDATE_COMMENT_MUTATION: &str = "mutation($id:ID!,$body:String!){updatePullRequestReviewComment(\
 input:{pullRequestReviewCommentId:$id,body:$body}){pullRequestReviewComment{id}}}";
-#[allow(dead_code)] // until review_forge_drafts-b uses it
 const DELETE_COMMENT_MUTATION: &str = "mutation($id:ID!){deletePullRequestReviewComment(input:{id:$id}){\
 pullRequestReviewComment{id}}}";
 const RESOLVE_MUTATION: &str = "mutation($thread:ID!){resolveReviewThread(input:{threadId:$thread}){thread{id}}}";
@@ -382,7 +378,6 @@ fn numeric_id(id: &str) -> Result<u64> {
 
 /// A pending review's id as `DraftRef::review_id`: the REST `id` and the GraphQL node id, which
 /// the two halves of the API each want.
-#[allow(dead_code)] // until review_forge_drafts-b uses it
 fn split_review_id(id: &str) -> Result<(u64, &str)> {
     id.split_once(':')
         .and_then(|(n, node)| Some((n.parse().ok()?, node)))
@@ -391,7 +386,6 @@ fn split_review_id(id: &str) -> Result<(u64, &str)> {
 }
 
 #[derive(Deserialize, Default)]
-#[allow(dead_code)] // until review_forge_drafts-b uses it
 struct RestReview {
     id: u64,
     #[serde(default)]
@@ -402,8 +396,8 @@ struct RestReview {
 }
 
 #[derive(Deserialize, Default)]
-#[allow(dead_code)] // until review_forge_drafts-b uses it
 struct RestComment {
+    #[allow(dead_code)] // until review_forge_drafts-c uses it
     id: u64,
     #[serde(default)]
     node_id: String,
@@ -423,7 +417,6 @@ struct RestComment {
 
 /// A REST comment of a pending review. Its anchor's commit is the comment's `commit_id`: the one
 /// GitHub anchored the thread on.
-#[allow(dead_code)] // until review_forge_drafts-b uses it
 fn pending_comment(c: &RestComment) -> PendingComment {
     let end = c.line.or(c.original_line).filter(|&l| l >= 1);
     let path = clean_line(&c.path);
@@ -456,7 +449,6 @@ impl GitHub {
     /// one (422), as `DraftRef::review_id`.
     ///
     /// Blocking: call from spawn_blocking.
-    #[allow(dead_code)] // until review_forge_drafts-b uses it
     fn start_pending(&self, repo: &RepoRef, number: u64, head_sha: &str) -> Result<String> {
         let url = format!("{}/{number}/reviews", Self::pulls(repo));
         match self.client.post(&url, &json!({ "commit_id": head_sha }).to_string()) {

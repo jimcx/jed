@@ -62,6 +62,7 @@ Summary only: [docs/dev/app.md](../../../docs/dev/app.md) has each submodule in 
 - `recent.rs` — recent workspaces (`app.recent`): record at start, Ctrl+R's picker
 - `review.rs` — the Code Review panel (`app.review`): lookups (`review_refresh`, at launch / HEAD moves / shown / every 60 s while shown), `AppEvent::Review`, the file list's keys and mouse, the viewed marks
 - `review_comment.rs` — review comments: the comment box under a review diff's selection (`app.composer`, `Context::Composer`), drafts saved in the state dir, the PENDING list's keys, drafts held back when their lines change
+- `review_forge.rs` — drafts in the forge's pending review (`review_drafts_on_forge`): the queue of add / edit / delete jobs, never for Claude's drafts
 - `scrollbar.rs` — scroll bars: `with_scrollable(target, f)`, clicks, drags, hover
 - `tab_drag.rs` — dragging a tab (`Drag::Tab`): reordering, moving between groups, edge drops that split, the shaded zone (`tab_drop_shade`), terminal-area groups and docking (`can_dock`)
 - `mouse.rs` — clicks, drags and the wheel via the last frame's `HitMap`; a `Moved` event redraws only when its handler sets `needs_redraw`; a terminal program that asked for the mouse gets it (`terminal_mouse`), else a drag selects (`terminal_select`); word-wise drags after a double-click (`round_word_drag`, `round_run_drag`); `ClickTracker` (from `jtui::clicks`), `Drag`

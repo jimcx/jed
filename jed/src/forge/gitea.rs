@@ -258,7 +258,6 @@ fn comment(c: &ReviewComment) -> Comment {
 }
 
 /// A review or comment id: digits only (it goes into a URL).
-#[allow(dead_code)] // until review_forge_drafts-b uses it
 fn numeric_id(id: &str) -> Result<u64> {
     id.parse()
         .map_err(|_| ForgeError::Parse(format!("not a Gitea id: {}", clean_line(id))))
@@ -266,7 +265,6 @@ fn numeric_id(id: &str) -> Result<u64> {
 
 /// A pending review's comment: text without the range marker, its line (the marker's range
 /// when it ends on that line) and side.
-#[allow(dead_code)] // until review_forge_drafts-b uses it
 fn pending_comment(c: &ReviewComment) -> PendingComment {
     let (body, range) = split_marker(&clean_text(&c.body));
     let line = if c.position > 0 {

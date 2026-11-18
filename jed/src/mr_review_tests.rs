@@ -98,6 +98,9 @@ fn open_app(root: &Path, state: Option<PathBuf>, config: ForgeConfig, token: boo
     app.review.config = Some(Arc::new(config));
     app.review.env = Arc::new(move |n| (token && n == "FAKE_TOKEN").then(|| "secret".to_string()));
     app.review.auto = true;
+    // Most review tests are about local drafts posted by Submit Review; `review_forge_drafts`
+    // tests turn the setting on.
+    app.settings.review_drafts_on_forge = false;
     app.test_start();
     app
 }
@@ -2003,7 +2006,7 @@ mod drafts {
         assert!(l.iter().any(|x| x.contains("┌ Comment on lines 2–3 ─")), "{l:#?}");
         assert!(l.iter().any(|x| x.contains("│ Why?")), "{l:#?}");
         assert!(l.iter().any(|x| x.contains("│ Really")), "{l:#?}");
-        assert!(l.iter().any(|x| x.contains("[Comment Ctrl+Enter] [Cancel Esc]")));
+        assert!(l.iter().any(|x| x.contains("[Save Draft Ctrl+Enter] [Cancel Esc]")));
         // The box sits right under the last selected line, and grows with its text.
         let (m3, head) = (row_of(&l, "m3"), row_of(&l, "Comment on lines"));
         assert_eq!(head, m3 + 1, "{l:#?}");
@@ -2359,8 +2362,8 @@ mod drafts {
         assert_eq!(app.test_composer_text().as_deref(), Some("hello Xworld"));
         // Submit by its button.
         let l = lines(&mut app, 120, 30);
-        let y = row_of(&l, "[Comment Ctrl+Enter]");
-        let x = col_of(&l[y], "[Comment") + 2;
+        let y = row_of(&l, "[Save Draft Ctrl+Enter]");
+        let x = col_of(&l[y], "[Save Draft") + 2;
         app.mouse(MouseEventKind::Down(MouseButton::Left), x, y as u16);
         assert_eq!(app.test_composer_text(), None);
         assert_eq!(app.review.draft_rows()[0].draft.body, "hello Xworld");
@@ -2438,6 +2441,17 @@ pub(crate) mod write {
     /// The fake forge: `!7` whose head is `mr_head`, sam's thread (11, line 3) and bob's resolved
     /// one (12, deleted line 2), the token's user `sam`, and `review` as the answer to a submit.
     pub(crate) fn server(main: &str, head: &str, mr_head: &str, review: Reply) -> FakeServer {
+        server_extra(main, head, mr_head, review, Vec::new())
+    }
+
+    /// [`server`] plus more routes.
+    pub(crate) fn server_extra(
+        main: &str,
+        head: &str,
+        mr_head: &str,
+        review: Reply,
+        extra: Vec<(String, Reply)>,
+    ) -> FakeServer {
         let pr = pr_json(7, "Add review panel", main).replace(
             r#""ref":"feature","sha":"h0""#,
             &format!(r#""ref":"feature","sha":"{mr_head}""#),
@@ -2447,40 +2461,45 @@ pub(crate) mod write {
             threads::rc(11, "sam", "Can this overflow", "mod.txt", 3, head, "+m3", false),
             threads::rc(12, "bob", "Why was this removed", "mod.txt", 2, main, "-m2", true)
         );
-        FakeServer::start(vec![
-            (
-                format!("{PULLS}?state=open&page=1&limit=50"),
-                Reply::json(&format!("[{pr}]")),
-            ),
-            (format!("{PULLS}/7"), Reply::json(&pr)),
-            (
-                format!("{PULLS}/7/reviews?page=1&limit=50"),
-                Reply::json(r#"[{"id":1,"user":{"login":"bob"},"body":"","state":"COMMENT","comments_count":9}]"#),
-            ),
-            (format!("{PULLS}/7/reviews/1/comments"), Reply::json(&comments)),
-            (
-                "/api/v1/repos/alice/project/issues/7/comments?page=1&limit=50".into(),
-                Reply::json("[]"),
-            ),
-            ("/api/v1/user".into(), Reply::json(r#"{"login":"sam"}"#)),
-            // Like Gitea: a change request needs a body, and line comments don't count as one.
-            (
-                format!(r#"POST {REVIEWS} ~"body":""&"event":"REQUEST_CHANGES""#),
-                Reply::status(422).with_body(r#"{"message":"review event REQUEST_CHANGES requires a body"}"#),
-            ),
-            (format!("POST {REVIEWS}"), review),
-            (format!("POST {PULLS}/7/comments/11/replies"), Reply::json("{}")),
-            (format!("POST {PULLS}/comments/11/resolve"), Reply::status(204)),
-            (format!("POST {PULLS}/comments/12/unresolve"), Reply::status(204)),
-            (
-                "PATCH /api/v1/repos/alice/project/issues/comments/11".into(),
-                Reply::json("{}"),
-            ),
-            (
-                "DELETE /api/v1/repos/alice/project/issues/comments/11".into(),
-                Reply::status(204),
-            ),
-        ])
+        FakeServer::start(
+            vec![
+                (
+                    format!("{PULLS}?state=open&page=1&limit=50"),
+                    Reply::json(&format!("[{pr}]")),
+                ),
+                (format!("{PULLS}/7"), Reply::json(&pr)),
+                (
+                    format!("{PULLS}/7/reviews?page=1&limit=50"),
+                    Reply::json(r#"[{"id":1,"user":{"login":"bob"},"body":"","state":"COMMENT","comments_count":9}]"#),
+                ),
+                (format!("{PULLS}/7/reviews/1/comments"), Reply::json(&comments)),
+                (
+                    "/api/v1/repos/alice/project/issues/7/comments?page=1&limit=50".into(),
+                    Reply::json("[]"),
+                ),
+                ("/api/v1/user".into(), Reply::json(r#"{"login":"sam"}"#)),
+                // Like Gitea: a change request needs a body, and line comments don't count as one.
+                (
+                    format!(r#"POST {REVIEWS} ~"body":""&"event":"REQUEST_CHANGES""#),
+                    Reply::status(422).with_body(r#"{"message":"review event REQUEST_CHANGES requires a body"}"#),
+                ),
+                (format!("POST {REVIEWS}"), review),
+                (format!("POST {PULLS}/7/comments/11/replies"), Reply::json("{}")),
+                (format!("POST {PULLS}/comments/11/resolve"), Reply::status(204)),
+                (format!("POST {PULLS}/comments/12/unresolve"), Reply::status(204)),
+                (
+                    "PATCH /api/v1/repos/alice/project/issues/comments/11".into(),
+                    Reply::json("{}"),
+                ),
+                (
+                    "DELETE /api/v1/repos/alice/project/issues/comments/11".into(),
+                    Reply::status(204),
+                ),
+            ]
+            .into_iter()
+            .chain(extra)
+            .collect(),
+        )
     }
 
     /// The repository, its HEAD and main's commit.
@@ -2505,7 +2524,7 @@ pub(crate) mod write {
     }
 
     /// The caret on `first..=last` of a side.
-    fn select(app: &mut App, right: bool, first: usize, last: usize) {
+    pub(crate) fn select(app: &mut App, right: bool, first: usize, last: usize) {
         app.group_mut().active_diff_mut().unwrap().go_to_side_line(right, last);
         draw_wide(app, 120);
         app.group_mut().active_diff_mut().unwrap().caret = Caret {

@@ -520,7 +520,8 @@ impl App {
             (Some(store), Some(key)) => store.get(&key),
             _ => &[],
         };
-        let composer = self.composer.as_ref().map(|c| (c.tab, c.block()));
+        let label = self.submit_label();
+        let composer = self.composer.as_ref().map(|c| (c.tab, c.block(label)));
         let editing = self.composer.as_ref().and_then(|c| c.editing.clone());
         let mut live = Vec::new();
         let review = self.review.review();

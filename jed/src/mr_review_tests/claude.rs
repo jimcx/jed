@@ -426,3 +426,45 @@ async fn claude_ide_no_query_or_tool_writes_to_the_forge() {
     assert_eq!(w.app.review.draft_rows().len(), 1);
     assert!(w.app.review.draft_rows()[0].draft.by_claude);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_ide_a_claude_draft_stays_off_the_forge_while_the_user_saves_other_drafts() {
+    // review_drafts_on_forge is on here. Claude's draft (the real tool path) sends nothing when
+    // made, after a refresh, or while the user's own draft is saved and pushed.
+    let mut w = boot(false, true).await;
+    assert!(w.app.settings.review_drafts_on_forge);
+    let idle = |w: &World| {
+        let d = &w.app.review.drafts;
+        assert!(d.inflight.is_none() && d.queue.is_empty(), "a draft job was attempted");
+    };
+    w.data(reply("11", "Claude secret reply", false)).await;
+    idle(&w);
+    assert!(w.writes().is_empty(), "{:?}", w.writes());
+    w.data(Query::ReviewRefresh).await;
+    idle(&w);
+    assert!(w.writes().is_empty(), "{:?}", w.writes());
+    open_file(&mut w.app, "mod.txt").await;
+    write::comment(&mut w.app, 1, 2, "The user own");
+    assert!(
+        w.app
+            .settle(|a| a.review.drafts.inflight.is_none() && a.review.drafts.queue.is_empty())
+            .await
+    );
+    w.data(Query::ReviewRefresh).await;
+    let bodies: Vec<String> = w
+        .server
+        .requests()
+        .into_iter()
+        .filter(|r| r.method != "GET")
+        .map(|r| r.body)
+        .collect();
+    assert!(!bodies.is_empty(), "the user draft was sent");
+    assert!(bodies.iter().all(|b| !b.contains("Claude secret reply")), "{bodies:?}");
+    let rows = w.app.review.draft_rows();
+    let claude = rows.iter().find(|r| r.draft.by_claude).unwrap();
+    assert!(claude.draft.forge.is_none());
+    // No job was ever tried for it: no refusal or failure is recorded for it either.
+    let d = &w.app.review.drafts;
+    assert!(!d.local_why.contains_key(&claude.draft.id), "{:?}", d.local_why);
+    assert!(!d.errors.contains_key(&claude.draft.id), "{:?}", d.errors);
+}
