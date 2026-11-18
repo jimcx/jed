@@ -6,6 +6,9 @@
 //! - There is no reply-to field: comments on the same path, line and side form one thread, and
 //!   its first comment's id is the thread id (the id the resolve call takes).
 //! - The merge base is `merge_base` of the pull request.
+//! - Pending reviews (review_forge_drafts-a): `POST …/reviews` with `event: PENDING` adds to the
+//!   user's existing pending review; there is no way to put a reply into one (the adapter
+//!   refuses). Needs Gitea 1.14 or newer (unverified).
 
 use std::collections::HashMap;
 
@@ -13,9 +16,9 @@ use serde::Deserialize;
 
 use super::http::{Client, clean_line, clean_text, encode_path, encode_segment};
 use super::{
-    Anchor, Approval, ApprovalState, BranchRef, Comment, DraftReview, Forge, ForgeError, MergeRequest, MrComments,
-    MrState, RepoRef, Result, ReviewEvent, Side, SubmitOutcome, Thread, Verdict, WITHDRAW_MESSAGE,
-    latest_approvals_with_ids, review_body,
+    Anchor, Approval, ApprovalState, BranchRef, Comment, DraftRef, DraftReview, Forge, ForgeError, MergeRequest,
+    MrComments, MrState, NewDraft, PendingComment, PendingReview, RepoRef, Result, ReviewEvent, Side, SubmitOutcome,
+    Thread, Verdict, WITHDRAW_MESSAGE, latest_approvals_with_ids, review_body,
 };
 
 pub struct Gitea {
@@ -254,6 +257,40 @@ fn comment(c: &ReviewComment) -> Comment {
     )
 }
 
+/// A review or comment id: digits only (it goes into a URL).
+#[allow(dead_code)] // until review_forge_drafts-b uses it
+fn numeric_id(id: &str) -> Result<u64> {
+    id.parse()
+        .map_err(|_| ForgeError::Parse(format!("not a Gitea id: {}", clean_line(id))))
+}
+
+/// A pending review's comment: text without the range marker, its line (the marker's range
+/// when it ends on that line) and side.
+#[allow(dead_code)] // until review_forge_drafts-b uses it
+fn pending_comment(c: &ReviewComment) -> PendingComment {
+    let (body, range) = split_marker(&clean_text(&c.body));
+    let line = if c.position > 0 {
+        c.position
+    } else {
+        c.original_position
+    };
+    let path = clean_line(&c.path);
+    let anchor = (line > 0 && !path.is_empty()).then(|| Anchor {
+        path,
+        side: side_of(&c.diff_hunk),
+        start_line: range.filter(|r| r.1 == line).map_or(line, |r| r.0),
+        end_line: line,
+        commit: clean_line(&c.commit_id),
+    });
+    PendingComment {
+        id: c.id.to_string(),
+        reply_to: None,
+        anchor,
+        body,
+        resolve: false,
+    }
+}
+
 /// Groups review comments into threads: same path, line, side and outdatedness, in id order.
 fn threads(mut comments: Vec<ReviewComment>) -> Vec<Thread> {
     comments.sort_by_key(|c| c.id);
@@ -425,6 +462,147 @@ impl Forge for Gitea {
         });
         let url = format!("{}/{number}/reviews", Self::pulls(repo));
         SubmitOutcome::atomic(review.comments.len(), self.client.post(&url, &body.to_string()))
+    }
+
+    /// The user's `PENDING` review (`GET …/reviews`, state `PENDING`, the user's login) and its
+    /// comments (`GET …/reviews/{id}/comments`); a multi-line comment's range comes back from its
+    /// marker. Gitea shows a pending review only to its author.
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn pending_review(&self, repo: &RepoRef, number: u64, user: &str) -> Result<Option<PendingReview>> {
+        let pulls = Self::pulls(repo);
+        let reviews: Vec<Review> = self.client.get_all(&format!("{pulls}/{number}/reviews"))?;
+        let Some(review) = reviews
+            .iter()
+            .find(|r| r.state == "PENDING" && login(&r.user).eq_ignore_ascii_case(user))
+        else {
+            return Ok(None);
+        };
+        let mut comments: Vec<ReviewComment> = self
+            .client
+            .get_json(&format!("{pulls}/{number}/reviews/{}/comments", review.id))?;
+        comments.sort_by_key(|c| c.id);
+        Ok(Some(PendingReview {
+            id: review.id.to_string(),
+            comments: comments.iter().map(pending_comment).collect(),
+        }))
+    }
+
+    /// `POST …/reviews` with `event: PENDING` and the one comment: Gitea adds it to the user's
+    /// existing pending review (`CreateCodeComment` reuses it) or starts one, and never refuses a
+    /// second. That call also rewrites the review's body and commit, so an existing review's body
+    /// (`pending`) is read first and sent back. The new comment's id is the newest in the
+    /// review's list. A reply has no place in a pending review on Gitea (the reply endpoint posts
+    /// at once), so it is refused.
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn add_draft(
+        &self,
+        repo: &RepoRef,
+        number: u64,
+        head_sha: &str,
+        pending: Option<&str>,
+        draft: &NewDraft,
+    ) -> Result<DraftRef> {
+        let NewDraft::Line(c) = draft else {
+            return Err(ForgeError::Config(
+                "Gitea can't add a reply to a pending review; it is posted when the review is submitted".into(),
+            ));
+        };
+        let pulls = Self::pulls(repo);
+        let kept_body = match pending {
+            Some(id) => {
+                let id = numeric_id(id)?;
+                self.client
+                    .get_json::<Review>(&format!("{pulls}/{number}/reviews/{id}"))?
+                    .body
+            }
+            None => String::new(),
+        };
+        let a = &c.anchor;
+        let (new, old) = match a.side {
+            Side::Right => (a.end_line, 0),
+            Side::Left => (0, a.end_line),
+        };
+        let body = serde_json::json!({
+            "body": kept_body,
+            "event": "PENDING",
+            "commit_id": head_sha,
+            "comments": [{
+                "path": a.path,
+                "body": with_marker(&c.body, Some((a.start_line, a.end_line))),
+                "new_position": new,
+                "old_position": old,
+            }],
+        });
+        let response = self
+            .client
+            .post(&format!("{pulls}/{number}/reviews"), &body.to_string())?;
+        let review: Review = super::http::parse_json(&response.body)?;
+        let comments: Vec<ReviewComment> = self
+            .client
+            .get_json(&format!("{pulls}/{number}/reviews/{}/comments", review.id))?;
+        let newest = comments
+            .iter()
+            .map(|c| c.id)
+            .max()
+            .ok_or_else(|| ForgeError::Parse("the pending review has no comment".into()))?;
+        Ok(DraftRef {
+            review_id: review.id.to_string(),
+            comment_id: newest.to_string(),
+        })
+    }
+
+    /// A review comment is an issue comment: `PATCH …/issues/comments/{id}`, range marker kept.
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn edit_draft(
+        &self,
+        repo: &RepoRef,
+        _number: u64,
+        draft: &DraftRef,
+        body: &str,
+        range: Option<(u32, u32)>,
+        lines: (u32, u32),
+    ) -> Result<()> {
+        numeric_id(&draft.comment_id)?;
+        self.edit_comment(repo, &draft.comment_id, body, range, lines)
+    }
+
+    /// Blocking: call from spawn_blocking.
+    fn delete_draft(&self, repo: &RepoRef, _number: u64, draft: &DraftRef) -> Result<()> {
+        numeric_id(&draft.comment_id)?;
+        self.delete_comment(repo, &draft.comment_id)
+    }
+
+    /// `POST …/reviews/{id}` with `event` and `body` (only a `PENDING` review can be submitted).
+    /// A change request needs a body.
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn submit_pending(
+        &self,
+        repo: &RepoRef,
+        number: u64,
+        review_id: &str,
+        event: ReviewEvent,
+        body: &str,
+    ) -> Result<()> {
+        let id = numeric_id(review_id)?;
+        let body = serde_json::json!({ "body": review_body(event, body, false), "event": event_name(event) });
+        self.client
+            .post(
+                &format!("{}/{number}/reviews/{id}", Self::pulls(repo)),
+                &body.to_string(),
+            )
+            .map(|_| ())
+    }
+
+    /// Blocking: call from spawn_blocking.
+    fn discard_pending(&self, repo: &RepoRef, number: u64, review_id: &str) -> Result<()> {
+        let id = numeric_id(review_id)?;
+        self.client
+            .delete(&format!("{}/{number}/reviews/{id}", Self::pulls(repo)))
+            .map(|_| ())
     }
 
     /// Blocking: call from spawn_blocking.
@@ -671,6 +849,142 @@ mod tests {
             body: body.into(),
             other: (None, None),
         }
+    }
+
+    const PENDING_REVIEWS: &str = r#"[
+        {"id":4,"user":{"login":"ann"},"state":"PENDING","body":"hers"},
+        {"id":5,"user":{"login":"Me"},"state":"PENDING","body":"keep this"},
+        {"id":6,"user":{"login":"me"},"state":"APPROVED","body":""}]"#;
+
+    #[test]
+    fn the_pending_review_is_the_users_own_and_its_comments_read_back_clean() {
+        let comments = r#"[
+            {"id":12,"path":"b.rs","body":"two\n\n<!-- jed:range=7-9 -->","position":9,"commit_id":"h0","diff_hunk":"@@\n+x"},
+            {"id":11,"path":"a.rs","body":"one \u001b[2J","position":0,"original_position":3,"commit_id":"h0","diff_hunk":"@@\n-old"}]"#;
+        let (server, gitea, repo) = setup(vec![
+            ("GET /api/v1/repos/o/r/pulls/7/reviews", Reply::json(PENDING_REVIEWS)),
+            (
+                "GET /api/v1/repos/o/r/pulls/7/reviews/5/comments",
+                Reply::json(comments),
+            ),
+        ]);
+        let p = gitea.pending_review(&repo, 7, "me").unwrap().unwrap();
+        assert_eq!(p.id, "5");
+        let ids: Vec<&str> = p.comments.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["11", "12"], "in id order");
+        assert_eq!(p.comments[0].body, "one [2J", "control characters are removed");
+        let a = p.comments[0].anchor.as_ref().unwrap();
+        assert_eq!((a.side, a.start_line, a.end_line), (Side::Left, 3, 3));
+        let b = p.comments[1].anchor.as_ref().unwrap();
+        assert_eq!((b.start_line, b.end_line, b.side), (7, 9, Side::Right));
+        assert_eq!(p.comments[1].body, "two", "the range marker is stripped");
+        assert!(p.comments.iter().all(|c| c.reply_to.is_none()));
+        assert_eq!(server.requests().len(), 2);
+        assert!(gitea.pending_review(&repo, 7, "nobody").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_draft_is_posted_as_a_pending_review_reusing_the_existing_one() {
+        let (server, gitea, repo) = setup(vec![
+            (
+                "GET /api/v1/repos/o/r/pulls/7/reviews/5",
+                Reply::json(r#"{"id":5,"body":"keep this"}"#),
+            ),
+            (
+                "POST /api/v1/repos/o/r/pulls/7/reviews",
+                Reply::json(r#"{"id":5,"state":"PENDING"}"#),
+            ),
+            (
+                "GET /api/v1/repos/o/r/pulls/7/reviews/5/comments",
+                Reply::json(r#"[{"id":11},{"id":14},{"id":13}]"#),
+            ),
+        ]);
+        let d = super::super::NewDraft::Line(draft("a.rs", Side::Left, 4, 6, "fix"));
+        let r = gitea.add_draft(&repo, 7, "h0", Some("5"), &d).unwrap();
+        assert_eq!(
+            (r.review_id.as_str(), r.comment_id.as_str()),
+            ("5", "14"),
+            "the newest comment"
+        );
+        let seen = server.requests();
+        assert_eq!((seen[0].method.as_str(), seen[1].method.as_str()), ("GET", "POST"));
+        let sent: serde_json::Value = serde_json::from_str(&seen[1].body).unwrap();
+        assert_eq!(sent["event"], "PENDING");
+        assert_eq!(sent["body"], "keep this", "the review's body is sent back unchanged");
+        assert_eq!(sent["commit_id"], "h0");
+        assert_eq!(
+            sent["comments"][0],
+            serde_json::json!({"path":"a.rs","body":"fix\n\n<!-- jed:range=4-6 -->","new_position":0,"old_position":6})
+        );
+    }
+
+    #[test]
+    fn a_first_draft_starts_the_review_with_an_empty_body_and_a_reply_is_refused() {
+        let (server, gitea, repo) = setup(vec![
+            ("POST /api/v1/repos/o/r/pulls/7/reviews", Reply::json(r#"{"id":9}"#)),
+            (
+                "GET /api/v1/repos/o/r/pulls/7/reviews/9/comments",
+                Reply::json(r#"[{"id":21}]"#),
+            ),
+        ]);
+        let d = super::super::NewDraft::Line(draft("a.rs", Side::Right, 2, 2, "one"));
+        let r = gitea.add_draft(&repo, 7, "h0", None, &d).unwrap();
+        assert_eq!((r.review_id.as_str(), r.comment_id.as_str()), ("9", "21"));
+        let sent: serde_json::Value = serde_json::from_str(&server.requests()[0].body).unwrap();
+        assert_eq!(sent["body"], "");
+        assert_eq!(sent["comments"][0]["new_position"], 2);
+        assert_eq!(sent["comments"][0]["body"], "one", "no marker on one line");
+        let reply = super::super::NewDraft::Reply {
+            thread_id: "11".into(),
+            body: "ok".into(),
+            lines: (2, 2),
+            resolve: false,
+        };
+        let err = gitea
+            .add_draft(&repo, 7, "h0", Some("9"), &reply)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Gitea can't add a reply to a pending review"), "{err}");
+        assert_eq!(server.requests().len(), 2, "a refused reply sends nothing");
+    }
+
+    #[test]
+    fn drafts_are_edited_deleted_submitted_and_discarded_by_id() {
+        let (server, gitea, repo) = setup(vec![
+            ("PATCH /api/v1/repos/o/r/issues/comments/14", Reply::json("{}")),
+            ("DELETE /api/v1/repos/o/r/issues/comments/14", Reply::status(204)),
+            ("POST /api/v1/repos/o/r/pulls/7/reviews/5", Reply::json("{}")),
+            ("DELETE /api/v1/repos/o/r/pulls/7/reviews/5", Reply::status(204)),
+        ]);
+        let r = super::super::DraftRef {
+            review_id: "5".into(),
+            comment_id: "14".into(),
+        };
+        gitea.edit_draft(&repo, 7, &r, "new", Some((4, 6)), (4, 6)).unwrap();
+        gitea.delete_draft(&repo, 7, &r).unwrap();
+        gitea
+            .submit_pending(&repo, 7, "5", ReviewEvent::RequestChanges, "")
+            .unwrap();
+        gitea
+            .submit_pending(&repo, 7, "5", ReviewEvent::Approve, "lgtm")
+            .unwrap();
+        gitea.discard_pending(&repo, 7, "5").unwrap();
+        let seen = server.requests();
+        assert_eq!(seen[0].body, r#"{"body":"new\n\n<!-- jed:range=4-6 -->"}"#);
+        assert_eq!(seen[1].method, "DELETE");
+        assert_eq!(
+            seen[2].body,
+            r#"{"body":"Changes requested","event":"REQUEST_CHANGES"}"#
+        );
+        assert_eq!(seen[3].body, r#"{"body":"lgtm","event":"APPROVED"}"#);
+        assert_eq!(seen[4].method, "DELETE");
+        let bad = super::super::DraftRef {
+            comment_id: "../x".into(),
+            ..r
+        };
+        assert!(gitea.delete_draft(&repo, 7, &bad).is_err());
+        assert!(gitea.discard_pending(&repo, 7, "5/..").is_err());
+        assert_eq!(server.requests().len(), 5, "bad ids send nothing");
     }
 
     #[test]

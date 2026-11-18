@@ -14,14 +14,19 @@
 //! - A review is draft notes (one request each, so each can fail alone) published together by
 //!   `bulk_publish`; Approve is a separate `approve` request, Request Changes is the publish
 //!   call's `reviewer_state`.
+//! - The pending review (review_forge_drafts-a) is the user's draft notes: `pending_review` reads
+//!   them, `add_draft` / `edit_draft` / `delete_draft` write one note each (a reply is a draft
+//!   note with `in_reply_to_discussion_id` and `resolve_discussion`), `submit_pending` is the
+//!   publish and `discard_pending` deletes them one by one.
 
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::http::{Client, clean_line, clean_text, encode_segment};
 use super::{
-    Anchor, Approval, ApprovalState, BranchRef, Comment, DraftReview, Forge, ForgeError, MergeRequest, MrComments,
-    MrState, RepoRef, Result, ReviewEvent, Side, SubmitOutcome, Thread, Verdict, latest_approvals,
+    Anchor, Approval, ApprovalState, BranchRef, Comment, DraftRef, DraftReview, Forge, ForgeError, MergeRequest,
+    MrComments, MrState, NewDraft, PendingComment, PendingReview, ReplyTo, RepoRef, Result, ReviewEvent, Side,
+    SubmitOutcome, Thread, Verdict, latest_approvals,
 };
 
 /// Why a change request can't be withdrawn (the app says it before asking, the adapter again).
@@ -182,6 +187,39 @@ struct Discussion {
     individual_note: bool,
     #[serde(default)]
     notes: Vec<Note>,
+}
+
+/// A draft note of the user's.
+#[derive(Deserialize)]
+struct DraftNote {
+    id: u64,
+    note: Option<String>,
+    discussion_id: Option<String>,
+    #[serde(default)]
+    resolve_discussion: bool,
+    position: Option<Position>,
+}
+
+/// A draft note id: digits only (it goes into a URL).
+fn draft_id(id: &str) -> Result<u64> {
+    id.parse()
+        .map_err(|_| ForgeError::Parse(format!("not a GitLab draft note id: {}", clean_line(id))))
+}
+
+/// `gitlab_body` undone: a fence line ending in `suggestion:-{span}+0` is plain again.
+fn unspell(body: &str, span: u32) -> String {
+    let info = format!("suggestion:-{span}+0");
+    body.split('\n')
+        .map(
+            |l| match l.trim_start().starts_with("```") || l.trim_start().starts_with("~~~") {
+                true => l
+                    .strip_suffix(&info)
+                    .map_or_else(|| l.to_string(), |p| format!("{p}suggestion")),
+                false => l.to_string(),
+            },
+        )
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn text(s: &Option<String>) -> String {
@@ -694,6 +732,183 @@ impl Forge for GitLab {
             out.error = Some(format!("the comments were posted but approving failed: {e}"));
         }
         out
+    }
+
+    /// The user's draft notes (`GET …/draft_notes`: GitLab lists only the token's user's), `None`
+    /// when there are none. GitLab has no review object: the id is the merge request's number.
+    /// A line draft's body comes back with the `suggestion:-N+0` spelling it was posted with
+    /// taken out again, so it equals the text the user wrote.
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn pending_review(&self, repo: &RepoRef, number: u64, _user: &str) -> Result<Option<PendingReview>> {
+        let notes: Vec<DraftNote> = self
+            .client
+            .get_all(&format!("{}/draft_notes", Self::mr_path(repo, number)))?;
+        if notes.is_empty() {
+            return Ok(None);
+        }
+        let mut comments = Vec::new();
+        for n in &notes {
+            let anchor = n.position.as_ref().and_then(anchor_of);
+            let reply_to = match n.discussion_id.as_deref().filter(|d| !d.is_empty()) {
+                Some(d) => {
+                    let id = format!("{number}:{d}");
+                    split_ids(&id)?;
+                    Some(ReplyTo::Thread(id))
+                }
+                None => None,
+            };
+            let mut body = clean_text(n.note.as_deref().unwrap_or_default());
+            if let Some(a) = anchor.as_ref().filter(|a| a.start_line < a.end_line) {
+                body = unspell(&body, a.end_line - a.start_line);
+            }
+            comments.push(PendingComment {
+                id: n.id.to_string(),
+                reply_to,
+                anchor,
+                body,
+                resolve: n.resolve_discussion,
+            });
+        }
+        Ok(Some(PendingReview {
+            id: number.to_string(),
+            comments,
+        }))
+    }
+
+    /// `POST …/draft_notes` (`pending` is not needed: a draft note belongs to the user and the
+    /// merge request). A line draft carries the same `position` and fence spelling as
+    /// `submit_review`'s, with renamed files' both paths; a reply carries
+    /// `in_reply_to_discussion_id` and `resolve_discussion`.
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn add_draft(
+        &self,
+        repo: &RepoRef,
+        number: u64,
+        head_sha: &str,
+        _pending: Option<&str>,
+        draft: &NewDraft,
+    ) -> Result<DraftRef> {
+        let mr_path = Self::mr_path(repo, number);
+        let body = match draft {
+            NewDraft::Line(c) => {
+                let mr: Mr = self.client.get_json(&mr_path)?;
+                let refs = mr.diff_refs.unwrap_or_default();
+                let at = if head_sha.is_empty() {
+                    mr.sha.clone().or_else(|| refs.head_sha.clone()).unwrap_or_default()
+                } else {
+                    head_sha.to_string()
+                };
+                // Only needed for renamed files; a failure just means both paths are the anchor's.
+                let renames = self.renames(repo, number).unwrap_or_default();
+                json!({
+                    "note": gitlab_body(&c.body, &c.anchor),
+                    "position": position(&c.anchor, c.other, &refs, &at, &renames),
+                })
+            }
+            NewDraft::Reply {
+                thread_id,
+                body,
+                lines,
+                resolve,
+            } => {
+                let (_, disc, _) = split_ids(thread_id)?;
+                if disc.is_empty() {
+                    return Err(ForgeError::Parse("not a GitLab thread id".into()));
+                }
+                json!({
+                    "note": gitlab_lines(body, *lines),
+                    "in_reply_to_discussion_id": disc,
+                    "resolve_discussion": resolve,
+                })
+            }
+        };
+        let r = self.client.post(&format!("{mr_path}/draft_notes"), &body.to_string())?;
+        let id = serde_json::from_str::<Value>(&r.body)
+            .ok()
+            .and_then(|v| v.get("id").and_then(Value::as_u64))
+            .ok_or_else(|| ForgeError::Parse("no id in the draft note".into()))?;
+        Ok(DraftRef {
+            review_id: number.to_string(),
+            comment_id: id.to_string(),
+        })
+    }
+
+    /// `PUT …/draft_notes/{id}` with the new `note`.
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn edit_draft(
+        &self,
+        repo: &RepoRef,
+        number: u64,
+        draft: &DraftRef,
+        body: &str,
+        _range: Option<(u32, u32)>,
+        lines: (u32, u32),
+    ) -> Result<()> {
+        let id = draft_id(&draft.comment_id)?;
+        self.client
+            .put(
+                &format!("{}/draft_notes/{id}", Self::mr_path(repo, number)),
+                &json!({ "note": gitlab_lines(body, lines) }).to_string(),
+            )
+            .map(|_| ())
+    }
+
+    /// Blocking: call from spawn_blocking.
+    fn delete_draft(&self, repo: &RepoRef, number: u64, draft: &DraftRef) -> Result<()> {
+        let id = draft_id(&draft.comment_id)?;
+        self.client
+            .delete(&format!("{}/draft_notes/{id}", Self::mr_path(repo, number)))
+            .map(|_| ())
+    }
+
+    /// `POST …/draft_notes/bulk_publish` (`note`, and `reviewer_state` for a change request), then
+    /// for Approve `POST …/approve` as its own request: when that fails the notes are already
+    /// published, and the error says so.
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn submit_pending(
+        &self,
+        repo: &RepoRef,
+        number: u64,
+        _review_id: &str,
+        event: ReviewEvent,
+        body: &str,
+    ) -> Result<()> {
+        let mr_path = Self::mr_path(repo, number);
+        let mut publish = json!({});
+        if !body.trim().is_empty() {
+            publish["note"] = json!(body);
+        }
+        if event == ReviewEvent::RequestChanges {
+            publish["reviewer_state"] = json!("requested_changes");
+        }
+        self.client
+            .post(&format!("{mr_path}/draft_notes/bulk_publish"), &publish.to_string())?;
+        if event == ReviewEvent::Approve {
+            self.client
+                .post(&format!("{mr_path}/approve"), "{}")
+                .map_err(|e| ForgeError::Config(format!("the comments were published but approving failed: {e}")))?;
+        }
+        Ok(())
+    }
+
+    /// Deletes every draft note of the merge request, one request each (there is no bulk delete);
+    /// the first failure is returned after the others were tried.
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn discard_pending(&self, repo: &RepoRef, number: u64, _review_id: &str) -> Result<()> {
+        let mr_path = Self::mr_path(repo, number);
+        let notes: Vec<DraftNote> = self.client.get_all(&format!("{mr_path}/draft_notes"))?;
+        let mut first = None;
+        for n in notes {
+            if let Err(e) = self.client.delete(&format!("{mr_path}/draft_notes/{}", n.id)) {
+                first.get_or_insert(e);
+            }
+        }
+        first.map_or(Ok(()), Err)
     }
 
     /// Blocking: call from spawn_blocking.
@@ -1595,6 +1810,170 @@ mod tests {
         let e = gl.merge_request(&repo, 7).unwrap_err().to_string();
         assert!(!e.contains("tok") || e.contains("<token>"));
         assert!(!e.replace("<token>", "").contains("tok"), "{e}");
+    }
+
+    fn line_draft(start: u32, end: u32, side: Side, body: &str) -> crate::forge::NewDraft {
+        crate::forge::NewDraft::Line(crate::forge::DraftComment {
+            anchor: anchor(start, end, side),
+            body: body.into(),
+            other: (None, None),
+        })
+    }
+
+    #[test]
+    fn a_line_draft_is_a_draft_note_with_position_fence_spelling_and_renamed_paths() {
+        let (server, gl, repo) = setup(vec![
+            (&route("/merge_requests/7"), Reply::json(MR)),
+            (
+                &route("/merge_requests/7/diffs?per_page=100&page=1"),
+                Reply::json(r#"[{"old_path":"old.rs","new_path":"a.rs","renamed_file":true,"diff":""}]"#),
+            ),
+            (
+                &format!("POST {}", route("/merge_requests/7/draft_notes")),
+                Reply::json(r#"{"id":31}"#),
+            ),
+        ]);
+        let d = line_draft(5, 9, Side::Right, "```suggestion\nx\n```");
+        let r = gl.add_draft(&repo, 7, "h0", None, &d).unwrap();
+        assert_eq!((r.review_id.as_str(), r.comment_id.as_str()), ("7", "31"));
+        let post = server.requests().into_iter().find(|r| r.method == "POST").unwrap();
+        let v: Value = serde_json::from_str(&post.body).unwrap();
+        assert_eq!(v["note"], "```suggestion:-4+0\nx\n```");
+        let p = &v["position"];
+        assert_eq!(
+            (p["old_path"].as_str(), p["new_path"].as_str()),
+            (Some("old.rs"), Some("a.rs"))
+        );
+        assert_eq!((p["new_line"].as_u64(), p["head_sha"].as_str()), (Some(9), Some("h0")));
+        assert_eq!(p["line_range"]["start"]["new_line"], 5);
+        // A deleted line is on the old side.
+        let left = line_draft(3, 3, Side::Left, "gone");
+        gl.add_draft(&repo, 7, "h0", None, &left).unwrap();
+        let post = server
+            .requests()
+            .into_iter()
+            .filter(|r| r.method == "POST")
+            .nth(1)
+            .unwrap();
+        let v: Value = serde_json::from_str(&post.body).unwrap();
+        assert_eq!(v["position"]["old_line"], 3);
+        assert!(v["position"]["new_line"].is_null() && v["position"]["line_range"].is_null());
+    }
+
+    #[test]
+    fn a_reply_draft_names_the_discussion_and_may_resolve_it() {
+        let (server, gl, repo) = setup(vec![(
+            &format!("POST {}", route("/merge_requests/7/draft_notes")),
+            Reply::json(r#"{"id":32}"#),
+        )]);
+        let reply = crate::forge::NewDraft::Reply {
+            thread_id: "7:abc123".into(),
+            body: "done".into(),
+            lines: (4, 4),
+            resolve: true,
+        };
+        let r = gl.add_draft(&repo, 7, "h0", None, &reply).unwrap();
+        assert_eq!(r.comment_id, "32");
+        let v: Value = serde_json::from_str(&server.requests()[0].body).unwrap();
+        assert_eq!(
+            v,
+            json!({"note": "done", "in_reply_to_discussion_id": "abc123", "resolve_discussion": true})
+        );
+        let bad = crate::forge::NewDraft::Reply {
+            thread_id: "7:../x".into(),
+            body: "x".into(),
+            lines: (1, 1),
+            resolve: false,
+        };
+        assert!(matches!(
+            gl.add_draft(&repo, 7, "h0", None, &bad),
+            Err(ForgeError::Parse(_))
+        ));
+        assert_eq!(server.requests().len(), 1);
+    }
+
+    #[test]
+    fn pending_notes_read_back_with_replies_unspelled_fences_and_clean_text() {
+        let notes = r#"[
+            {"id":31,"note":"```suggestion:-4+0\nx\n```","discussion_id":null,"resolve_discussion":false,
+             "position":{"head_sha":"h0","old_path":"a.rs","new_path":"a.rs","position_type":"text","new_line":9,
+                         "line_range":{"start":{"type":"new","new_line":5,"old_line":null},"end":{"type":"new","new_line":9,"old_line":null}}}},
+            {"id":32,"note":"done \u001b[2J","discussion_id":"abc123","resolve_discussion":true,"position":null}]"#;
+        let (_s, gl, repo) = setup(vec![(&route(NO_DRAFTS), Reply::json(notes))]);
+        let p = gl.pending_review(&repo, 7, "me").unwrap().unwrap();
+        assert_eq!(p.id, "7");
+        let a = p.comments[0].anchor.as_ref().unwrap();
+        assert_eq!((a.start_line, a.end_line, a.commit.as_str()), (5, 9, "h0"));
+        assert_eq!(
+            p.comments[0].body, "```suggestion\nx\n```",
+            "back to what the user wrote"
+        );
+        assert!(p.comments[0].reply_to.is_none());
+        assert_eq!(p.comments[1].body, "done [2J");
+        assert_eq!(
+            p.comments[1].reply_to,
+            Some(crate::forge::ReplyTo::Thread("7:abc123".into()))
+        );
+        assert!(p.comments[1].resolve && p.comments[1].anchor.is_none());
+        let (_s, gl, repo) = setup(vec![(&route(NO_DRAFTS), Reply::json("[]"))]);
+        assert!(gl.pending_review(&repo, 7, "me").unwrap().is_none());
+    }
+
+    #[test]
+    fn drafts_are_edited_deleted_published_and_discarded() {
+        let post = |s: &str| format!("POST {}", route(s));
+        let (server, gl, repo) = setup(vec![
+            (
+                &format!("PUT {}", route("/merge_requests/7/draft_notes/31")),
+                Reply::json("{}"),
+            ),
+            (
+                &format!("DELETE {}", route("/merge_requests/7/draft_notes/31")),
+                Reply::status(204),
+            ),
+            (&post("/merge_requests/7/draft_notes/bulk_publish"), Reply::status(204)),
+            (
+                &post("/merge_requests/7/approve"),
+                Reply::status(403).with_body(r#"{"message":"no"}"#),
+            ),
+            (&route(NO_DRAFTS), Reply::json(r#"[{"id":31},{"id":32}]"#)),
+            (
+                &format!("DELETE {}", route("/merge_requests/7/draft_notes/32")),
+                Reply::status(500),
+            ),
+        ]);
+        let r = crate::forge::DraftRef {
+            review_id: "7".into(),
+            comment_id: "31".into(),
+        };
+        gl.edit_draft(&repo, 7, &r, "```suggestion\ny\n```", None, (2, 4))
+            .unwrap();
+        gl.delete_draft(&repo, 7, &r).unwrap();
+        gl.submit_pending(&repo, 7, "7", ReviewEvent::RequestChanges, "")
+            .unwrap();
+        gl.submit_pending(&repo, 7, "7", ReviewEvent::Comment, "summary")
+            .unwrap();
+        let err = gl
+            .submit_pending(&repo, 7, "7", ReviewEvent::Approve, "")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("published but approving failed"), "{err}");
+        assert!(
+            gl.discard_pending(&repo, 7, "7").is_err(),
+            "a failed delete is reported"
+        );
+        let seen = server.requests();
+        assert_eq!(seen[0].body, r#"{"note":"```suggestion:-2+0\ny\n```"}"#);
+        assert_eq!(seen[2].body, r#"{"reviewer_state":"requested_changes"}"#);
+        assert_eq!(seen[3].body, r#"{"note":"summary"}"#);
+        assert_eq!(seen[4].body, "{}");
+        let deletes = seen.iter().filter(|r| r.method == "DELETE").count();
+        assert_eq!(deletes, 3, "both notes were tried");
+        let bad = crate::forge::DraftRef {
+            comment_id: "1/../2".into(),
+            ..r
+        };
+        assert!(gl.delete_draft(&repo, 7, &bad).is_err());
     }
 
     #[test]

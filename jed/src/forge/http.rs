@@ -351,7 +351,7 @@ fn next_link(header: &str) -> Option<String> {
     })
 }
 
-fn parse_json<T: DeserializeOwned>(body: &str) -> Result<T> {
+pub fn parse_json<T: DeserializeOwned>(body: &str) -> Result<T> {
     serde_json::from_str(body).map_err(|e| ForgeError::Parse(e.to_string()))
 }
 

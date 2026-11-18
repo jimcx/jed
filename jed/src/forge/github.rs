@@ -10,6 +10,10 @@
 //!   id is its `databaseId` (the REST edit and delete calls take that).
 //! - A review is one atomic REST request: `POST …/reviews` with `comments[]` at `line`/`side`
 //!   (and `start_line`/`start_side` for a range), never the old diff `position`.
+//! - A pending review (review_forge_drafts-a) is a REST review created with no `event`; its
+//!   comments are added, edited and deleted through GraphQL by node id, and the review's id is
+//!   kept as `databaseId:nodeId` (REST wants one, GraphQL the other). A thread added to it is
+//!   anchored on the review's commit.
 //! - The merge base comes from the compare endpoint (`merge_base_commit`).
 
 use serde::Deserialize;
@@ -17,9 +21,9 @@ use serde_json::{Value, json};
 
 use super::http::{Client, clean_line, clean_text, encode_path, encode_segment};
 use super::{
-    Anchor, Approval, ApprovalState, BranchRef, Comment, DraftReview, Forge, ForgeError, MergeRequest, MrComments,
-    MrState, RepoRef, Result, ReviewEvent, Side, SubmitOutcome, Thread, Verdict, WITHDRAW_MESSAGE,
-    latest_approvals_with_ids, review_body,
+    Anchor, Approval, ApprovalState, BranchRef, Comment, DraftRef, DraftReview, Forge, ForgeError, MergeRequest,
+    MrComments, MrState, NewDraft, PendingComment, PendingReview, ReplyTo, RepoRef, Result, ReviewEvent, Side,
+    SubmitOutcome, Thread, Verdict, WITHDRAW_MESSAGE, latest_approvals_with_ids, review_body,
 };
 
 /// Stop a GraphQL connection after this many pages of 100 (a malicious server can't loop us).
@@ -97,6 +101,20 @@ const ISSUE_COMMENT_FIELDS: &str = "databaseId body createdAt updatedAt url auth
 
 const REPLY_MUTATION: &str = "mutation($thread:ID!,$body:String!){addPullRequestReviewThreadReply(\
     input:{pullRequestReviewThreadId:$thread,body:$body}){comment{id}}}";
+#[allow(dead_code)] // until review_forge_drafts-b uses it
+const ADD_THREAD_MUTATION: &str = "mutation($review:ID!,$path:String!,$body:String!,$line:Int!,$side:DiffSide!,\
+$startLine:Int,$startSide:DiffSide){addPullRequestReviewThread(input:{pullRequestReviewId:$review,path:$path,\
+body:$body,line:$line,side:$side,startLine:$startLine,startSide:$startSide,subjectType:LINE}){thread{id \
+comments(first:1){nodes{id}}}}}";
+#[allow(dead_code)] // until review_forge_drafts-b uses it
+const ADD_REPLY_MUTATION: &str = "mutation($review:ID!,$thread:ID!,$body:String!){addPullRequestReviewThreadReply(\
+input:{pullRequestReviewId:$review,pullRequestReviewThreadId:$thread,body:$body}){comment{id}}}";
+#[allow(dead_code)] // until review_forge_drafts-b uses it
+const UPDATE_COMMENT_MUTATION: &str = "mutation($id:ID!,$body:String!){updatePullRequestReviewComment(\
+input:{pullRequestReviewCommentId:$id,body:$body}){pullRequestReviewComment{id}}}";
+#[allow(dead_code)] // until review_forge_drafts-b uses it
+const DELETE_COMMENT_MUTATION: &str = "mutation($id:ID!){deletePullRequestReviewComment(input:{id:$id}){\
+pullRequestReviewComment{id}}}";
 const RESOLVE_MUTATION: &str = "mutation($thread:ID!){resolveReviewThread(input:{threadId:$thread}){thread{id}}}";
 const UNRESOLVE_MUTATION: &str = "mutation($thread:ID!){unresolveReviewThread(input:{threadId:$thread}){thread{id}}}";
 
@@ -362,6 +380,101 @@ fn numeric_id(id: &str) -> Result<u64> {
         .map_err(|_| ForgeError::Parse(format!("not a GitHub comment id: {id}")))
 }
 
+/// A pending review's id as `DraftRef::review_id`: the REST `id` and the GraphQL node id, which
+/// the two halves of the API each want.
+#[allow(dead_code)] // until review_forge_drafts-b uses it
+fn split_review_id(id: &str) -> Result<(u64, &str)> {
+    id.split_once(':')
+        .and_then(|(n, node)| Some((n.parse().ok()?, node)))
+        .filter(|(_, node)| !node.is_empty())
+        .ok_or_else(|| ForgeError::Parse(format!("not a GitHub review id: {}", clean_line(id))))
+}
+
+#[derive(Deserialize, Default)]
+#[allow(dead_code)] // until review_forge_drafts-b uses it
+struct RestReview {
+    id: u64,
+    #[serde(default)]
+    node_id: String,
+    #[serde(default)]
+    state: String,
+    user: Option<User>,
+}
+
+#[derive(Deserialize, Default)]
+#[allow(dead_code)] // until review_forge_drafts-b uses it
+struct RestComment {
+    id: u64,
+    #[serde(default)]
+    node_id: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    body: String,
+    line: Option<u32>,
+    original_line: Option<u32>,
+    start_line: Option<u32>,
+    original_start_line: Option<u32>,
+    side: Option<String>,
+    #[serde(default)]
+    commit_id: String,
+    in_reply_to_id: Option<u64>,
+}
+
+/// A REST comment of a pending review. Its anchor's commit is the comment's `commit_id`: the one
+/// GitHub anchored the thread on.
+#[allow(dead_code)] // until review_forge_drafts-b uses it
+fn pending_comment(c: &RestComment) -> PendingComment {
+    let end = c.line.or(c.original_line).filter(|&l| l >= 1);
+    let path = clean_line(&c.path);
+    let anchor = end.filter(|_| !path.is_empty()).map(|end_line| Anchor {
+        path,
+        side: if c.side.as_deref() == Some("LEFT") {
+            Side::Left
+        } else {
+            Side::Right
+        },
+        start_line: c
+            .start_line
+            .or(c.original_start_line)
+            .filter(|&s| s >= 1)
+            .map_or(end_line, |s| s.min(end_line)),
+        end_line,
+        commit: clean_line(&c.commit_id),
+    });
+    PendingComment {
+        id: clean_line(&c.node_id),
+        reply_to: c.in_reply_to_id.map(|id| ReplyTo::Comment(id.to_string())),
+        anchor,
+        body: clean_text(&c.body),
+        resolve: false,
+    }
+}
+
+impl GitHub {
+    /// A new pending review at `head_sha`, or the user's existing one when GitHub says there is
+    /// one (422), as `DraftRef::review_id`.
+    ///
+    /// Blocking: call from spawn_blocking.
+    #[allow(dead_code)] // until review_forge_drafts-b uses it
+    fn start_pending(&self, repo: &RepoRef, number: u64, head_sha: &str) -> Result<String> {
+        let url = format!("{}/{number}/reviews", Self::pulls(repo));
+        match self.client.post(&url, &json!({ "commit_id": head_sha }).to_string()) {
+            Ok(r) => {
+                let review: RestReview = super::http::parse_json(&r.body)?;
+                Ok(format!("{}:{}", review.id, clean_line(&review.node_id)))
+            }
+            Err(ForgeError::Status { status: 422, message }) => {
+                let user = self.current_user()?;
+                self.pending_review(repo, number, &user)?
+                    .map(|p| p.id)
+                    .ok_or(ForgeError::Status { status: 422, message })
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
+
 impl Forge for GitHub {
     /// GitHub filters by head (`owner:branch`) with the repository's own owner, so only branches of
     /// that owner's repositories match, never a fork's; the result is filtered again by branch name
@@ -519,6 +632,141 @@ impl Forge for GitHub {
         });
         let url = format!("{}/{number}/reviews", Self::pulls(repo));
         SubmitOutcome::atomic(review.comments.len(), self.client.post(&url, &body.to_string()))
+    }
+
+    /// The user's `PENDING` review (`GET …/reviews`: state `PENDING`, the user's login; GitHub
+    /// lists a pending review only to its author) and its comments (`GET …/reviews/{id}/comments`,
+    /// whose `in_reply_to_id` marks a reply).
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn pending_review(&self, repo: &RepoRef, number: u64, user: &str) -> Result<Option<PendingReview>> {
+        let pulls = Self::pulls(repo);
+        let reviews: Vec<RestReview> = self.client.get_all(&format!("{pulls}/{number}/reviews"))?;
+        let Some(review) = reviews.iter().find(|r| {
+            r.state == "PENDING" && text(&r.user.as_ref().and_then(|u| u.login.clone())).eq_ignore_ascii_case(user)
+        }) else {
+            return Ok(None);
+        };
+        let comments: Vec<RestComment> = self
+            .client
+            .get_all(&format!("{pulls}/{number}/reviews/{}/comments", review.id))?;
+        Ok(Some(PendingReview {
+            id: format!("{}:{}", review.id, clean_line(&review.node_id)),
+            comments: comments.iter().map(pending_comment).collect(),
+        }))
+    }
+
+    /// Starts the pending review when `pending` is `None` (`POST …/reviews` with no `event`, which
+    /// leaves it PENDING; GitHub allows one per user and pull request, so a 422 means one exists
+    /// already, started on the website: it is found and used). The comment is then added by
+    /// GraphQL: `addPullRequestReviewThread` (path, line, side, startLine, startSide) or
+    /// `addPullRequestReviewThreadReply`. GitHub resolves a thread at once, never as part of a
+    /// pending review, so a reply that resolves is refused.
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn add_draft(
+        &self,
+        repo: &RepoRef,
+        number: u64,
+        head_sha: &str,
+        pending: Option<&str>,
+        draft: &NewDraft,
+    ) -> Result<DraftRef> {
+        if let NewDraft::Reply { resolve: true, .. } = draft {
+            return Err(ForgeError::Config(
+                "GitHub resolves a thread at once, not with a pending review; resolve it after submitting".into(),
+            ));
+        }
+        let review_id = match pending {
+            Some(id) => id.to_string(),
+            None => self.start_pending(repo, number, head_sha)?,
+        };
+        let (_, node) = split_review_id(&review_id)?;
+        let result = match draft {
+            NewDraft::Line(c) => {
+                let a = &c.anchor;
+                let ranged = a.start_line < a.end_line;
+                let side = side_name(a.side);
+                self.client.graphql(
+                    ADD_THREAD_MUTATION,
+                    json!({
+                        "review": node, "path": a.path, "body": c.body, "line": a.end_line, "side": side,
+                        "startLine": ranged.then_some(a.start_line), "startSide": ranged.then_some(side),
+                    }),
+                )?
+            }
+            NewDraft::Reply { thread_id, body, .. } => self.client.graphql(
+                ADD_REPLY_MUTATION,
+                json!({ "review": node, "thread": thread_id, "body": body }),
+            )?,
+        };
+        let comment = result
+            .pointer("/addPullRequestReviewThread/thread/comments/nodes/0/id")
+            .or_else(|| result.pointer("/addPullRequestReviewThreadReply/comment/id"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| ForgeError::Parse("GitHub did not return the new comment".into()))?;
+        Ok(DraftRef {
+            review_id,
+            comment_id: comment.to_string(),
+        })
+    }
+
+    /// `updatePullRequestReviewComment` by node id.
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn edit_draft(
+        &self,
+        _repo: &RepoRef,
+        _number: u64,
+        draft: &DraftRef,
+        body: &str,
+        _range: Option<(u32, u32)>,
+        _lines: (u32, u32),
+    ) -> Result<()> {
+        self.client
+            .graphql(UPDATE_COMMENT_MUTATION, json!({ "id": draft.comment_id, "body": body }))
+            .map(|_| ())
+    }
+
+    /// `deletePullRequestReviewComment` by node id.
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn delete_draft(&self, _repo: &RepoRef, _number: u64, draft: &DraftRef) -> Result<()> {
+        self.client
+            .graphql(DELETE_COMMENT_MUTATION, json!({ "id": draft.comment_id }))
+            .map(|_| ())
+    }
+
+    /// `POST …/reviews/{id}/events` with `event` and `body` (GitHub needs a body for COMMENT and
+    /// REQUEST_CHANGES: `review_body`).
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn submit_pending(
+        &self,
+        repo: &RepoRef,
+        number: u64,
+        review_id: &str,
+        event: ReviewEvent,
+        body: &str,
+    ) -> Result<()> {
+        let (id, _) = split_review_id(review_id)?;
+        let body = json!({ "event": event_name(event), "body": review_body(event, body, true) });
+        self.client
+            .post(
+                &format!("{}/{number}/reviews/{id}/events", Self::pulls(repo)),
+                &body.to_string(),
+            )
+            .map(|_| ())
+    }
+
+    /// `DELETE …/reviews/{id}` (a pending review only).
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn discard_pending(&self, repo: &RepoRef, number: u64, review_id: &str) -> Result<()> {
+        let (id, _) = split_review_id(review_id)?;
+        self.client
+            .delete(&format!("{}/{number}/reviews/{id}", Self::pulls(repo)))
+            .map(|_| ())
     }
 
     /// By thread node id (GraphQL): the REST reply call needs a comment id, which a thread id is not.
@@ -1114,6 +1362,186 @@ mod tests {
         gh.edit_comment(&repo, "101", "```suggestion\nx\n```", Some((2, 4)), (2, 4))
             .unwrap();
         assert_eq!(server.requests()[0].body, r#"{"body":"```suggestion\nx\n```"}"#);
+    }
+
+    const REVIEWS: &str = r#"[{"id":3,"node_id":"PRR_3","state":"APPROVED","user":{"login":"me"}},
+        {"id":8,"node_id":"PRR_8","state":"PENDING","user":{"login":"Me"}}]"#;
+
+    #[test]
+    fn the_pending_review_and_its_comments_are_read_back_clean() {
+        let comments = r#"[
+            {"id":101,"node_id":"PRRC_a","path":"a.rs","body":"one \u001b[2J","line":9,"start_line":5,"side":"RIGHT","commit_id":"h0"},
+            {"id":102,"node_id":"PRRC_b","path":"a.rs","body":"re","line":null,"original_line":3,"side":"LEFT","commit_id":"h0","in_reply_to_id":55}]"#;
+        let (server, gh, repo) = setup(vec![
+            ("GET /api/v3/repos/o/r/pulls/7/reviews", Reply::json(REVIEWS)),
+            (
+                "GET /api/v3/repos/o/r/pulls/7/reviews/8/comments",
+                Reply::json(comments),
+            ),
+        ]);
+        let p = gh.pending_review(&repo, 7, "me").unwrap().unwrap();
+        assert_eq!(p.id, "8:PRR_8");
+        let (a, b) = (&p.comments[0], &p.comments[1]);
+        assert_eq!((a.id.as_str(), a.body.as_str()), ("PRRC_a", "one [2J"));
+        let anchor = a.anchor.as_ref().unwrap();
+        assert_eq!((anchor.start_line, anchor.end_line, anchor.side), (5, 9, Side::Right));
+        assert_eq!(anchor.commit, "h0");
+        assert_eq!(b.reply_to, Some(crate::forge::ReplyTo::Comment("55".into())));
+        assert_eq!(b.anchor.as_ref().map(|x| (x.end_line, x.side)), Some((3, Side::Left)));
+        assert_eq!(server.requests().len(), 2);
+        assert!(gh.pending_review(&repo, 7, "other").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_first_draft_starts_a_review_without_an_event_then_adds_a_thread() {
+        let (server, gh, repo) = setup(vec![
+            (
+                "POST /api/v3/repos/o/r/pulls/7/reviews",
+                Reply::json(r#"{"id":8,"node_id":"PRR_8","state":"PENDING"}"#),
+            ),
+            (
+                "POST /api/graphql ~addPullRequestReviewThread(",
+                Reply::json(
+                    r#"{"data":{"addPullRequestReviewThread":{"thread":{"id":"T","comments":{"nodes":[{"id":"PRRC_a"}]}}}}}"#,
+                ),
+            ),
+        ]);
+        let d = crate::forge::NewDraft::Line(draft(Side::Left, 5, 9, "fix"));
+        let r = gh.add_draft(&repo, 7, "h0", None, &d).unwrap();
+        assert_eq!((r.review_id.as_str(), r.comment_id.as_str()), ("8:PRR_8", "PRRC_a"));
+        let seen = server.requests();
+        assert_eq!(
+            seen[0].body, r#"{"commit_id":"h0"}"#,
+            "no event: the review stays pending"
+        );
+        let v: Value = serde_json::from_str(&seen[1].body).unwrap();
+        assert_eq!(
+            v["variables"],
+            json!({"review":"PRR_8","path":"src/a.rs","body":"fix","line":9,"side":"LEFT","startLine":5,"startSide":"LEFT"})
+        );
+        // One line: no start.
+        let one = crate::forge::NewDraft::Line(draft(Side::Right, 4, 4, "x"));
+        gh.add_draft(&repo, 7, "h0", Some("8:PRR_8"), &one).unwrap();
+        let seen = server.requests();
+        assert_eq!(seen.len(), 3, "an existing review is used without creating one");
+        let v: Value = serde_json::from_str(&seen[2].body).unwrap();
+        assert!(v["variables"]["startLine"].is_null() && v["variables"]["startSide"].is_null());
+        assert_eq!(v["variables"]["side"], "RIGHT");
+    }
+
+    #[test]
+    fn a_pending_review_started_on_the_website_is_found_and_reused() {
+        let (server, gh, repo) = setup(vec![
+            (
+                "POST /api/v3/repos/o/r/pulls/7/reviews",
+                Reply::status(422).with_body(r#"{"message":"User can only have one pending review per pull request"}"#),
+            ),
+            ("GET /api/v3/user", Reply::json(r#"{"login":"me"}"#)),
+            ("GET /api/v3/repos/o/r/pulls/7/reviews", Reply::json(REVIEWS)),
+            ("GET /api/v3/repos/o/r/pulls/7/reviews/8/comments", Reply::json("[]")),
+            (
+                "POST /api/graphql ~addPullRequestReviewThreadReply",
+                Reply::json(r#"{"data":{"addPullRequestReviewThreadReply":{"comment":{"id":"PRRC_r"}}}}"#),
+            ),
+        ]);
+        let reply = crate::forge::NewDraft::Reply {
+            thread_id: "PRRT_x".into(),
+            body: "thanks".into(),
+            lines: (1, 1),
+            resolve: false,
+        };
+        let r = gh.add_draft(&repo, 7, "h0", None, &reply).unwrap();
+        assert_eq!((r.review_id.as_str(), r.comment_id.as_str()), ("8:PRR_8", "PRRC_r"));
+        let last = server.requests().pop().unwrap();
+        let v: Value = serde_json::from_str(&last.body).unwrap();
+        assert_eq!(
+            v["variables"],
+            json!({"review":"PRR_8","thread":"PRRT_x","body":"thanks"})
+        );
+    }
+
+    #[test]
+    fn a_422_without_a_pending_review_of_the_user_keeps_the_original_error() {
+        let (server, gh, repo) = setup(vec![
+            (
+                "POST /api/v3/repos/o/r/pulls/7/reviews",
+                Reply::status(422).with_body(r#"{"message":"commit_id is not part of the pull request"}"#),
+            ),
+            ("GET /api/v3/user", Reply::json(r#"{"login":"nobody"}"#)),
+            ("GET /api/v3/repos/o/r/pulls/7/reviews", Reply::json(REVIEWS)),
+        ]);
+        let d = crate::forge::NewDraft::Line(draft(Side::Right, 1, 1, "a"));
+        let err = gh.add_draft(&repo, 7, "h0", None, &d).unwrap_err().to_string();
+        assert!(err.contains("422") && err.contains("commit_id"), "{err}");
+        assert!(
+            server.requests().iter().all(|r| !r.target.contains("graphql")),
+            "nothing is added to someone else's review"
+        );
+    }
+
+    #[test]
+    fn a_reply_that_resolves_is_refused_and_other_errors_pass_through() {
+        let (server, gh, repo) = setup(vec![(
+            "POST /api/v3/repos/o/r/pulls/7/reviews",
+            Reply::status(403).with_body(r#"{"message":"nope"}"#),
+        )]);
+        let reply = crate::forge::NewDraft::Reply {
+            thread_id: "PRRT_x".into(),
+            body: "ok".into(),
+            lines: (1, 1),
+            resolve: true,
+        };
+        let err = gh.add_draft(&repo, 7, "h0", None, &reply).unwrap_err().to_string();
+        assert!(err.contains("GitHub resolves a thread at once"), "{err}");
+        assert!(server.requests().is_empty(), "refused before any request");
+        let line = crate::forge::NewDraft::Line(draft(Side::Right, 1, 1, "a"));
+        let err = gh.add_draft(&repo, 7, "h0", None, &line).unwrap_err().to_string();
+        assert!(err.contains("403") && err.contains("nope"), "{err}");
+        assert_eq!(server.requests().len(), 1);
+    }
+
+    #[test]
+    fn drafts_are_edited_deleted_submitted_and_discarded() {
+        let (server, gh, repo) = setup(vec![
+            (
+                "POST /api/graphql ~updatePullRequestReviewComment",
+                Reply::json(r#"{"data":{"x":{}}}"#),
+            ),
+            (
+                "POST /api/graphql ~deletePullRequestReviewComment",
+                Reply::json(r#"{"data":{"x":{}}}"#),
+            ),
+            ("POST /api/v3/repos/o/r/pulls/7/reviews/8/events", Reply::json("{}")),
+            ("DELETE /api/v3/repos/o/r/pulls/7/reviews/8", Reply::json("{}")),
+        ]);
+        let r = crate::forge::DraftRef {
+            review_id: "8:PRR_8".into(),
+            comment_id: "PRRC_a".into(),
+        };
+        gh.edit_draft(&repo, 7, &r, "new", None, (1, 1)).unwrap();
+        gh.delete_draft(&repo, 7, &r).unwrap();
+        gh.submit_pending(&repo, 7, &r.review_id, ReviewEvent::RequestChanges, "")
+            .unwrap();
+        gh.submit_pending(&repo, 7, &r.review_id, ReviewEvent::Approve, "")
+            .unwrap();
+        gh.discard_pending(&repo, 7, &r.review_id).unwrap();
+        let seen = server.requests();
+        let v: Value = serde_json::from_str(&seen[0].body).unwrap();
+        assert_eq!(v["variables"], json!({"id":"PRRC_a","body":"new"}));
+        let v: Value = serde_json::from_str(&seen[1].body).unwrap();
+        assert_eq!(v["variables"], json!({"id":"PRRC_a"}));
+        assert_eq!(
+            seen[2].body,
+            r#"{"body":"Changes requested","event":"REQUEST_CHANGES"}"#
+        );
+        assert_eq!(seen[3].body, r#"{"body":"","event":"APPROVE"}"#);
+        assert_eq!(seen[4].method, "DELETE");
+        assert!(matches!(gh.discard_pending(&repo, 7, "8"), Err(ForgeError::Parse(_))));
+        assert!(matches!(
+            gh.discard_pending(&repo, 7, "x/y:z"),
+            Err(ForgeError::Parse(_))
+        ));
+        assert_eq!(server.requests().len(), 5);
     }
 
     #[test]

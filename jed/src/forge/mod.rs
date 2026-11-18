@@ -249,6 +249,69 @@ pub struct DraftComment {
     pub other: (Option<u32>, Option<u32>),
 }
 
+/// What a draft saved to the forge's pending review is: a comment on lines, or a reply to a
+/// thread (with the thread's resolution the reply asks for).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // until review_forge_drafts-b uses it
+pub enum NewDraft {
+    Line(DraftComment),
+    /// `thread_id` is `Thread::id`; `lines` the thread's first and last line (as in
+    /// `Forge::reply`); `resolve`: resolve the thread when the review is published.
+    Reply {
+        thread_id: String,
+        body: String,
+        lines: (u32, u32),
+        resolve: bool,
+    },
+}
+
+/// Where a draft lives on the forge. Both ids are opaque to the caller: kept as returned and
+/// handed back to `edit_draft` / `delete_draft` / `submit_pending` / `discard_pending`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // until review_forge_drafts-b uses it
+pub struct DraftRef {
+    /// The pending review (GitHub: `databaseId:nodeId`; Gitea: the review id; GitLab, which has
+    /// no review object: the merge request's number).
+    pub review_id: String,
+    /// The draft comment (GitHub: its node id; Gitea: the comment id; GitLab: the draft note id).
+    pub comment_id: String,
+}
+
+/// The thread a pending reply answers, as the forge names it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // until review_forge_drafts-b uses it
+pub enum ReplyTo {
+    /// A `Thread::id` (GitLab: the draft note's discussion).
+    Thread(String),
+    /// A `Comment::id` of the thread (GitHub: the parent comment's `databaseId`).
+    Comment(String),
+}
+
+/// One comment of a pending review, as the forge holds it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // until review_forge_drafts-b uses it
+pub struct PendingComment {
+    /// The forge's id, as `DraftRef::comment_id`.
+    pub id: String,
+    /// Set on a reply to a thread.
+    pub reply_to: Option<ReplyTo>,
+    /// Where it sits (a reply too, where the forge says: GitHub's replies carry their thread's
+    /// line); `None` when the forge gives no position.
+    pub anchor: Option<Anchor>,
+    pub body: String,
+    /// A reply that resolves its thread on publishing (GitLab).
+    pub resolve: bool,
+}
+
+/// The user's pending review and its comments.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // until review_forge_drafts-b uses it
+pub struct PendingReview {
+    /// As `DraftRef::review_id`.
+    pub id: String,
+    pub comments: Vec<PendingComment>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReviewEvent {
     Comment,
@@ -343,6 +406,50 @@ pub trait Forge: Send + Sync {
     /// Posts the review: its comments at their anchors (on `head_sha`) and the verdict. The
     /// outcome says which comments the forge took; the others stay drafts.
     fn submit_review(&self, repo: &RepoRef, number: u64, head_sha: &str, review: &DraftReview) -> SubmitOutcome;
+    /// The user's pending review (GitHub's PENDING review, Gitea's, GitLab's draft notes) with
+    /// its comments; `None` when there is none. `comments` never returns these.
+    #[allow(dead_code)] // until review_forge_drafts-b uses it
+    fn pending_review(&self, repo: &RepoRef, number: u64, user: &str) -> Result<Option<PendingReview>>;
+    /// Saves `draft` in the pending review (`pending`: its id from `pending_review` or an earlier
+    /// `DraftRef`; `None` starts one where the forge needs that, or reuses the user's existing
+    /// one). Nothing is visible to others until `submit_pending`. An error when the forge can't
+    /// hold that kind of draft (its message says so): the draft then stays local.
+    #[allow(dead_code)] // until review_forge_drafts-b uses it
+    fn add_draft(
+        &self,
+        repo: &RepoRef,
+        number: u64,
+        head_sha: &str,
+        pending: Option<&str>,
+        draft: &NewDraft,
+    ) -> Result<DraftRef>;
+    /// Replaces a pending comment's text. `range` and `lines` as in `edit_comment`.
+    #[allow(dead_code)] // until review_forge_drafts-b uses it
+    fn edit_draft(
+        &self,
+        repo: &RepoRef,
+        number: u64,
+        draft: &DraftRef,
+        body: &str,
+        range: Option<(u32, u32)>,
+        lines: (u32, u32),
+    ) -> Result<()>;
+    #[allow(dead_code)] // until review_forge_drafts-b uses it
+    fn delete_draft(&self, repo: &RepoRef, number: u64, draft: &DraftRef) -> Result<()>;
+    /// Publishes the pending review `review_id` with the verdict. GitLab approves in a request of
+    /// its own after the publish.
+    #[allow(dead_code)] // until review_forge_drafts-b uses it
+    fn submit_pending(
+        &self,
+        repo: &RepoRef,
+        number: u64,
+        review_id: &str,
+        event: ReviewEvent,
+        body: &str,
+    ) -> Result<()>;
+    /// Deletes the pending review with all its comments.
+    #[allow(dead_code)] // until review_forge_drafts-b uses it
+    fn discard_pending(&self, repo: &RepoRef, number: u64, review_id: &str) -> Result<()>;
     /// Replies in the thread (`thread_id` is `Thread::id`); posted at once. `lines`: the
     /// thread's first and last line (GitLab spells a plain suggestion fence out with them).
     fn reply(&self, repo: &RepoRef, number: u64, thread_id: &str, body: &str, lines: (u32, u32)) -> Result<()>;
