@@ -445,6 +445,32 @@ async fn scrollback_keeps_earlier_lines() {
     assert!(p.screen().contents().starts_with("1\n2\n"));
 }
 
+/// The process starts as portable-pty's `pre_exec` left it (now `posix_spawn`'s job on Linux):
+/// leader of its own session and process group, the PTY its controlling terminal, no signal
+/// blocked (seen in what it runs: bash blocks SIGCHLD in itself while it waits), only stdin /
+/// stdout / stderr open, in the run's folder.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn the_process_leads_a_session_on_its_pty() {
+    let (mut t, _) = tasks();
+    let dir = tempfile::tempdir().unwrap();
+    let script = r#"set -- $(cat /proc/$$/stat)
+[ "$1" = "$5" ] && [ "$1" = "$6" ] && echo LEADER
+[ "$7" != 0 ] && (exec 3</dev/tty) 2>/dev/null && echo CTTY
+grep -q '^SigBlk:[[:space:]]*0*$' /proc/self/status && echo UNBLOCKED
+ls -C /proc/$$/fd
+pwd -P"#;
+    let id = t.run(&template(script), dir.path(), super::SCROLLBACK);
+    let run = t.get(id).unwrap();
+    wait_until("exit", || !run.status().is_running()).await;
+    let out = run.screen().screen().contents();
+    let want = format!(
+        "LEADER\nCTTY\nUNBLOCKED\n0  1  2\n{}",
+        dir.path().canonicalize().unwrap().display()
+    );
+    assert_eq!(out, want);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn missing_cwd_fails_to_start() {
     let (mut t, events) = tasks();

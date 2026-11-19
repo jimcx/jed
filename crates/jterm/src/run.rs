@@ -1,10 +1,12 @@
 //! One task run in a PTY (`portable-pty`), its output parsed into a `vt100` screen with
 //! scrollback.
 //!
-//! Threads per run (none on the UI thread): the spawn (`spawn_blocking`: `openpty`, fork / exec),
+//! Threads per run (none on the UI thread): the spawn (`spawn_blocking`: `openpty`, then
+//! `posix_spawn` on Linux with glibc (`run/posix_spawn.rs`: no fork of the app), portable-pty's fork
+//! / exec elsewhere),
 //! then a reader (PTY output → `Shared::parser`), a waiter (the exit status) and a tokio task that
 //! turns output into at most one `Event::Output` per `FRAME`. The child is a session leader
-//! (portable-pty's `setsid`) and the PTY its controlling terminal, so its process group is
+//! (`setsid`) and the PTY its controlling terminal, so its process group is
 //! everything the shell started: kills signal the whole group.
 //!
 //! Input (`write`: keys, pastes) goes through a channel to a writer thread, so a process that
@@ -35,7 +37,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
-use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{CommandBuilder, MasterPty, PtySize};
 
 use crate::select;
 use crate::spec::Spec;
@@ -1110,27 +1112,14 @@ fn spawn(shared: Arc<Shared>, spec: Spec, sink: Sink, env: EnvNames) {
         Ok(w) => w,
         Err(e) => return shared.fail(format!("can't write to the terminal: {e}"), &sink),
     };
-    let mut cmd = CommandBuilder::from_argv(spec.argv.clone());
-    cmd.cwd(&spec.cwd);
-    // A run gets the IPC variable only from its spec (the app's own socket). Never inherit one
-    // leaked from a parent process: an app started inside another's shell would otherwise hand
-    // its own tasks the outer app's socket.
-    cmd.env_remove(env.ipc);
-    cmd.env_remove(env.terminal);
-    for (k, v) in &spec.env {
-        cmd.env(k, v);
-    }
     let t = Instant::now();
-    let child = match pair.slave.spawn_command(cmd) {
-        Ok(c) => c,
+    let (pid, reap) = match start_process(&pair, &spec, env) {
+        Ok(started) => started,
         Err(e) => return shared.fail(format!("can't run {}: {e}", spec.argv[0].to_string_lossy()), &sink),
     };
     // Our copy of the slave side must go, or the reader never sees the end of output.
     drop(pair.slave);
     drop(opening);
-    let Some(pid) = child.process_id().map(|p| p as i32) else {
-        return shared.fail("no process id".into(), &sink);
-    };
     tracing::info!(run = shared.id.0, pid, task = %spec.name, cwd = %spec.cwd.display(), elapsed_ms = t.elapsed().as_millis() as u64, "task started");
     let kill = {
         let mut state = lock(&shared.state);
@@ -1174,12 +1163,51 @@ fn spawn(shared: Arc<Shared>, spec: Spec, sink: Sink, env: EnvNames) {
     let waiter_shared = shared.clone();
     let spawned = std::thread::Builder::new()
         .name(format!("task-{}-wait", shared.id.0))
-        .spawn(move || wait_exit(waiter_shared, child, pid, sink));
+        .spawn(move || wait_exit(waiter_shared, reap, pid, sink));
     if let Err(e) = spawned {
         // Can't wait for it: kill it rather than leave it unreaped and unkillable.
         tracing::error!("task waiter thread: {e}");
         signal_group(pid, true);
     }
+}
+
+/// Reaps a started process (blocking), with its status as portable-pty reports one.
+type Reap = Box<dyn FnOnce() -> std::io::Result<portable_pty::ExitStatus> + Send>;
+
+/// Blocking: starts `spec`'s process on the PTY's slave side, a session leader with the PTY as
+/// its controlling terminal. On Linux with glibc through `posix_spawn` ([`posix_spawn`]: no fork
+/// of this process), elsewhere through portable-pty (a fork).
+fn start_process(pair: &portable_pty::PtyPair, spec: &Spec, env: EnvNames) -> Result<(i32, Reap), String> {
+    // A run gets the IPC variable only from its spec (the app's own socket). Never inherit one
+    // leaked from a parent process: an app started inside another's shell would otherwise hand
+    // its own tasks the outer app's socket.
+    let inherited = |k: &std::ffi::OsStr| k != env.ipc && k != env.terminal;
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    if let Some(tty) = pair.master.tty_name() {
+        let mut vars: Vec<(std::ffi::OsString, std::ffi::OsString)> =
+            std::env::vars_os().filter(|(k, _)| inherited(k)).collect();
+        for (k, v) in &spec.env {
+            vars.retain(|(old, _)| old != k.as_str());
+            vars.push((k.into(), v.into()));
+        }
+        // portable-pty sets SHELL when it isn't inherited (from the user's passwd entry).
+        if !vars.iter().any(|(k, _)| k == "SHELL") {
+            vars.push(("SHELL".into(), CommandBuilder::new_default_prog().get_shell().into()));
+        }
+        let pid = posix_spawn::spawn(&spec.argv, &spec.cwd, &vars, &tty).map_err(|e| e.to_string())?;
+        return Ok((pid, Box::new(move || posix_spawn::reap(pid))));
+    }
+    let mut cmd = CommandBuilder::from_argv(spec.argv.clone());
+    cmd.cwd(&spec.cwd);
+    for (k, _) in std::env::vars_os().filter(|(k, _)| !inherited(k)) {
+        cmd.env_remove(k);
+    }
+    for (k, v) in &spec.env {
+        cmd.env(k, v);
+    }
+    let mut child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    let pid = child.process_id().ok_or("no process id")? as i32;
+    Ok((pid, Box::new(move || child.wait())))
 }
 
 /// Feeds `bytes` to the parser and keeps the mouse selection on its text (`select::follow`).
@@ -1285,7 +1313,7 @@ fn merge(batch: Vec<Input>, mouse_on: impl FnOnce() -> bool) -> Vec<u8> {
 }
 
 /// Waiter thread: blocks until the process exits, lets the reader finish, reaps it.
-fn wait_exit(shared: Arc<Shared>, mut child: Box<dyn Child + Send + Sync>, pid: i32, sink: Sink) {
+fn wait_exit(shared: Arc<Shared>, reap: Reap, pid: i32, sink: Sink) {
     wait_without_reaping(pid);
     let exited = Instant::now();
     while !shared.reader_done.load(Ordering::Acquire) {
@@ -1299,7 +1327,7 @@ fn wait_exit(shared: Arc<Shared>, mut child: Box<dyn Child + Send + Sync>, pid: 
     }
     {
         let mut state = lock(&shared.state);
-        let status = child.wait();
+        let status = reap();
         state.pid = None;
         state.input = None;
         state.status = match status {
@@ -1337,7 +1365,7 @@ fn output_unread(shared: &Shared) -> bool {
 /// Blocks until `pid` has exited, leaving it a zombie (its pid can't be reused until reaped).
 fn wait_without_reaping(pid: i32) {
     loop {
-        // SAFETY: waitid fills `info`; WNOWAIT leaves the child for `Child::wait` to reap.
+        // SAFETY: waitid fills `info`; WNOWAIT leaves the child for `Reap` to reap.
         let r = unsafe {
             let mut info: libc::siginfo_t = std::mem::zeroed();
             libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT)
@@ -1361,6 +1389,9 @@ async fn notifier(shared: Arc<Shared>, sink: Sink) {
         tokio::time::sleep(FRAME).await;
     }
 }
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+mod posix_spawn;
 
 #[cfg(test)]
 mod real_tests;
