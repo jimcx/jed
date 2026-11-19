@@ -190,11 +190,11 @@ impl Client {
             .await;
     }
 
-    /// Reads until the shell's first prompt (`sh-5.3$`): input sent before it is typeahead, which
+    /// Reads until the shell's first prompt (`sh-5.3$`, `sh-5.3#` as root): input sent before it is typeahead, which
     /// the shell reads differently (a paste is cooked-mode input then, a bracketed paste after).
     async fn prompted(&mut self) {
         self.wait_screen("the shell's prompt", |s| {
-            s.contents().lines().any(|l| l.trim_end().ends_with('$'))
+            jterm::testing::shows_prompt(s.contents().lines())
         })
         .await;
     }
@@ -1043,10 +1043,8 @@ async fn jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_liv
     let c = Attached::start(&socket, 20, 80).await;
     // Typed before the first prompt, the tty echoes `pwd` first and its output lands on the
     // prompt's line (`sh-5.3$ pwd/tmp/…`), never a row of its own.
-    c.wait_rows("the shell's prompt", |rows| {
-        rows.iter().any(|r| r.trim_end().ends_with('$'))
-    })
-    .await;
+    c.wait_rows("the shell's prompt", |rows| jterm::testing::shows_prompt(rows))
+        .await;
     c.type_text("pwd\r");
     let want = cwd.display().to_string();
     let (begun, deadline) = (Instant::now(), Instant::now() + WAIT);

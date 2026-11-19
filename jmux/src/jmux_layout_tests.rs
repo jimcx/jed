@@ -591,7 +591,14 @@ async fn jmux_layout_a_plain_ctrl_d_reaches_the_shell_and_only_ctrl_shift_d_deta
     h.settle("a second tab", |h| h.tab_count() == 2).await;
     // Wait for the new shell's prompt: an EOF typed before its line editor starts is lost.
     h.settle("the second shell's prompt", |h| {
-        jterm::testing::has_prompt(&h.app.groups.active_group().tabs[1].run.screen().screen().contents())
+        jterm::testing::shows_prompt(
+            h.app.groups.active_group().tabs[1]
+                .run
+                .screen()
+                .screen()
+                .contents()
+                .lines(),
+        )
     })
     .await;
     // Ctrl+D is end of input to the shell: it exits and its tab goes; nobody is detached.

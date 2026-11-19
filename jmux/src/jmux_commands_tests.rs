@@ -209,7 +209,7 @@ impl Harness {
                 .groups
                 .active_group()
                 .active_tab()
-                .is_some_and(|t| jterm::testing::has_prompt(&t.run.screen().screen().contents()))
+                .is_some_and(|t| jterm::testing::shows_prompt(t.run.screen().screen().contents().lines()))
         })
         .await;
     }

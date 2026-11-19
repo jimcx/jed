@@ -38,7 +38,11 @@ async fn term_search_finds_in_the_scrollback_and_steps() {
     // 17, 117 and 170..179
     assert_eq!(label(&app), "12 of 12");
     // Typed keys went to the query, not the shell.
-    assert!(!screen_text(&app).contains("$ 17"), "{}", screen_text(&app));
+    let text = screen_text(&app);
+    assert!(
+        !text.lines().any(|l| jterm::testing::after_prompt(l) == Some("17")),
+        "{text}"
+    );
 
     // Wraps to the oldest match, scrolling back to it.
     app.press(KeyCode::Enter, KeyModifiers::NONE);
