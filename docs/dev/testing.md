@@ -23,6 +23,8 @@ Debug-build frame bounds measure with `test_util::frame_clock()` (the thread's C
 
 The release budget runs are jed's (the workspace's default member); they are the exception to "not plain cargo" (their `--nocapture` timings are the point): pipe them through `tail -40`.
 
+**Profiling:** `scripts/check --profile [jed args…]` builds jed with the `profiling` cargo profile (release, unstripped, line tables) into `target/profiling/jed`, runs it under [samply](https://github.com/mstange/samply) (`cargo install --locked samply`), and opens the Firefox Profiler on exit; the profile stays in `target/profile.json.gz` (`samply load` reopens it). On Linux it needs `kernel.perf_event_paranoid` ≤ 1 and `kernel.perf_event_mlock_kb` ≥ 2048, or samply fails with "mmap failed" (`sudo sysctl` each; a file in `/etc/sysctl.d/` keeps them across reboots). It runs the real UI, so it is for people, not agents.
+
 ## Driving the app headlessly
 
 Helpers are `#[cfg(test)] impl App` in `app/mod.rs`.

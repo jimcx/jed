@@ -29,6 +29,13 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 [profile.release]
 strip = true
 
+# `scripts/check --profile`: release speed with symbols and line tables, so samply's stacks have
+# function names and source lines.
+[profile.profiling]
+inherits = "release"
+strip = false
+debug = "line-tables-only"
+
 # jed's crossterm fork (https://github.com/jimcx/crossterm, branch `fwdback`): upstream 0.29 drops
 # SGR mouse buttons 8 / 9 (the mouse's back / forward buttons) with "We do not support other
 # buttons". On a crossterm upgrade, rebase `fwdback` onto the new release and re-apply the patch

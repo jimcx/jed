@@ -15,6 +15,12 @@
 # exits 125 saying "still running" so you call it again. Never wait with
 # `pgrep -f scripts/check`: -f matches the waiting shell's own command line,
 # so such a loop finds itself and never ends.
+#
+# Profiling: `scripts/check --profile [jed args...]` builds jed with the
+# `profiling` cargo profile (release + line tables, unstripped), runs it under
+# samply (`cargo install --locked samply`), saves the profile to
+# target/profile.json.gz and opens it in the Firefox Profiler when jed exits.
+# `samply load target/profile.json.gz` reopens it later.
 
 dir=$(cd "$(dirname "$0")" && pwd)
 cd "$dir/.." || exit 1
@@ -39,6 +45,24 @@ state=target/check
 bg_running() { [ -f "$state.pid" ] && kill -0 "$(cat "$state.pid")" 2>/dev/null; }
 
 case "$1" in
+    --profile)
+        shift
+        command -v samply >/dev/null 2>&1 || { echo "check: samply not found (cargo install --locked samply)"; exit 1; }
+        if [ "$(uname)" = Linux ] && [ "$(cat /proc/sys/kernel/perf_event_paranoid)" -gt 1 ]; then
+            echo "check: kernel.perf_event_paranoid is $(cat /proc/sys/kernel/perf_event_paranoid); samply needs 1 or less."
+            echo "       Run: sudo sysctl kernel.perf_event_paranoid=1"
+            echo "       (to keep it: echo kernel.perf_event_paranoid=1 | sudo tee /etc/sysctl.d/99-perf.conf)"
+            exit 1
+        fi
+        # samply's per-CPU sample buffers outgrow the default 516 KB lock allowance ("mmap failed").
+        if [ "$(uname)" = Linux ] && [ "$(cat /proc/sys/kernel/perf_event_mlock_kb)" -lt 2048 ]; then
+            echo "check: kernel.perf_event_mlock_kb is $(cat /proc/sys/kernel/perf_event_mlock_kb); samply needs about 2048."
+            echo "       Run: sudo sysctl kernel.perf_event_mlock_kb=2048"
+            exit 1
+        fi
+        cargo build -q --profile profiling -p jed || exit 1
+        exec samply record -o target/profile.json.gz target/profiling/jed "$@"
+        ;;
     --bg)
         shift
         if bg_running; then
