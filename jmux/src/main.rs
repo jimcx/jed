@@ -37,6 +37,8 @@ mod jmux_tabs_at_bottom_tests;
 #[cfg(test)]
 mod jmux_touch_tests;
 #[cfg(test)]
+mod kitty_keys_passthrough_tests;
+#[cfg(test)]
 mod test_harness;
 
 use std::path::PathBuf;

@@ -435,7 +435,7 @@ pub(super) fn send_key(run: &Run, key: KeyEvent) {
         &key,
         keys::KeyModes {
             application_cursor,
-            kitty_flags: 0,
+            kitty_flags: run.kitty_flags(),
         },
     ) && run.write(&bytes)
     {

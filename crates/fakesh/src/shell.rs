@@ -160,6 +160,7 @@ impl Shell {
                 let _ = writeln!(out, "{}", if self.pasted { "yes" } else { "no" });
                 0
             }
+            "keyecho" => crate::keyecho::run(args, out),
             "true" | ":" => 0,
             "false" => 1,
             "exit" => {

@@ -38,7 +38,9 @@ refused (`$JMUX` is set in every shell it starts).
 
 The defaults follow jed's terminal tab: Cmd on macOS where Linux uses Ctrl or Ctrl+Shift (plain Ctrl keys belong to
 the shell). Unbound keys go to the shell. Ctrl+Shift combinations need a terminal that speaks the kitty keyboard
-protocol; see [Terminal setup](#terminal-setup).
+protocol; see [Terminal setup](#terminal-setup). A program in a pane that asks for the protocol (jed, neovim, helix,
+fish) gets it too: its unbound keys, Ctrl+Shift ones included, arrive as the protocol encodes them, so jed inside jmux
+keeps its Ctrl+Shift bindings. Others get the usual xterm bytes.
 
 | Action | Linux | macOS |
 |---|---|---|

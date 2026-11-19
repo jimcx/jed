@@ -8,9 +8,11 @@
 //! The commands are `shell::Shell::command`'s match arms: only what the tests type. It never
 //! forks. SIGINT drops the line (or ends `sleep` / `read`) and draws a fresh prompt; the paste
 //! markers of a line are removed and `pasted` says whether the previous line had them.
+//! `keyecho [flags]` (`keyecho.rs`) pushes the kitty keyboard flags and echoes the bytes it gets as hex.
 
 mod expand;
 mod input;
+mod keyecho;
 mod printf;
 mod shell;
 

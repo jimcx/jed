@@ -59,7 +59,7 @@ The toolchain is pinned in `rust-toolchain.toml`; rustup picks it up.
 ## Terminal setup
 
 jed needs a terminal with the **kitty keyboard protocol** (Kitty, Ghostty, WezTerm, iTerm2, Alacritty); without it
-keys such as Ctrl+Shift+X and Ctrl+H can't be told apart. On macOS most terminals also keep Cmd keys for themselves
+keys such as Ctrl+Shift+X and Ctrl+H can't be told apart. jed's shell and task tabs and jmux's panes pass the protocol on to programs that ask for it, so jed finds it there too. On macOS most terminals also keep Cmd keys for themselves
 (Cmd+W may even close the terminal window), so set yours up first:
 
 **→ [docs/terminals/](docs/terminals/README.md)** — a tested config snippet per terminal, and every Cmd binding jed

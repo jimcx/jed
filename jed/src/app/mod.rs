@@ -1305,6 +1305,23 @@ impl App {
             Event::Mouse(m) if self.prompt.is_none() => self.handle_mouse(m),
             // A prompt swallows the mouse; only its input has the I-beam.
             Event::Mouse(m) => self.pointer = self.pointer_at(m.column, m.row),
+            // A release never runs a binding or touches other state; only a shell or task program
+            // that asked for releases (kitty flag 2) gets it, when nothing else has the keys.
+            Event::Key(key)
+                if self.prompt.is_none()
+                    && self.cheat_sheet.is_none()
+                    && self.keys.is_none()
+                    && self.inline_rename.is_none()
+                    && self.context_menu.is_none()
+                    // A bound key's press ran its command, so its release isn't the program's.
+                    && self.keymap.lookup(&key, self.context()).is_none() =>
+            {
+                match self.context() {
+                    Context::Shell => self.shell_key(key),
+                    Context::Task => self.task_key(key),
+                    _ => {}
+                }
+            }
             _ => {}
         }
         self.nav_end(here, true);

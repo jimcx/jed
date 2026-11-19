@@ -838,6 +838,12 @@ impl App {
 
     fn key(&mut self, key: KeyEvent) {
         if key.kind == KeyEventKind::Release {
+            // A release never runs a binding; a program that asked for them (kitty flag 2) gets it.
+            // (A bound key's press ran its command, so its release isn't the program's.)
+            let context = self.context();
+            if context == Context::Terminal && self.keymap.lookup(&key, context).is_none() {
+                self.key_to_shell(key);
+            }
             return;
         }
         if self.notice.take().is_some() {
@@ -872,13 +878,19 @@ impl App {
             self.needs_redraw = true;
             return;
         }
+        self.key_to_shell(key);
+    }
+
+    /// `key` to the focused shell, encoded as its program asked (xterm's, or the kitty protocol's
+    /// when it pushed flags; a release only with flag 2).
+    fn key_to_shell(&mut self, key: KeyEvent) {
         if let Some(shell) = self.groups.active_group().active_tab() {
             let application_cursor = shell.run.screen().screen().application_cursor();
             if let Some(bytes) = keys::encode(
                 &key,
                 keys::KeyModes {
                     application_cursor,
-                    kitty_flags: 0,
+                    kitty_flags: shell.run.kitty_flags(),
                 },
             ) && shell.run.write(&bytes)
             {

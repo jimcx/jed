@@ -7616,6 +7616,8 @@ mod term_mouse {
         );
     }
 
+    // FLAKE: 2026-11-20, 2 of 4 full runs: the click assertion saw `seq 0 199\n$ ` after vs
+    // `seq 0 199` before — likely the prompt after `199` landing between `before` and the click.
     #[tokio::test(flavor = "multi_thread")]
     async fn mouse_off_leaves_clicks_alone_and_the_wheel_scrolls() {
         let (_d, root, state) = dirs();
@@ -7654,9 +7656,21 @@ mod term_mouse {
         let before = screen_text(&app);
         click(&mut app, x, y);
         app.mouse(MouseEventKind::Drag(MouseButton::Left), x + 1, y);
+        let after = screen_text(&app);
+        if after != before {
+            let run = &app.group().active_shell().unwrap().run;
+            eprintln!(
+                "FLAKE mouse_off_leaves_clicks_alone_and_the_wheel_scrolls: before ends {:?}, after ends {:?}, \
+                 mouse mode {:?}, status {:?}, selection {:?}",
+                before.lines().last(),
+                after.lines().last(),
+                run.screen().screen().mouse_protocol_mode(),
+                run.status(),
+                run.selection(),
+            );
+        }
         assert_eq!(
-            screen_text(&app),
-            before,
+            after, before,
             "clicks reached neither the shell's program nor its output"
         );
         assert!(!screen_text(&app).contains("^[["), "nothing was sent as a mouse report");

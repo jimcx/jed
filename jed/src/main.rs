@@ -91,6 +91,8 @@ mod keys;
 #[cfg(test)]
 mod keys_tests;
 #[cfg(test)]
+mod kitty_keys_passthrough_tests;
+#[cfg(test)]
 mod kitty_recent_tests;
 mod layout;
 mod lines;
