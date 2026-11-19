@@ -2,7 +2,7 @@
 id: fake_shell
 name: Fake shell for tests
 summary: a small test-only shell (`fakesh`) with a fixed prompt and the few commands the tests type, so jed's and jmux's terminal tests stop depending on whether `/bin/sh` is bash or dash, the user is root, or readline is ready
-status: open
+status: in-progress
 priority: 0
 dependencies: []
 ---
@@ -31,7 +31,12 @@ Most of what looks like shell behaviour is the terminal line discipline's (the k
     - `jmux_server_pastes_into_the_shell` fails if jmux stops wrapping a paste when the program asked for bracketed paste
     - adding a command a test needs means one match arm in `fakesh` and a unit test there
   - Subtasks (one agent and one commit each):
-    - fake_shell-a: the `fakesh` program and its tests, `jterm::testing::fake_shell()`, the docs; migrate jmux's tests (server, commands, layout, tabs at bottom, touch, config, command-driven) and keep its real-shell smoke test
+    - ✅ fake_shell-a: the `fakesh` program and its tests, `jterm::testing::fake_shell()`, the docs; migrate jmux's tests (server, commands, layout, tabs at bottom, touch, config, command-driven) and keep its real-shell smoke test
+      - `crates/fakesh` (std + libc; `Shell::command` in `src/shell.rs` is the match arm per command; also `read [VAR]`, `pasted`, `true`/`false`/`:`, `NAME=value`, `${V-x}` / `${V+x}`); built by `cargo test --workspace` because it has an integration test (`tests/pty.rs`); `jterm::testing::fake_shell()` and `FAKE_PROMPT`
+      - `pasted` reports the line before it; SIGINT is blocked around the flag check and waited for in `pselect`, so none is lost
+      - jmux tab titles are now `fakesh`; tests needing raw-mode programs (`stty raw`, `dd`, `vi`) run a `#!/bin/sh` script as the tab's program (`Harness::with_program`) instead of typing into a shell
+      - real `/bin/sh` left in jmux: `jmux_server_runs_a_real_shell` and the zsh-symlink integration tests; `jmux/tests/cli.rs` keeps `SHELL=/bin/sh` (it never types)
+      - for b: `COUNT_TO_200`'s `while` loop → `seq`; `cat` / `cat -v` / `more` and the alt-screen `printf …; read x` lines need a `shell_script` program or a check; jed tab titles become `fakesh ○`
     - fake_shell-b: migrate jed's terminal tests (`shell`, `term_area`, `term_link`, `term_search`, `term_select`, `clear_scrollback`, `drag_tabs`, `git_marks`, `claude_ide`, `todo_tests`' shell ones, `command_driven`, `app/session.rs`), keep its real-shell smoke test, run the root and dash/bash checks, mark the task ✅
   - Deferred:
     - a fake for other programs the tests start (`git` as an editor, language servers), if they turn out to cause the same kind of flake

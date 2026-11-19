@@ -623,6 +623,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fakesh"
+version = "0.1.0"
+dependencies = [
+ "jterm",
+ "libc",
+ "tokio",
+]
+
+[[package]]
 name = "fancy-regex"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

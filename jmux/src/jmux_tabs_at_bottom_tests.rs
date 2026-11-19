@@ -1,5 +1,5 @@
 //! End-to-end tests of jmux_tabs_at_bottom (the `tabs_at_bottom` setting), driving the server `App`
-//! headlessly with real shells and a settings file in a temporary directory.
+//! headlessly with fake shell and a settings file in a temporary directory.
 //!
 //! Covered by `jmux_tabs_at_bottom_*`: with the setting on each group's bar is drawn on its last
 //! row and the shell starts on the first, also with a split, and the shell's size is the drawn
@@ -47,7 +47,7 @@ impl Harness {
         let config = Config {
             name: "work".into(),
             socket: PathBuf::new(),
-            program: "/bin/sh".into(),
+            program: jterm::testing::fake_shell(),
             cwd: std::env::temp_dir(),
             open_url: |_| Ok(()),
             dirs: None,
@@ -222,7 +222,7 @@ async fn jmux_tabs_at_bottom_the_bar_is_on_the_groups_last_row_and_the_shell_sta
     let mut h = Harness::new(12, 60, BOTTOM).await;
     // 12 rows: the status bar is the last, so the group's last row is 10.
     h.settle("the bar on row 10 and the prompt on row 0", |h| {
-        h.row(10).contains("sh") && jterm::testing::ends_with_prompt(&h.row(0))
+        h.row(10).contains("sh") && h.row(0).starts_with(jterm::testing::FAKE_PROMPT)
     })
     .await;
     assert!(!h.row(0).contains('×'), "{}", h.text());
@@ -282,11 +282,11 @@ async fn jmux_tabs_at_bottom_clicks_on_the_bar_pick_and_close_tabs() {
     assert_eq!(h.active(), 0);
     // The x of the second closes it.
     h.click(MouseButton::Left, tabs[1].close_x0, 10);
-    assert_eq!(h.titles(), ["sh ○", "sh (3) ○"]);
+    assert_eq!(h.titles(), ["fakesh ○", "fakesh (3) ○"]);
     h.settle("a redrawn bar", |h| !h.row(10).contains("sh (2)")).await;
     let tabs = h.app.hit.groups[0].tabs.clone();
     h.click(MouseButton::Middle, tabs[1].x0 + 1, 10);
-    assert_eq!(h.titles(), ["sh ○"]);
+    assert_eq!(h.titles(), ["fakesh ○"]);
 }
 
 #[tokio::test(flavor = "multi_thread")]

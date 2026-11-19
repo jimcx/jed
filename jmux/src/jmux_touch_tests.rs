@@ -1,5 +1,5 @@
 //! End-to-end tests of jmux_touch (`jmux attach --touch`: the touch layout of the tab bars), driving
-//! the server `App` headlessly with real shells and a `Hello` carrying `touch`.
+//! the server `App` headlessly with the fake shell and a `Hello` carrying `touch`.
 //!
 //! Covered by `jmux_touch_*`: the bar is three rows with padded tabs, the title on the middle row
 //! and the tab's background on all three, at the top and with `tabs_at_bottom`
@@ -50,7 +50,7 @@ impl Harness {
         let config = Config {
             name: "work".into(),
             socket: PathBuf::new(),
-            program: "/bin/sh".into(),
+            program: jterm::testing::fake_shell(),
             cwd: std::env::temp_dir(),
             open_url: |_| Ok(()),
             dirs: None,
@@ -220,7 +220,7 @@ async fn jmux_touch_the_bar_is_three_rows_with_padded_tabs_at_the_top() {
     assert_eq!((g.bar.y, g.bar.height, g.term.y, g.term.height), (0, 3, 3, 10));
     assert_eq!(
         h.row(1).trim_end(),
-        format!("{:<58}+", "  sh ○  ×"),
+        format!("{:<58}+", "  fakesh ○  ×"),
         "two cells of padding at each end and round the x; the + in the middle of the bar's last 3"
     );
     assert_eq!(
@@ -229,8 +229,8 @@ async fn jmux_touch_the_bar_is_three_rows_with_padded_tabs_at_the_top() {
         "the rows above and below carry no text"
     );
     let t = g.tabs[0];
-    assert_eq!((t.x0, t.x1), (0, 11));
-    assert_eq!((t.close_x0, t.close_x1), (7, 10), "the x and the cell each side of it");
+    assert_eq!((t.x0, t.x1), (0, 15));
+    assert_eq!((t.close_x0, t.close_x1), (11, 14), "the x and the cell each side of it");
     let bg = h.bg_at(t.x0, 1);
     assert_ne!(bg, h.bg_at(40, 1), "the tab's background differs from the bar's");
     for y in 0..3 {
@@ -249,7 +249,7 @@ async fn jmux_touch_the_bar_is_three_rows_with_padded_tabs_at_the_bottom() {
         .await;
     let g = h.app.hit.groups[0].clone();
     assert_eq!((g.bar.y, g.bar.height, g.term.y, g.term.height), (10, 3, 0, 10));
-    assert_eq!(h.row(11).trim_end(), format!("{:<58}+", "  sh ○  ×"));
+    assert_eq!(h.row(11).trim_end(), format!("{:<58}+", "  fakesh ○  ×"));
     assert_eq!((h.row(10).trim(), h.row(12).trim()), ("", ""));
     let t = g.tabs[0];
     let bg = h.bg_at(t.x0, 11);
@@ -466,7 +466,7 @@ async fn jmux_touch_a_plain_client_taking_over_gets_the_normal_layout() {
     .await;
     assert!(!h.app.touch);
     assert_eq!(h.shell_size(id).0, small.0 + 2, "the shells grow back");
-    assert_eq!(h.row(0).trim_end(), " sh ○ ×");
+    assert_eq!(h.row(0).trim_end(), " fakesh ○ ×");
     // And a touch client taking over again.
     h.take_over(3, true).await;
     h.settle("a three-row bar", |h| {

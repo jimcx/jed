@@ -1,5 +1,5 @@
 //! End-to-end tests of jmux_layout-a (groups and the tab bar), driving the server `App` headlessly
-//! with real `/bin/sh` shells: a new terminal is a second tab and the keys cycle between them
+//! with the fake shell: a new terminal is a second tab and the keys cycle between them
 //! (the first part of the task's "done when"), titles and numbering, the close confirm, a shell
 //! that exits closing its tab, the last tab ending the session, clicks on the bar, mouse positions
 //! offset by the bar, and a re-attach showing the same tabs.
@@ -82,13 +82,38 @@ fn screen(rows: u16, cols: u16) -> vt100::Parser {
 }
 
 impl Harness {
-    /// A started session (one tab) with client 1 attached at `rows` × `cols`.
+    /// A started session (one tab, the fake shell at its first prompt) with client 1 attached at
+    /// `rows` × `cols`.
     async fn new(rows: u16, cols: u16) -> Harness {
+        let mut h = Harness::start(rows, cols, jterm::testing::fake_shell());
+        // Typing before the shell's first prompt would echo the line ahead of it.
+        h.settle("the shell's first prompt", |h| {
+            h.row(1).starts_with(jterm::testing::FAKE_PROMPT)
+        })
+        .await;
+        h
+    }
+
+    /// A session whose one tab runs `body` as a `#!/bin/sh` script instead of a shell, for the
+    /// tests of what a full-screen program gets (they need real `stty`, `dd`, `vi`: the script
+    /// is the program under test, not a shell session). It stays alive after `body`; the
+    /// directory holds the script until dropped.
+    fn with_program(rows: u16, cols: u16, body: &str) -> (Harness, tempfile::TempDir) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prog");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\nexec sleep 600\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (Harness::start(rows, cols, path), dir)
+    }
+
+    /// The session with `program` as its shell, client 1 attached.
+    fn start(rows: u16, cols: u16, program: PathBuf) -> Harness {
         let (tx, events) = tokio::sync::mpsc::unbounded_channel();
         let config = Config {
             name: "work".into(),
             socket: PathBuf::new(),
-            program: "/bin/sh".into(),
+            program,
             cwd: std::env::temp_dir(),
             open_url: record_url,
             dirs: None,
@@ -114,12 +139,6 @@ impl Harness {
             cols,
         };
         h.attach(1);
-        // Typing before the shell's first prompt races the prompt against the command's echo. The
-        // prompt is `$ ` (dash) or `sh-5.3$ ` (bash as sh); `#` for either as root.
-        h.settle("the shell's first prompt", |h| {
-            jterm::testing::ends_with_prompt(&h.row(1))
-        })
-        .await;
         h
     }
 
@@ -266,15 +285,15 @@ impl Drop for Harness {
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_layout_a_new_terminal_is_a_second_tab_and_the_keys_cycle() {
     let mut h = Harness::new(12, 60).await;
-    h.settle_text("sh ○").await;
-    assert_eq!(h.titles(), ["sh ○"]);
+    h.settle_text("fakesh ○").await;
+    assert_eq!(h.titles(), ["fakesh ○"]);
     h.app.run(Command::NewTerminal);
     h.settle("a second tab", |h| h.titles().len() == 2).await;
-    assert_eq!(h.titles(), ["sh ○", "sh (2) ○"], "numbered per program");
+    assert_eq!(h.titles(), ["fakesh ○", "fakesh (2) ○"], "numbered per program");
     assert_eq!(h.active(), 1, "the new tab is active");
-    h.settle_text("sh (2) ○").await;
+    h.settle_text("fakesh (2) ○").await;
     assert!(
-        h.row(0).contains("sh ○") && h.row(0).contains("sh (2) ○"),
+        h.row(0).contains("fakesh ○") && h.row(0).contains("fakesh (2) ○"),
         "{}",
         h.row(0)
     );
@@ -299,14 +318,14 @@ async fn jmux_layout_a_new_terminal_is_a_second_tab_and_the_keys_cycle() {
     assert_eq!(h.active(), 1, "no tab 9: nothing happens");
     h.app.run(Command::NewTerminal);
     h.settle("a third tab", |h| h.tab_count() == 3).await;
-    assert_eq!(h.titles(), ["sh ○", "sh (2) ○", "sh (3) ○"]);
+    assert_eq!(h.titles(), ["fakesh ○", "fakesh (2) ○", "fakesh (3) ○"]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_layout_a_every_shell_is_sized_to_its_groups_area_and_hidden_tabs_keep_it() {
     let mut h = Harness::new(12, 60).await;
     // The first tab is drawn (and sized) before the second one hides it.
-    h.settle_text("sh ○").await;
+    h.settle_text("fakesh ○").await;
     h.app.run(Command::NewTerminal);
     h.settle("a second tab", |h| h.tab_count() == 2).await;
     h.settle("the tab bar", |h| h.row(0).contains("sh (2)")).await;
@@ -339,7 +358,7 @@ async fn jmux_layout_a_close_terminal_hangs_up_an_idle_tab_at_once() {
     h.settle("a second tab", |h| h.tab_count() == 2).await;
     h.app.run(Command::CloseTerminal);
     assert!(h.app.confirm.is_none(), "an idle shell closes without asking");
-    assert_eq!(h.titles(), ["sh ○"]);
+    assert_eq!(h.titles(), ["fakesh ○"]);
     assert_eq!(h.active(), 0);
     h.settle("the bar to lose the tab", |h| !h.row(0).contains("sh (2)"))
         .await;
@@ -371,7 +390,7 @@ async fn jmux_layout_a_closing_a_running_command_asks_first() {
     h.app.run(Command::CloseTerminal);
     assert!(h.app.confirm.is_some());
     h.app.press(KeyCode::Enter, KeyModifiers::NONE);
-    assert_eq!(h.titles(), ["sh ○"]);
+    assert_eq!(h.titles(), ["fakesh ○"]);
     assert!(h.app.confirm.is_none());
 }
 
@@ -382,7 +401,7 @@ async fn jmux_layout_a_a_shell_that_exits_closes_only_its_tab() {
     h.settle("a second tab", |h| h.tab_count() == 2).await;
     h.app.type_text("exit\n");
     h.settle("the exited tab to go", |h| h.tab_count() == 1).await;
-    assert_eq!(h.titles(), ["sh ○"]);
+    assert_eq!(h.titles(), ["fakesh ○"]);
     assert!(!h.app.should_quit, "the session goes on");
     assert!(h.bye.is_none());
 }
@@ -396,7 +415,7 @@ async fn jmux_layout_a_the_last_tab_closing_ends_the_session() {
     assert!(matches!(h.bye, Some(ByeReason::SessionEnded)), "{:?}", h.bye);
 
     let mut h = Harness::new(12, 60).await;
-    h.settle_text("sh ○").await;
+    h.settle_text("fakesh ○").await;
     h.app.type_text("exit\n");
     h.settle("the session to end", |h| h.app.should_quit).await;
     h.settle("the client to be told", |h| h.bye.is_some()).await;
@@ -424,12 +443,12 @@ async fn jmux_layout_a_clicks_on_the_bar_pick_close_and_middle_click_closes() {
         .send_mouse(MouseEventKind::Up(MouseButton::Left), tabs[0].x0 + 1, 0);
     // The × of the second closes it (the shell is idle: no question).
     h.click(MouseButton::Left, tabs[1].close_x0, 0);
-    assert_eq!(h.titles(), ["sh ○", "sh (3) ○"]);
+    assert_eq!(h.titles(), ["fakesh ○", "fakesh (3) ○"]);
     h.settle("a redrawn bar", |h| !h.row(0).contains("sh (2)")).await;
     // A middle click on a title closes that tab too.
     let tabs = h.app.hit.groups[0].tabs.clone();
     h.click(MouseButton::Middle, tabs[1].x0 + 1, 0);
-    assert_eq!(h.titles(), ["sh ○"]);
+    assert_eq!(h.titles(), ["fakesh ○"]);
     // The bar's ×s and titles are real cells on the screen.
     h.settle("a redrawn bar", |h| h.row(0).contains('×')).await;
 }
@@ -459,11 +478,11 @@ async fn jmux_layout_a_a_tab_bar_wider_than_the_screen_scrolls_with_arrows() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_layout_a_mouse_positions_are_relative_to_the_terminal_below_the_bar() {
-    let mut h = Harness::new(12, 60).await;
-    h.settle_text("sh ○").await;
     // A program asks for the mouse, then reads the 8 bytes of one report.
-    h.app.type_text(
-        "printf '\\033[?1000h\\033[?1006h'; stty raw -echo; dd bs=1 count=8 2>/dev/null | od -An -tx1 | tr -s ' '\n",
+    let (mut h, _prog) = Harness::with_program(
+        12,
+        60,
+        "printf '\\033[?1000h\\033[?1006h'; stty raw -echo; dd bs=1 count=8 2>/dev/null | od -An -tx1 | tr -s ' '",
     );
     h.settle("mouse reporting on", |h| {
         h.app
@@ -488,11 +507,11 @@ async fn jmux_layout_a_a_reattach_shows_the_same_tabs() {
     h.app.run(Command::Detach);
     assert!(!h.app.should_quit, "a detach keeps the session");
     h.attach(2);
-    h.settle_text("sh (2) ○").await;
-    assert!(h.row(0).contains("sh ○"), "{}", h.row(0));
+    h.settle_text("fakesh (2) ○").await;
+    assert!(h.row(0).contains("fakesh ○"), "{}", h.row(0));
     assert_eq!(h.active(), 1, "the same tab is active");
     assert!(h.text().contains("STILL_HERE"), "{}", h.text());
-    assert_eq!(h.titles(), ["sh ○", "sh (2) ○"]);
+    assert_eq!(h.titles(), ["fakesh ○", "fakesh (2) ○"]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -500,7 +519,7 @@ async fn jmux_layout_a_the_status_bar_names_the_session_the_title_and_the_detach
     let mut h = Harness::new(12, 70).await;
     h.settle_text("work").await;
     let last = h.row(11);
-    assert!(last.contains("work") && last.contains("sh ○"), "{last}");
+    assert!(last.contains("work") && last.contains("fakesh ○"), "{last}");
     assert!(
         last.contains("Ctrl+Shift+D detach") || last.contains("detach"),
         "{last}"
@@ -516,7 +535,7 @@ fn group_alive(pid: u32) -> bool {
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_layout_a_each_shell_gets_jmux_and_its_own_jmux_terminal() {
     let mut h = Harness::new(14, 70).await;
-    h.settle_text("sh ○").await;
+    h.settle_text("fakesh ○").await;
     h.app.type_text("echo \"A=${JMUX+set}:$JMUX_TERMINAL.\"\n");
     let id0 = h.app.groups.active_group().tabs[0].run.id.0;
     h.settle_text(&format!("A=set:{id0}.")).await;
@@ -568,14 +587,14 @@ async fn jmux_layout_a_a_closed_tabs_shell_process_is_really_gone() {
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_layout_a_a_failed_command_marks_the_tab_and_an_idle_one_closes_without_asking() {
     let mut h = Harness::new(12, 70).await;
-    h.settle_text("sh ○").await;
+    h.settle_text("fakesh ○").await;
     // The shell integration's `133;D;3`: the last command failed.
     h.app.type_text("printf '\\033]133;D;3\\a'\n");
     h.settle("the failed marker", |h| {
         h.app.groups.active_group().active_tab().is_some_and(|t| t.error)
     })
     .await;
-    assert_eq!(h.titles(), ["sh ○"], "still idle, so still the ○ glyph");
+    assert_eq!(h.titles(), ["fakesh ○"], "still idle, so still the ○ glyph");
     h.app.run(Command::NewTerminal);
     h.settle("a second tab", |h| h.tab_count() == 2).await;
     h.app.run(Command::PrevTab);
@@ -589,16 +608,14 @@ async fn jmux_layout_a_plain_ctrl_d_reaches_the_shell_and_only_ctrl_shift_d_deta
     let mut h = Harness::new(12, 60).await;
     h.app.run(Command::NewTerminal);
     h.settle("a second tab", |h| h.tab_count() == 2).await;
-    // Wait for the new shell's prompt: an EOF typed before its line editor starts is lost.
     h.settle("the second shell's prompt", |h| {
-        jterm::testing::shows_prompt(
-            h.app.groups.active_group().tabs[1]
-                .run
-                .screen()
-                .screen()
-                .contents()
-                .lines(),
-        )
+        h.app.groups.active_group().tabs[1]
+            .run
+            .screen()
+            .screen()
+            .contents()
+            .lines()
+            .any(|l| l.starts_with(jterm::testing::FAKE_PROMPT))
     })
     .await;
     // Ctrl+D is end of input to the shell: it exits and its tab goes; nobody is detached.
@@ -691,7 +708,7 @@ async fn jmux_layout_a_keys_typed_during_the_confirm_never_reach_the_shell() {
 /// A split session: the first group on the left, the new one on the right (focused).
 async fn split_right(rows: u16, cols: u16) -> Harness {
     let mut h = Harness::new(rows, cols).await;
-    h.settle_text("sh ○").await;
+    h.settle_text("fakesh ○").await;
     h.app.run(Command::SplitRight);
     h.settle("two groups with a shell each", |h| {
         h.app.hit.groups.len() == 2 && h.tab_count() == 2 && h.shells_fit()
@@ -962,7 +979,7 @@ async fn jmux_layout_b_a_drag_does_not_outlive_its_client_and_hidden_tabs_keep_t
 /// `n` tabs in one group, shell `i` having printed `TAG10<i>`.
 async fn tagged_tabs(rows: u16, cols: u16, n: usize) -> Harness {
     let mut h = Harness::new(rows, cols).await;
-    h.settle_text("sh ○").await;
+    h.settle_text("fakesh ○").await;
     for i in 0..n {
         if i > 0 {
             h.app.run(Command::NewTerminal);
@@ -1259,7 +1276,7 @@ async fn jmux_layout_c_a_tab_closed_mid_drag_is_not_replaced_by_the_one_that_too
 async fn jmux_layout_c_a_group_too_narrow_to_split_takes_an_edge_drop_as_the_centre() {
     // Three groups across 61 columns: the middle one is about 15 wide, under two minimum groups.
     let mut h = Harness::new(12, 61).await;
-    h.settle_text("sh ○").await;
+    h.settle_text("fakesh ○").await;
     for _ in 0..2 {
         h.app.run(Command::SplitRight);
         let n = h.app.hit.groups.len() + 1;
@@ -1350,7 +1367,8 @@ impl Harness {
     /// output) or a number below `below`.
     fn at_oldest(&self, below: u32) -> bool {
         let row = self.row(1);
-        jterm::testing::after_prompt(&row).is_some_and(|line| line.starts_with("seq 1 200"))
+        row.strip_prefix(jterm::testing::FAKE_PROMPT)
+            .is_some_and(|line| line.starts_with("seq 1 200"))
             || row
                 .split_whitespace()
                 .next()
@@ -1370,7 +1388,7 @@ impl Harness {
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_layout_d_dragging_selects_and_copy_sends_osc_52() {
     let mut h = Harness::new(12, 60).await;
-    h.settle_text("sh ○").await;
+    h.settle_text("fakesh ○").await;
     h.app.type_text("printf 'ONE_%s\\n' TWO\n");
     h.settle("the output", |h| h.text().contains("ONE_TWO")).await;
     h.frame().await;
@@ -1396,7 +1414,7 @@ async fn jmux_layout_d_dragging_selects_and_copy_sends_osc_52() {
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_layout_d_a_click_selects_nothing_and_double_and_triple_clicks_take_a_word_and_the_row() {
     let mut h = Harness::new(12, 60).await;
-    h.settle_text("sh ○").await;
+    h.settle_text("fakesh ○").await;
     h.app.type_text("printf 'see %s done\\n' /usr/lib/x_y\n");
     h.settle("the output", |h| h.text().lines().any(|l| l.starts_with("see /usr")))
         .await;
@@ -1418,36 +1436,23 @@ async fn jmux_layout_d_a_click_selects_nothing_and_double_and_triple_clicks_take
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_layout_d_a_paste_types_into_the_shell_bracketed_when_it_asked() {
     let mut h = Harness::new(12, 60).await;
-    h.settle_text("sh ○").await;
-    // bash's readline (bash as sh) turns bracketed paste on at its prompt, where a pasted newline
-    // doesn't run the line: Enter does, in either shell.
+    h.settle_text("fakesh ○").await;
+    // The shell asked for bracketed paste, so the paste is wrapped in markers and its newline
+    // doesn't run the line: Enter does. `pasted` says the shell saw the markers.
     h.app.send_input(Input::Paste("echo PASTED_$((6+1))".into()));
     h.app.type_text("\r");
     h.settle_text("PASTED_7").await;
-    // `cat -v` shows the bracket markers a program that asked for them receives.
-    h.app.type_text("printf '\\033[?2004h'; cat -v\n");
-    h.settle("bracketed paste on", |h| {
-        h.app
-            .groups
-            .active_group()
-            .active_tab()
-            .unwrap()
-            .run
-            .screen()
-            .screen()
-            .bracketed_paste()
-    })
-    .await;
-    h.app.send_input(Input::Paste("hello\n".into()));
-    h.settle_text("^[[200~hello").await;
+    h.app.type_text("pasted\n");
+    h.settle("the markers", |h| h.text().lines().any(|l| l.trim() == "yes"))
+        .await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_layout_d_a_program_with_mouse_reporting_gets_the_mouse_and_shift_selects_instead() {
-    let mut h = Harness::new(12, 60).await;
-    h.settle_text("sh ○").await;
-    h.app.type_text(
-        "printf 'ABC_%s\\n' DEF; printf '\\033[?1000h\\033[?1006h'; stty raw -echo; dd bs=1 count=8 2>/dev/null | od -An -tx1 | tr -s ' '\n",
+    let (mut h, _prog) = Harness::with_program(
+        12,
+        60,
+        "printf 'ABC_%s\\n' DEF; printf '\\033[?1000h\\033[?1006h'; stty raw -echo; dd bs=1 count=8 2>/dev/null | od -An -tx1 | tr -s ' '",
     );
     h.settle("mouse reporting on", |h| {
         h.app
@@ -1479,7 +1484,7 @@ async fn jmux_layout_d_a_program_with_mouse_reporting_gets_the_mouse_and_shift_s
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_layout_d_the_wheel_and_the_scrollback_keys_scroll_and_a_typed_key_returns_to_the_live_screen() {
     let mut h = Harness::new(12, 60).await;
-    h.settle_text("sh ○").await;
+    h.settle_text("fakesh ○").await;
     h.seq_200().await;
     let live = h.top_number();
     assert_eq!(h.scrollback(), 0);
@@ -1516,7 +1521,7 @@ async fn jmux_layout_d_the_wheel_and_the_scrollback_keys_scroll_and_a_typed_key_
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_layout_d_the_scroll_bar_is_drawn_and_a_click_or_drag_on_it_scrolls() {
     let mut h = Harness::new(12, 60).await;
-    h.settle_text("sh ○").await;
+    h.settle_text("fakesh ○").await;
     // Nothing to scroll yet: no thumb. The shell leaves the bar's column alone.
     let g = h.app.hit.groups[0].clone();
     assert_eq!((g.text.width, g.scroll.track.x, g.scroll.track.width), (59, 59, 1));
@@ -1584,7 +1589,7 @@ async fn jmux_layout_d_the_scroll_bar_is_drawn_and_a_click_or_drag_on_it_scrolls
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_layout_d_a_new_client_starts_with_no_drag_and_the_selection_stays() {
     let mut h = Harness::new(12, 60).await;
-    h.settle_text("sh ○").await;
+    h.settle_text("fakesh ○").await;
     h.app.type_text("printf 'KEEP_%s\\n' ME\n");
     h.settle("the output", |h| h.text().contains("KEEP_ME")).await;
     h.frame().await;
@@ -1599,11 +1604,10 @@ async fn jmux_layout_d_a_new_client_starts_with_no_drag_and_the_selection_stays(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_layout_d_the_wheel_goes_to_a_reporting_program_and_shift_scrolls_instead() {
-    let mut h = Harness::new(12, 60).await;
-    h.settle_text("sh ○").await;
-    h.seq_200().await;
-    h.app.type_text(
-        "printf '\\033[?1000h\\033[?1006h'; stty raw -echo; dd bs=1 count=6 2>/dev/null | od -An -tx1 | tr -s ' '\n",
+    let (mut h, _prog) = Harness::with_program(
+        12,
+        60,
+        "seq 1 200; printf '\\033[?1000h\\033[?1006h'; stty raw -echo; dd bs=1 count=6 2>/dev/null | od -An -tx1 | tr -s ' '",
     );
     h.settle("mouse reporting on", |h| {
         h.app
@@ -1625,7 +1629,7 @@ async fn jmux_layout_d_the_wheel_goes_to_a_reporting_program_and_shift_scrolls_i
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_layout_d_shift_click_extends_the_selection() {
     let mut h = Harness::new(12, 60).await;
-    h.settle_text("sh ○").await;
+    h.settle_text("fakesh ○").await;
     h.app.type_text("printf 'ALPHA %s\\n' BETA\n");
     h.settle("the output", |h| h.text().lines().any(|l| l.starts_with("ALPHA BETA")))
         .await;
@@ -1647,7 +1651,7 @@ async fn jmux_layout_d_shift_click_extends_the_selection() {
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_layout_d_a_copy_while_no_client_is_attached_is_not_sent_to_the_next_one() {
     let mut h = Harness::new(12, 60).await;
-    h.settle_text("sh ○").await;
+    h.settle_text("fakesh ○").await;
     h.app.type_text("printf 'STALE_%s\\n' COPY\n");
     h.settle("the output", |h| h.text().contains("STALE_COPY")).await;
     h.frame().await;
@@ -1714,7 +1718,7 @@ impl Harness {
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_layout_e_search_finds_counts_and_steps_with_wrap_and_scrolls_to_the_match() {
     let mut h = Harness::new(12, 60).await;
-    h.settle_text("sh ○").await;
+    h.settle_text("fakesh ○").await;
     h.app.type_text(MARKS);
     h.settle_text("MARK three").await;
     assert!(
@@ -1766,7 +1770,7 @@ async fn jmux_layout_e_search_finds_counts_and_steps_with_wrap_and_scrolls_to_th
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_layout_e_the_current_match_and_the_others_are_drawn_in_the_find_colours() {
     let mut h = Harness::new(12, 60).await;
-    h.settle_text("sh ○").await;
+    h.settle_text("fakesh ○").await;
     h.app.type_text("printf 'MAR%s MAR%s\\n' K K\n");
     h.settle("the output", |h| h.text().lines().any(|l| l.starts_with("MARK MARK")))
         .await;
@@ -1784,7 +1788,7 @@ async fn jmux_layout_e_the_current_match_and_the_others_are_drawn_in_the_find_co
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_layout_e_the_program_gets_no_keys_while_the_bar_is_open_and_esc_gives_them_back() {
     let mut h = Harness::new(12, 60).await;
-    h.settle_text("sh ○").await;
+    h.settle_text("fakesh ○").await;
     h.search_open().await;
     h.app.type_text("qzx");
     h.app.press(KeyCode::Enter, KeyModifiers::NONE);
@@ -1823,7 +1827,7 @@ async fn jmux_layout_e_the_program_gets_no_keys_while_the_bar_is_open_and_esc_gi
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_layout_e_the_bar_belongs_to_its_tab_and_goes_with_it() {
     let mut h = Harness::new(12, 60).await;
-    h.settle_text("sh ○").await;
+    h.settle_text("fakesh ○").await;
     h.search_open().await;
     h.app.type_text("zzz");
     h.app.run(Command::NewTerminal);
@@ -1848,7 +1852,7 @@ async fn jmux_layout_e_the_bar_belongs_to_its_tab_and_goes_with_it() {
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_layout_e_a_ctrl_click_on_a_url_opens_exactly_it_and_a_plain_click_does_not() {
     let mut h = Harness::new(12, 60).await;
-    h.settle_text("sh ○").await;
+    h.settle_text("fakesh ○").await;
     h.app.type_text("printf 'see https:/%s now\\n' /example.com/e-single\n");
     h.settle("the output", |h| {
         h.text().lines().any(|l| l.starts_with("see https://example.com"))
@@ -1882,7 +1886,7 @@ async fn jmux_layout_e_a_ctrl_click_on_a_url_opens_exactly_it_and_a_plain_click_
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_layout_e_a_url_wrapped_over_two_rows_opens_whole() {
     let mut h = Harness::new(12, 60).await;
-    h.settle_text("sh ○").await;
+    h.settle_text("fakesh ○").await;
     let tail = "a".repeat(80);
     h.app.type_text(&format!("printf 'https:/%s\\n' /example.com/{tail}\n"));
     h.settle("the output", |h| {
@@ -1905,12 +1909,12 @@ async fn jmux_layout_e_a_url_wrapped_over_two_rows_opens_whole() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_layout_e_a_full_screen_program_gets_its_keys_and_mouse() {
-    let mut h = Harness::new(12, 60).await;
-    h.settle_text("sh ○").await;
     // The alternate screen, application cursor keys and SGR mouse reporting, then raw input read
     // back as hex: Up, then a press at column 3, row 3 (1-based).
-    h.app.type_text(
-        "printf '\\033[?1049h\\033[?1h\\033[?1000h\\033[?1006h'; stty raw -echo; dd bs=1 count=12 2>/dev/null | od -An -tx1 | tr -s ' '\n",
+    let (mut h, _prog) = Harness::with_program(
+        12,
+        60,
+        "printf '\\033[?1049h\\033[?1h\\033[?1000h\\033[?1006h'; stty raw -echo; dd bs=1 count=12 2>/dev/null | od -An -tx1 | tr -s ' '",
     );
     h.settle("the program's modes", |h| {
         h.app.groups.active_group().active_tab().is_some_and(|t| {
@@ -1939,9 +1943,7 @@ async fn jmux_layout_e_a_real_vi_gets_its_keys() {
     let dir = std::env::temp_dir().join(format!("jmux-vi-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("note.txt");
-    let mut h = Harness::new(12, 60).await;
-    h.settle_text("sh ○").await;
-    h.app.type_text(&format!("{vi} {}\n", file.display()));
+    let (mut h, _prog) = Harness::with_program(12, 60, &format!("{vi} '{}'", file.display()));
     h.settle("vi on the alternate screen", |h| {
         h.app
             .groups

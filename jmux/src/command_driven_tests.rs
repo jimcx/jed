@@ -206,13 +206,13 @@ struct Rig {
     _conn_rx: tokio::sync::mpsc::Receiver<crate::protocol::ServerMsg>,
 }
 
-/// A started app on `/bin/sh` with a client attached at 24x80 and its first shell up.
+/// A started app on the fake shell with a client attached at 24x80 and its first shell up.
 async fn rig() -> Rig {
     let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
     let config = Config {
         name: "work".into(),
         socket: PathBuf::new(),
-        program: "/bin/sh".into(),
+        program: jterm::testing::fake_shell(),
         cwd: std::env::temp_dir(),
         open_url: |_| Ok(()),
         dirs: None,

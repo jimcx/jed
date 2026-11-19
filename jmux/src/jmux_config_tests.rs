@@ -1,5 +1,5 @@
-//! End-to-end tests of jmux_config-a (`settings.toml`), driving the server `App` headlessly with
-//! real shells and a settings file in a temporary directory (never `XDG_CONFIG_HOME`).
+//! End-to-end tests of jmux_config-a (`settings.toml`), driving the server `App` headlessly with the
+//! fake shell and a settings file in a temporary directory (never `XDG_CONFIG_HOME`).
 //!
 //! Covered by `jmux_config_a_*`: `shell` and `scrollback` from the file the server started with
 //! apply to the first terminal (`..._shell_and_scrollback_apply_to_the_first_terminal`); a bad key is
@@ -39,11 +39,12 @@ struct Harness {
     dir: tempfile::TempDir,
 }
 
-/// A shell script that says `marker` and then becomes `/bin/sh`.
+/// A shell script that says `marker` and then becomes the fake shell.
 fn script(dir: &Path, name: &str, marker: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.join(name);
-    std::fs::write(&path, format!("#!/bin/sh\necho {marker}\nexec /bin/sh\n")).unwrap();
+    let fake = jterm::testing::fake_shell();
+    std::fs::write(&path, format!("#!/bin/sh\necho {marker}\nexec '{}'\n", fake.display())).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     path
 }
@@ -70,7 +71,7 @@ impl Harness {
         let config = Config {
             name: "work".into(),
             socket: PathBuf::new(),
-            program: "/bin/sh".into(),
+            program: jterm::testing::fake_shell(),
             cwd: std::env::temp_dir(),
             open_url: |_| Ok(()),
             dirs: None,
@@ -229,7 +230,7 @@ async fn jmux_config_a_reload_changes_the_next_terminal_only() {
     let shell = script(tmp.path(), "second", "marker-second");
     let mut h = Harness::new("scrollback = 5000\n").await;
     h.settle("the first shell", |h| h.app.groups.tabs().count() == 1).await;
-    assert_eq!(h.last_tab().0, "sh");
+    assert_eq!(h.last_tab().0, "fakesh");
     std::fs::write(
         h.settings_file(),
         format!(
@@ -240,7 +241,7 @@ async fn jmux_config_a_reload_changes_the_next_terminal_only() {
     .unwrap();
     assert_eq!(h.reload().await, "Settings reloaded");
     assert_eq!(h.app.side.width, 40);
-    assert_eq!(h.last_tab().0, "sh", "the running terminal keeps its shell");
+    assert_eq!(h.last_tab().0, "fakesh", "the running terminal keeps its shell");
     h.app.run(Command::NewTerminal);
     h.settle("the second shell's marker", |h| {
         h.screen_text().contains("marker-second")

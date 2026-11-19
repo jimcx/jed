@@ -1,5 +1,5 @@
 //! End-to-end tests for jmux_server-b (the server, part of the task's "done when"): a real server
-//! (its own thread and runtime, a real `/bin/sh` on a PTY) in a temp socket dir, driven by a test
+//! (its own thread and runtime, the fake shell `fakesh` on a PTY) in a temp socket dir, driven by a test
 //! client over the socket that feeds the server's output into a `vt100` screen. Covers: the shell
 //! shown above the status bar, keys and paste reaching it, resize, take-over keeping the screen,
 //! detach keeping the server, the session ending with the shell (socket removed), a version
@@ -10,6 +10,9 @@
 //! detach and its line, `ls`, re-attach at another size with scrollback, take-over, `exit` ending the
 //! session, a vanishing server, `$JMUX` refusing `new` / `attach`, `kill-session`, `rename-session`.
 //! (`kill -9` of a real server is in `tests/cli.rs`.)
+//!
+//! Every test runs the fake shell except `jmux_server_runs_a_real_shell`, the real-`/bin/sh` smoke
+//! test (its prompt, `echo`, a session that ends).
 
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
@@ -35,11 +38,16 @@ struct TestServer {
 impl TestServer {
     /// Starts the server of session `work` on its own runtime and waits for its socket.
     fn start() -> TestServer {
+        TestServer::start_shell(jterm::testing::fake_shell())
+    }
+
+    /// `start`, with `program` as the shell.
+    fn start_shell(program: PathBuf) -> TestServer {
         let tmp = tempfile::tempdir().unwrap();
         // `prepare_dir` creates this one with mode 0700 (the temp dir itself may be open to others).
         let dir = tmp.path().join("run");
         let socket = session::socket_path(&dir, "work");
-        let thread = spawn_thread(dir.clone());
+        let thread = spawn_thread(dir.clone(), program);
         if let Err(e) = server::wait_for_socket(&socket, WAIT, || !thread.is_finished()) {
             let result = if thread.is_finished() {
                 Some(thread.join())
@@ -68,11 +76,11 @@ impl TestServer {
     }
 }
 
-fn config(dir: &Path) -> Config {
+fn config(dir: &Path, program: PathBuf) -> Config {
     Config {
         name: "work".into(),
         socket: session::socket_path(dir, "work"),
-        program: "/bin/sh".into(),
+        program,
         cwd: std::env::temp_dir(),
         open_url: |_| Ok(()),
         dirs: None,
@@ -84,13 +92,13 @@ fn config(dir: &Path) -> Config {
     }
 }
 
-fn spawn_thread(dir: PathBuf) -> std::thread::JoinHandle<std::io::Result<()>> {
+fn spawn_thread(dir: PathBuf, program: PathBuf) -> std::thread::JoinHandle<std::io::Result<()>> {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .unwrap();
-        let result = rt.block_on(server::run(&dir, config(&dir)));
+        let result = rt.block_on(server::run(&dir, config(&dir, program)));
         rt.shutdown_timeout(Duration::from_secs(1));
         result
     })
@@ -159,7 +167,7 @@ impl Client {
     async fn next(&mut self) -> ServerMsg {
         let msg = tokio::time::timeout(WAIT, read_msg::<ServerMsg, _>(&mut self.stream))
             .await
-            .expect("no message from the server in time")
+            .unwrap_or_else(|_| panic!("no message from the server in time; the screen:\n{}", self.text()))
             .expect("bad frame")
             .expect("the server closed the connection");
         if let ServerMsg::Output(bytes) = &msg {
@@ -190,11 +198,10 @@ impl Client {
             .await;
     }
 
-    /// Reads until the shell's first prompt (`sh-5.3$`, `sh-5.3#` as root): input sent before it is typeahead, which
-    /// the shell reads differently (a paste is cooked-mode input then, a bracketed paste after).
+    /// Reads until the shell's first prompt, so what is sent next is not typeahead.
     async fn prompted(&mut self) {
         self.wait_screen("the shell's prompt", |s| {
-            jterm::testing::shows_prompt(s.contents().lines())
+            s.contents().lines().any(|l| l.starts_with(jterm::testing::FAKE_PROMPT))
         })
         .await;
     }
@@ -274,14 +281,31 @@ async fn jmux_server_gives_the_shell_its_environment() {
 async fn jmux_server_pastes_into_the_shell() {
     let mut server = TestServer::start();
     let mut c = Client::attach(&server.socket, 20, 60).await;
-    // At the prompt readline has bracketed paste on, so a pasted `\r` is text, not Enter (before
-    // the prompt it ran the line as cooked-mode typeahead: a race under load).
+    // The shell asked for bracketed paste (`ESC[?2004h`), so the server must wrap the paste in
+    // markers: `pasted` says whether the previous line came wrapped.
     c.prompted().await;
     c.send(ClientMsg::Input(Event::Paste("echo pasted-$((2+2))".into())))
         .await;
     c.wait_text("echo pasted-$((2+2))").await;
     c.press(KeyCode::Enter, KeyModifiers::NONE).await;
     c.wait_text("\npasted-4").await;
+    c.type_text("pasted\r").await;
+    c.wait_text("\nyes").await;
+    c.end(&mut server).await;
+}
+
+/// The smoke test with a real `/bin/sh` (jmux_commands_tests keeps its shell-integration ones): PTY
+/// setup, the environment and session leadership work with a real shell, whatever its prompt.
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_server_runs_a_real_shell() {
+    let mut server = TestServer::start_shell("/bin/sh".into());
+    let mut c = Client::attach(&server.socket, 20, 60).await;
+    c.wait_screen("the shell's prompt", |s| {
+        jterm::testing::shows_prompt(s.contents().lines())
+    })
+    .await;
+    c.type_text("echo real-$((20+22))\r").await;
+    c.wait_text("\nreal-42").await;
     c.end(&mut server).await;
 }
 
@@ -404,7 +428,7 @@ async fn jmux_server_ctrl_d_without_shift_goes_to_the_shell() {
     // The shell reads input once it has run a command.
     c.type_text("echo ready-$((1+1))\r").await;
     c.wait_text("ready-2").await;
-    // End of input at an empty prompt makes `sh` exit: the session ends, nobody detached.
+    // End of input at an empty prompt makes the shell exit: the session ends, nobody detached.
     c.press(KeyCode::Char('d'), KeyModifiers::CONTROL).await;
     assert_eq!(c.wait_bye().await, ByeReason::SessionEnded);
     server.join().unwrap();
@@ -415,14 +439,15 @@ async fn jmux_server_ctrl_d_without_shift_goes_to_the_shell() {
 async fn jmux_server_puts_the_cursor_where_the_shells_is() {
     let mut server = TestServer::start();
     let mut c = Client::attach(&server.socket, 20, 60).await;
+    c.prompted().await;
     c.type_text("abc").await;
-    c.wait_screen("the typed text", |s| {
-        s.rows(0, 60).any(|r| r.trim_end().ends_with("abc"))
+    c.wait_screen("the typed text after the prompt", |s| {
+        s.rows(0, 60).any(|r| r.trim_end().ends_with("$ abc"))
     })
     .await;
     let (row, text) = (0..20u16)
         .map(|r| (r, c.row(r)))
-        .find(|(_, t)| t.trim_end().ends_with("abc"))
+        .find(|(_, t)| t.trim_end().ends_with("$ abc"))
         .unwrap();
     let screen = c.screen.screen();
     assert!(!screen.hide_cursor(), "the cursor must be shown");
@@ -450,7 +475,7 @@ async fn jmux_server_replaces_a_stale_socket_but_not_a_live_one() {
     let mut server = TestServer::start();
     flake_step(t0, "server started", &server.socket);
     // A second server for the same name finds the live socket and refuses.
-    let second = spawn_thread(server.dir.clone());
+    let second = spawn_thread(server.dir.clone(), jterm::testing::fake_shell());
     let deadline = Instant::now() + WAIT;
     while !second.is_finished() {
         assert!(
@@ -474,7 +499,7 @@ async fn jmux_server_replaces_a_stale_socket_but_not_a_live_one() {
     // A leftover file nobody listens on is replaced.
     stale_socket(&server.socket);
     assert!(server.socket.exists());
-    server.thread = Some(spawn_thread(server.dir.clone()));
+    server.thread = Some(spawn_thread(server.dir.clone(), jterm::testing::fake_shell()));
     server::wait_for_socket(&server.socket, WAIT, || true).unwrap();
     flake_step(t0, "replacement server's socket is up; attaching", &server.socket);
     let c = Client::attach(&server.socket, 20, 60).await;
@@ -931,12 +956,16 @@ fn jmux_exe() -> PathBuf {
     path
 }
 
-/// A script in `dir` that runs the jmux binary with `SHELL=/bin/sh`, so servers started through
-/// `cli::start` don't run the developer's own shell (zsh's first-run menu would swallow input).
+/// A script in `dir` that runs the jmux binary with `SHELL` the fake shell, so servers started
+/// through `cli::start` don't run the developer's own shell (zsh's first-run menu would swallow input).
 fn sh_pinned_exe(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let script = dir.join("jmux-sh");
-    let body = format!("#!/bin/sh\nSHELL=/bin/sh exec '{}' \"$@\"\n", jmux_exe().display());
+    let body = format!(
+        "#!/bin/sh\nSHELL='{}' exec '{}' \"$@\"\n",
+        jterm::testing::fake_shell().display(),
+        jmux_exe().display()
+    );
     std::fs::write(&script, body).unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     script
@@ -1041,10 +1070,10 @@ async fn jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_liv
     let _work = StartedServer::new(&socket);
     assert_eq!(name, "work");
     let c = Attached::start(&socket, 20, 80).await;
-    // Typed before the first prompt, the tty echoes `pwd` first and its output lands on the
-    // prompt's line (`sh-5.3$ pwd/tmp/…`), never a row of its own.
-    c.wait_rows("the shell's prompt", |rows| jterm::testing::shows_prompt(rows))
-        .await;
+    c.wait_rows("the shell's prompt", |rows| {
+        rows.iter().any(|l| l.starts_with(jterm::testing::FAKE_PROMPT))
+    })
+    .await;
     c.type_text("pwd\r");
     let want = cwd.display().to_string();
     let (begun, deadline) = (Instant::now(), Instant::now() + WAIT);

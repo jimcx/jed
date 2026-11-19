@@ -1,6 +1,6 @@
 # jed
 
-A cargo workspace: **jed**, a VS Code-style terminal text editor (`jed/`; ratatui + crossterm + tokio, ropey 2 beta for text), **jmux**, a tmux-like multiplexer (`jmux/`), and the libraries they share (`crates/jtui`, `crates/jterm`). This file is about jed; jmux and the crates are in [docs/dev/crates.md](docs/dev/crates.md), jmux's design in `jmux/PLAN.md`.
+A cargo workspace: **jed**, a VS Code-style terminal text editor (`jed/`; ratatui + crossterm + tokio, ropey 2 beta for text), **jmux**, a tmux-like multiplexer (`jmux/`), and the libraries they share (`crates/jtui`, `crates/jterm`), plus `crates/fakesh`, the shell the terminal tests run. This file is about jed; jmux and the crates are in [docs/dev/crates.md](docs/dev/crates.md), jmux's design in `jmux/PLAN.md`.
 
 **PLAN.md is the source of truth for jed's design and scope** — read the section you need instead of guessing: Features (one subsection per area), [Keybindings](PLAN.md#keybindings-vs-code-defaults), [Architecture](PLAN.md#architecture), [Text positions](PLAN.md#text-positions), [Async and blocking work](PLAN.md#async-and-blocking-work), [Logging](PLAN.md#logging), [Tasks](PLAN.md#tasks).
 

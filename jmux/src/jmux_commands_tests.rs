@@ -1,5 +1,7 @@
 //! End-to-end tests of jmux_commands-a (the history model's feed, the install command and the
-//! missing-integration notice), driving the server `App` headlessly with real `/bin/sh` shells.
+//! missing-integration notice), driving the server `App` headlessly with the fake shell
+//! (`jterm::testing::fake_shell`); the tests of the notice and the install command run a real
+//! `/bin/sh` (named `zsh`), because they check what a shell with an init file does with the snippet.
 //! The integration is faked by typing a line that prints the codes the snippets would (`133;B`,
 //! `633;E;<command>`, `133;D;<exit>`), so no init file is involved.
 //!
@@ -39,6 +41,11 @@ use crate::protocol::{ClientMsg, PROTOCOL_VERSION, ServerMsg};
 use crate::settings::COMMAND_HISTORY;
 
 const WAIT: Duration = Duration::from_secs(10);
+
+/// The shell the harness runs, as `Harness::new` takes it.
+fn fake_sh() -> String {
+    jterm::testing::fake_shell().to_string_lossy().into_owned()
+}
 
 struct Harness {
     app: App,
@@ -193,6 +200,15 @@ impl Harness {
         self.side_rows().iter().position(|r| r.contains(text))
     }
 
+    /// Types `count` commands `c1`, `c2`, ... that each start and finish at once (one line each).
+    fn finish_commands(&mut self, count: u32) {
+        for i in 1..=count {
+            self.type_text(&format!(
+                "printf '\\033]133;B\\007\\033]633;E;c{i}\\007'; printf '\\033]133;D;0\\007'"
+            ));
+        }
+    }
+
     /// A command that prints `name`'s marker line and `lines` numbered lines.
     fn fake_out(&mut self, name: &str, lines: u32) {
         self.type_text(&format!(
@@ -205,11 +221,14 @@ impl Harness {
     /// starts on the prompt's line).
     async fn prompted(&mut self) {
         self.settle("the shell's prompt", |h| {
-            h.app
-                .groups
-                .active_group()
-                .active_tab()
-                .is_some_and(|t| jterm::testing::shows_prompt(t.run.screen().screen().contents().lines()))
+            h.app.groups.active_group().active_tab().is_some_and(|t| {
+                t.run
+                    .screen()
+                    .screen()
+                    .contents()
+                    .lines()
+                    .any(|l| l.starts_with(jterm::testing::FAKE_PROMPT))
+            })
         })
         .await;
     }
@@ -227,7 +246,7 @@ fn row(label: &str, glyph: char, title: &str, closed: bool) -> (String, char, St
 // runs; which step is unknown); the FLAKE lines below name the step and the rows seen.
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_commands_a_a_command_is_a_running_row_then_finished_with_its_exit_code() {
-    let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
+    let mut h = Harness::new(&fake_sh(), None, COMMAND_HISTORY).await;
     let flake = |step: &str, h: &Harness| {
         eprintln!(
             "FLAKE jmux_commands_a_a_command_is_a_running_row_then_finished_with_its_exit_code: before `{step}`, rows {:?}",
@@ -236,10 +255,10 @@ async fn jmux_commands_a_a_command_is_a_running_row_then_finished_with_its_exit_
     };
     h.fake("slow", 2, 0);
     flake("a running row", &h);
-    h.settle("a running row", |h| h.rows() == [row("slow", '●', "sh", false)])
+    h.settle("a running row", |h| h.rows() == [row("slow", '●', "fakesh", false)])
         .await;
     flake("it finished", &h);
-    h.settle("it finished", |h| h.rows() == [row("slow", '✓', "sh", false)])
+    h.settle("it finished", |h| h.rows() == [row("slow", '✓', "fakesh", false)])
         .await;
     let r = &h.app.history.rows()[0];
     let took = r.record.finished.map(|f| f - r.record.started);
@@ -253,14 +272,14 @@ async fn jmux_commands_a_a_command_is_a_running_row_then_finished_with_its_exit_
     h.fake("bad", 0, 1);
     flake("a failed row", &h);
     h.settle("a failed row", |h| {
-        h.rows() == [row("bad", '✗', "sh", false), row("slow", '✓', "sh", false)]
+        h.rows() == [row("bad", '✗', "fakesh", false), row("slow", '✓', "fakesh", false)]
     })
     .await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_commands_a_rows_of_two_terminals_interleave_by_time() {
-    let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
+    let mut h = Harness::new(&fake_sh(), None, COMMAND_HISTORY).await;
     h.fake("one", 0, 0);
     h.settle("one", |h| h.rows().len() == 1 && !h.app.history.rows()[0].running())
         .await;
@@ -275,16 +294,16 @@ async fn jmux_commands_a_rows_of_two_terminals_interleave_by_time() {
     assert_eq!(
         h.rows(),
         [
-            row("three", '✗', "sh", false),
-            row("two", '✓', "sh (2)", false),
-            row("one", '✓', "sh", false)
+            row("three", '✗', "fakesh", false),
+            row("two", '✓', "fakesh (2)", false),
+            row("one", '✓', "fakesh", false)
         ]
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_commands_a_a_closed_terminals_rows_stay_marked_and_a_running_one_ends() {
-    let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
+    let mut h = Harness::new(&fake_sh(), None, COMMAND_HISTORY).await;
     h.fake("keep", 0, 0);
     h.settle("keep", |h| h.rows().len() == 1 && !h.app.history.rows()[0].running())
         .await;
@@ -305,19 +324,17 @@ async fn jmux_commands_a_a_closed_terminals_rows_stay_marked_and_a_running_one_e
     assert_eq!(
         h.rows(),
         [
-            row("hang", '·', "sh (2)", true),
-            row("done", '✓', "sh (2)", true),
-            row("keep", '✓', "sh", false)
+            row("hang", '·', "fakesh (2)", true),
+            row("done", '✓', "fakesh (2)", true),
+            row("keep", '✓', "fakesh", false)
         ]
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_commands_a_the_list_holds_at_most_command_history_rows() {
-    let mut h = Harness::new("/bin/sh", None, 3).await;
-    h.type_text(
-        "for i in 1 2 3 4 5; do printf '\\033]133;B\\007\\033]633;E;c%s\\007' $i; printf '\\033]133;D;0\\007'; done",
-    );
+    let mut h = Harness::new(&fake_sh(), None, 3).await;
+    h.finish_commands(5);
     h.settle("the newest three", |h| {
         h.rows().first().is_some_and(|r| r.0 == "c5" && r.1 == '✓')
     })
@@ -347,7 +364,7 @@ async fn jmux_commands_a_the_first_shell_without_the_integration_gets_a_notice_u
 async fn jmux_commands_a_a_shell_with_no_snippet_or_no_directories_gets_no_notice() {
     let tmp = tempfile::tempdir().unwrap();
     for d in [Some(dirs(tmp.path())), None] {
-        let mut h = Harness::new("/bin/sh", d, COMMAND_HISTORY).await;
+        let mut h = Harness::new(&fake_sh(), d, COMMAND_HISTORY).await;
         let until = Instant::now() + Duration::from_millis(500);
         while Instant::now() < until {
             h.step().await;
@@ -385,7 +402,7 @@ async fn jmux_commands_a_install_writes_the_snippet_and_the_init_line_once_and_s
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_commands_a_closing_a_tab_keeps_a_finish_the_app_had_not_seen() {
-    let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
+    let mut h = Harness::new(&fake_sh(), None, COMMAND_HISTORY).await;
     h.app.run(Command::NewTerminal);
     h.fake("late", 0, 7);
     // Wait on the run itself, not the app: no event is handled meanwhile, so the history has
@@ -404,7 +421,7 @@ async fn jmux_commands_a_closing_a_tab_keeps_a_finish_the_app_had_not_seen() {
     }
     h.app.run(Command::CloseTerminal);
     assert_eq!(h.app.groups.tab_count(), 1, "the tab closed without a question");
-    assert_eq!(h.rows(), [row("late", '✗', "sh (2)", true)]);
+    assert_eq!(h.rows(), [row("late", '✗', "fakesh (2)", true)]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -436,7 +453,7 @@ async fn finished(h: &mut Harness, count: usize) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_commands_b_a_command_is_a_running_row_with_its_title_then_a_check_with_its_duration() {
-    let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
+    let mut h = Harness::new(&fake_sh(), None, COMMAND_HISTORY).await;
     h.show_side().await;
     h.fake("slow", 2, 0);
     h.settle("a running row", |h| {
@@ -462,7 +479,7 @@ async fn jmux_commands_b_a_command_is_a_running_row_with_its_title_then_a_check_
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_commands_b_a_failed_command_shows_a_cross() {
-    let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
+    let mut h = Harness::new(&fake_sh(), None, COMMAND_HISTORY).await;
     h.show_side().await;
     h.fake("bad", 0, 1);
     h.settle("the cross", |h| {
@@ -473,7 +490,7 @@ async fn jmux_commands_b_a_failed_command_shows_a_cross() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_commands_b_rows_of_two_terminals_interleave_by_time_on_screen() {
-    let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
+    let mut h = Harness::new(&fake_sh(), None, COMMAND_HISTORY).await;
     h.show_side().await;
     h.fake("one", 0, 0);
     finished(&mut h, 1).await;
@@ -493,12 +510,17 @@ async fn jmux_commands_b_rows_of_two_terminals_interleave_by_time_on_screen() {
         h.side_row_of("one").unwrap(),
     );
     assert!(three < two && two < one, "newest first");
-    assert!(h.side_rows()[two].contains("sh (2)"), "the other terminal's title");
+    // The numbered title is the longer one, so the narrow bar cuts it.
+    assert!(
+        h.side_rows()[two].contains("fakesh…"),
+        "the other terminal's title: {:?}",
+        h.side_rows()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_commands_b_clicking_an_old_row_in_the_other_group_focuses_it_and_scrolls_its_command_to_the_top() {
-    let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
+    let mut h = Harness::new(&fake_sh(), None, COMMAND_HISTORY).await;
     h.show_side().await;
     let first = h.app.groups.active;
     h.prompted().await;
@@ -527,7 +549,7 @@ async fn jmux_commands_b_clicking_an_old_row_in_the_other_group_focuses_it_and_s
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_commands_b_a_lost_command_only_focuses_with_a_notice() {
-    let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
+    let mut h = Harness::new(&fake_sh(), None, COMMAND_HISTORY).await;
     h.show_side().await;
     h.fake_out("gone", 5);
     finished(&mut h, 1).await;
@@ -545,7 +567,7 @@ async fn jmux_commands_b_a_lost_command_only_focuses_with_a_notice() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_commands_b_a_closed_terminals_rows_are_dimmed_and_do_nothing() {
-    let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
+    let mut h = Harness::new(&fake_sh(), None, COMMAND_HISTORY).await;
     h.show_side().await;
     h.app.run(Command::NewTerminal);
     h.fake_out("gone", 3);
@@ -594,7 +616,7 @@ async fn jmux_commands_b_a_closed_terminals_rows_are_dimmed_and_do_nothing() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_commands_b_the_filter_narrows_the_list() {
-    let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
+    let mut h = Harness::new(&fake_sh(), None, COMMAND_HISTORY).await;
     h.show_side().await;
     for name in ["alpha", "beta", "alpine"] {
         h.fake(name, 0, 0);
@@ -620,11 +642,9 @@ async fn jmux_commands_b_the_filter_narrows_the_list() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_commands_b_the_list_holds_at_most_command_history_rows() {
-    let mut h = Harness::new("/bin/sh", None, 3).await;
+    let mut h = Harness::new(&fake_sh(), None, 3).await;
     h.show_side().await;
-    h.type_text(
-        "for i in 1 2 3 4 5; do printf '\\033]133;B\\007\\033]633;E;c%s\\007' $i; printf '\\033]133;D;0\\007'; done",
-    );
+    h.finish_commands(5);
     h.settle("the newest three drawn", |h| {
         h.side_has("c5") && h.side_has("c3") && !h.side_has("c2")
     })
@@ -651,7 +671,7 @@ async fn jmux_commands_b_without_the_integration_the_bar_says_how_to_install_it(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_commands_b_with_the_integration_unknown_the_empty_bar_just_says_no_commands() {
-    let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
+    let mut h = Harness::new(&fake_sh(), None, COMMAND_HISTORY).await;
     h.show_side().await;
     assert!(h.side_has("No commands yet"));
     assert!(!h.side_has("install-shell-integration"));
@@ -659,7 +679,7 @@ async fn jmux_commands_b_with_the_integration_unknown_the_empty_bar_just_says_no
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_commands_b_keys_move_the_selection_open_a_row_and_hand_the_keys_back() {
-    let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
+    let mut h = Harness::new(&fake_sh(), None, COMMAND_HISTORY).await;
     h.fake_out("first", 3);
     finished(&mut h, 1).await;
     h.fake_out("second", 3);
@@ -702,7 +722,7 @@ async fn jmux_commands_b_keys_move_the_selection_open_a_row_and_hand_the_keys_ba
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_commands_b_dragging_the_border_resizes_the_bar_and_the_shells() {
-    let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
+    let mut h = Harness::new(&fake_sh(), None, COMMAND_HISTORY).await;
     h.show_side().await;
     let cols = |h: &Harness| {
         h.app
@@ -735,11 +755,9 @@ async fn jmux_commands_b_dragging_the_border_resizes_the_bar_and_the_shells() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_commands_b_the_wheel_and_scroll_bar_move_a_long_list() {
-    let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
+    let mut h = Harness::new(&fake_sh(), None, COMMAND_HISTORY).await;
     h.show_side().await;
-    h.type_text(
-        "for i in $(seq 1 40); do printf '\\033]133;B\\007\\033]633;E;c%s\\007' $i; printf '\\033]133;D;0\\007'; done",
-    );
+    h.finish_commands(40);
     h.settle("forty rows", |h| h.rows().len() == 40 && h.side_has("c40"))
         .await;
     let thumb = h.app.hit.side.as_ref().unwrap().scroll.thumb;
@@ -766,7 +784,7 @@ async fn jmux_commands_b_the_wheel_and_scroll_bar_move_a_long_list() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_commands_b_the_tick_redraws_only_while_the_bar_shows_rows() {
-    let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
+    let mut h = Harness::new(&fake_sh(), None, COMMAND_HISTORY).await;
     h.fake("a", 0, 0);
     finished(&mut h, 1).await;
     h.settle("drawn", |h| !h.app.needs_redraw).await;
@@ -778,7 +796,7 @@ async fn jmux_commands_b_the_tick_redraws_only_while_the_bar_shows_rows() {
     h.app.handle(AppEvent::Tick);
     assert!(h.app.needs_redraw, "a visible bar with rows: a frame");
     // An empty bar has nothing that moves.
-    let mut empty = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
+    let mut empty = Harness::new(&fake_sh(), None, COMMAND_HISTORY).await;
     empty.show_side().await;
     empty.app.needs_redraw = false;
     empty.app.handle(AppEvent::Tick);
@@ -787,7 +805,7 @@ async fn jmux_commands_b_the_tick_redraws_only_while_the_bar_shows_rows() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_commands_b_the_tick_does_not_redraw_without_a_client() {
-    let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
+    let mut h = Harness::new(&fake_sh(), None, COMMAND_HISTORY).await;
     h.fake("a", 0, 0);
     finished(&mut h, 1).await;
     h.show_side().await;
@@ -799,7 +817,7 @@ async fn jmux_commands_b_the_tick_does_not_redraw_without_a_client() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_commands_b_keys_typed_in_the_bar_never_reach_the_shell() {
-    let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
+    let mut h = Harness::new(&fake_sh(), None, COMMAND_HISTORY).await;
     h.show_side().await;
     h.app.run(Command::Side(SideCommand::Focus));
     for ch in "zzq".chars() {
@@ -823,7 +841,7 @@ async fn jmux_commands_b_keys_typed_in_the_bar_never_reach_the_shell() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_commands_b_the_close_question_has_the_keys_over_a_focused_bar() {
-    let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
+    let mut h = Harness::new(&fake_sh(), None, COMMAND_HISTORY).await;
     h.fake("busy", 3, 0);
     h.settle("running", |h| h.app.history.rows().iter().any(|r| r.running()))
         .await;
@@ -840,7 +858,7 @@ async fn jmux_commands_b_the_close_question_has_the_keys_over_a_focused_bar() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_commands_b_a_paste_into_the_focused_bar_goes_to_the_filter() {
-    let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
+    let mut h = Harness::new(&fake_sh(), None, COMMAND_HISTORY).await;
     h.show_side().await;
     h.app.run(Command::Side(SideCommand::Focus));
     let msg = ClientMsg::Input(Input::Paste("ab\ncd".into()));

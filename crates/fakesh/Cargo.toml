@@ -1,0 +1,17 @@
+[package]
+name = "fakesh"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+# A shell with fixed behaviour for jed's and jmux's terminal tests (`jterm::testing::fake_shell`).
+[[bin]]
+name = "fakesh"
+path = "src/main.rs"
+
+[dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+jterm = { path = "../jterm" }
+tokio = { workspace = true }

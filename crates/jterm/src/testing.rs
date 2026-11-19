@@ -1,6 +1,30 @@
-//! Test helpers for jed's and jmux's real-shell tests (the `testing` feature, turned on by their
-//! dev-dependencies). `/bin/sh` prompts with `$ `, or `# ` when the tests run as root (as in CI
-//! containers); bash as `sh` shows `sh-5.3$ ` / `sh-5.3# `.
+//! Test helpers for jed's and jmux's terminal tests (the `testing` feature, turned on by their
+//! dev-dependencies). Most tests run [`fake_shell`], whose prompt is always [`FAKE_PROMPT`]. The
+//! prompt helpers below are for the few tests that run a real `/bin/sh`, which prompts with `$ `,
+//! `# ` as root, or `sh-5.3$ ` when `sh` is bash.
+
+use std::path::PathBuf;
+
+/// The prompt `fakesh` draws (root or not).
+pub const FAKE_PROMPT: &str = "$ ";
+
+/// The `fakesh` binary (`crates/fakesh`), next to the test executable's `deps` directory like
+/// the other workspace binaries. `cargo test --workspace` builds it (the crate has an integration
+/// test); `cargo test -p jmux` alone does not.
+pub fn fake_shell() -> PathBuf {
+    let exe = std::env::current_exe().expect("the test executable's path");
+    let path = exe
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("target/<profile>/deps")
+        .join("fakesh");
+    assert!(
+        path.exists(),
+        "{} is not built: run `cargo build -p fakesh` (or `scripts/check`, which builds the workspace)",
+        path.display()
+    );
+    path
+}
 
 /// The characters a shell's prompt ends with.
 const PROMPT_END: [char; 2] = ['$', '#'];
@@ -37,6 +61,11 @@ pub fn line_is(row: &str, want: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_fake_shell_prompt_is_a_prompt() {
+        assert!(ends_with_prompt(FAKE_PROMPT));
+    }
 
     #[test]
     fn user_and_root_prompts_both_count() {
