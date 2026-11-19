@@ -447,11 +447,11 @@ async fn command_driven_tests_route_markdown() {
     check_route(&mut app, Context::Markdown);
 }
 
-/// An app with a shell tab in the editor (`/bin/sh`), its prompt up.
+/// An app with a shell tab in the editor (the fake shell), its prompt up.
 async fn shell_tab() -> (tempfile::TempDir, App) {
     let (dir, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     assert!(
         app.settle(|a| !screen_text(a).trim().is_empty()).await,

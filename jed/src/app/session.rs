@@ -693,7 +693,7 @@ mod tests {
             true,
         );
         app.test_start();
-        app.tasks.shell = "/bin/sh".into();
+        app.tasks.shell = jterm::testing::fake_shell();
         app.test_open(Buffer::new_file(&root.join("a.txt")));
         app.new_shell_in_editor();
 
@@ -720,7 +720,7 @@ mod tests {
             true,
         );
         app.test_start();
-        app.tasks.shell = "/bin/sh".into();
+        app.tasks.shell = jterm::testing::fake_shell();
         app.new_shell_in_editor();
         app.test_open(Buffer::new_file(&root.join("a.txt")));
         app.test_open(Buffer::new_file(&root.join("b.txt")));

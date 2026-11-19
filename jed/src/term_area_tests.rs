@@ -24,7 +24,7 @@ use crate::shell_tests::{dirs, draw, shell_app};
 
 fn app_in(root: &std::path::Path, state: &std::path::Path) -> App {
     let mut app = shell_app(root, state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app
 }
 
@@ -736,10 +736,7 @@ async fn term_area_new_shell_after_hiding_with_empty_groups() {
 /// Sends `echo $((n*n))` to the focused shell and waits for the result in the shell `tab` of
 /// `group` (an editor group's or the area's).
 async fn shell_answers(app: &mut App, group: GroupId, n: u32) {
-    app.type_text(&format!("echo $(({n}*{n}))"));
-    app.press(KeyCode::Enter, KeyModifiers::NONE);
-    let want = (n * n).to_string();
-    let seen = move |a: &App| {
+    let screens = move |a: &App| -> Vec<String> {
         (if is_terminal_group(group) {
             &a.terminals
         } else {
@@ -750,12 +747,20 @@ async fn shell_answers(app: &mut App, group: GroupId, n: u32) {
         .tabs
         .iter()
         .filter_map(|t| t.shell())
-        .any(|s| {
-            let text = s.run.screen().screen().contents();
-            // Typed before the prompt, the tty echoes the command first and the answer lands after the prompt.
-            text.lines().any(|l| jterm::testing::line_is(l, &want))
-        })
+        .map(|s| s.run.screen().screen().contents())
+        .collect()
     };
+    // Typed after the prompt, so the answer is a line of its own.
+    let at_prompt = move |a: &App| {
+        screens(a)
+            .iter()
+            .any(|t| t.lines().last().is_some_and(|l| l.trim_end() == "$"))
+    };
+    assert!(app.settle(at_prompt).await, "no prompt from the shell");
+    app.type_text(&format!("echo $(({n}*{n}))"));
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    let want = (n * n).to_string();
+    let seen = move |a: &App| screens(a).iter().any(|t| t.lines().any(|l| l.trim() == want));
     assert!(app.settle(seen).await, "no answer from the shell");
 }
 
@@ -888,7 +893,7 @@ async fn term_area_startup_terminal() {
         });
         let identity = App::start_identity(&ws, mode, initial.as_ref());
         let mut app = App::new_in(mode, ws, trust, initial, identity, true);
-        app.tasks.shell = "/bin/sh".into();
+        app.tasks.shell = jterm::testing::fake_shell();
         app.state_dir = Some(state.clone());
         app.startup_terminal = true;
         app.test_start();

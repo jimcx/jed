@@ -7454,7 +7454,7 @@ mod term_mouse {
     async fn shell_mouse_clicks_drags_and_the_wheel_reach_its_program() {
         let (_d, root, state) = dirs();
         let mut app = shell_app(&root, &state);
-        app.tasks.shell = "/bin/sh".into();
+        app.tasks.shell = jterm::testing::fake_shell();
         app.new_shell_in_editor();
         assert!(
             app.group()
@@ -7524,7 +7524,7 @@ mod term_mouse {
     async fn back_and_forward_drags_and_releases_do_not_reach_the_program() {
         let (_d, root, state) = dirs();
         let mut app = shell_app(&root, &state);
-        app.tasks.shell = "/bin/sh".into();
+        app.tasks.shell = jterm::testing::fake_shell();
         app.new_shell_in_editor();
         assert!(
             app.group()
@@ -7620,7 +7620,7 @@ mod term_mouse {
     async fn mouse_off_leaves_clicks_alone_and_the_wheel_scrolls() {
         let (_d, root, state) = dirs();
         let mut app = shell_app(&root, &state);
-        app.tasks.shell = "/bin/sh".into();
+        app.tasks.shell = jterm::testing::fake_shell();
         app.new_shell_in_editor();
         assert!(
             app.group()
@@ -8189,7 +8189,7 @@ mod term_scroll_bar {
     async fn a_shell_has_a_scroll_bar_that_scrolls_its_scrollback() {
         let (_d, root, state) = dirs();
         let mut app = shell_app(&root, &state);
-        app.tasks.shell = "/bin/sh".into();
+        app.tasks.shell = jterm::testing::fake_shell();
         app.new_shell_in_editor();
         assert!(
             app.group()
@@ -8267,7 +8267,7 @@ mod term_scroll_bar {
     async fn a_fresh_shell_shows_a_reserved_track_with_no_thumb() {
         let (_d, root, state) = dirs();
         let mut app = shell_app(&root, &state);
-        app.tasks.shell = "/bin/sh".into();
+        app.tasks.shell = jterm::testing::fake_shell();
         app.new_shell_in_editor();
         let term = draw(&mut app, 100, 30);
         let hit = app.hits.group(app.groups.active).unwrap();
@@ -8283,7 +8283,7 @@ mod term_scroll_bar {
         let dir = tempfile::tempdir().unwrap();
         let (root, state) = crate::milestone12_tests::dirs(&dir);
         let mut app = crate::milestone12_tests::open_app(&root, &state, Some(&count_task()));
-        app.tasks.shell = "/bin/sh".into();
+        app.tasks.shell = jterm::testing::fake_shell();
         drop(draw(&mut app, 100, 30));
         let id = app.run_task("t").unwrap();
         assert!(
@@ -8589,7 +8589,7 @@ mod text_pointer {
         let dir = tempfile::tempdir().unwrap();
         let mut app = test_app(dir.path(), Buffer::from_str("hello\n"));
         app.test_start();
-        app.tasks.shell = "/bin/sh".into();
+        app.tasks.shell = jterm::testing::fake_shell();
         app.test_execute(Command::NewShell);
         let mut term = Terminal::new(TestBackend::new(100, 40)).unwrap();
         draw(&mut app, &mut term);
@@ -8972,7 +8972,7 @@ mod drag_to_terminal_area {
     /// on a drop); drawn at 100x40. Returns the app, that group and the shell's run id.
     fn setup(root: &std::path::Path, state: &std::path::Path, n: usize) -> (App, GroupId, RunId) {
         let mut app = shell_app(root, state);
-        app.tasks.shell = "/bin/sh".into();
+        app.tasks.shell = jterm::testing::fake_shell();
         app.test_open(Buffer::new_file(&root.join("a.txt")));
         app.ui.terminal_height = 20;
         for _ in 0..n {
@@ -10572,7 +10572,7 @@ mod file_info_tab_menu {
     #[tokio::test(flavor = "multi_thread")]
     async fn file_info_tab_menu_items_are_disabled_on_a_shell_tab() {
         let (_d, _root, _o, mut app) = setup();
-        app.tasks.shell = "/bin/sh".into();
+        app.tasks.shell = jterm::testing::fake_shell();
         app.new_shell_in_editor();
         assert!(app.group().active_shell().is_some());
         let i = app.group().active;
@@ -10787,7 +10787,7 @@ mod file_info_editor_menu {
     #[tokio::test(flavor = "multi_thread")]
     async fn file_info_editor_menu_not_on_a_shell_tab() {
         let (_d, _root, _o, mut app) = setup();
-        app.tasks.shell = "/bin/sh".into();
+        app.tasks.shell = jterm::testing::fake_shell();
         app.new_shell_in_editor();
         assert!(app.group().active_shell().is_some());
         draw(&mut app);
@@ -13891,7 +13891,11 @@ mod shell_integration_check {
         let home = root.parent().unwrap().join("home");
         std::fs::create_dir_all(&home).unwrap();
         let mut app = shell_app(&root, &state);
-        app.tasks.shell = shell_script(&root, name, "echo READY; exec /bin/sh");
+        app.tasks.shell = shell_script(
+            &root,
+            name,
+            &format!("echo READY; exec {}", jterm::testing::fake_shell().display()),
+        );
         app.state_dir = Some(state.clone());
         app.shell_home = (home.clone(), home.join(".config"));
         (dir, app, home, state)

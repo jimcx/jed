@@ -24,6 +24,13 @@
 //! failed command, the `JED_IPC` guard's no-op when there's no socket, and another shell's
 //! PROMPT_COMMAND hook being skipped (any element of `PROMPT_COMMAND` is prompt machinery, not a
 //! command).
+//!
+//! The shells run the fake shell (`jterm::testing::fake_shell()`), so a prompt is `$ ` and a paste
+//! or Ctrl+C acts the same everywhere. Real shells are kept for: `shell_runs_a_real_shell` (the
+//! smoke test: PTY setup, environment, session leadership), `shell_jed_command_opens_the_file_in_this_jed`
+//! and `shell_git_commit_opens_its_message_here` (they run `jed` / `git` from the shell, which the
+//! fake never forks), and the bash snippet tests (they source a real init file). Signal tests run
+//! `shell_script` programs.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -41,8 +48,8 @@ use crate::tasks::{SHUTDOWN_TIMEOUT, Source, Status, Task, Template};
 use crate::workspace::Workspace;
 use crate::workspace::trust::TrustStore;
 
-/// A command printing 0 to 199, one per line, in the shell (`seq` is missing on macOS).
-pub(crate) const COUNT_TO_200: &str = "i=0; while [ $i -lt 200 ]; do echo $i; i=$((i+1)); done";
+/// A command printing 0 to 199, one per line, in the shell.
+pub(crate) const COUNT_TO_200: &str = "seq 0 199";
 
 /// A workspace app on `root`, its trust store in `state`.
 pub(crate) fn shell_app(root: &Path, state: &Path) -> App {
@@ -74,7 +81,7 @@ pub(crate) fn dirs() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathB
 }
 
 /// "Terminal: New Shell" opens `tasks.shell` (here a link named `myshell`, so not a hardcoded
-/// `/bin/sh`) in the active group; titles number shells of the same program only, a text tab
+/// shell name) in the active group; titles number shells of the same program only, a text tab
 /// in the group not counting.
 #[tokio::test(flavor = "multi_thread")]
 async fn shell_new_shell_opens_the_shell_in_a_tab() {
@@ -82,7 +89,7 @@ async fn shell_new_shell_opens_the_shell_in_a_tab() {
     let mut app = shell_app(&root, &state);
     app.test_open(Buffer::new_file(&root.join("a.txt")));
     let program = root.join("myshell");
-    std::os::unix::fs::symlink("/bin/sh", &program).unwrap();
+    std::os::unix::fs::symlink(jterm::testing::fake_shell(), &program).unwrap();
     app.tasks.shell = program;
 
     app.new_shell_in_editor();
@@ -116,40 +123,48 @@ async fn shell_new_shell_opens_the_shell_in_a_tab() {
 async fn shell_titles_reuse_a_closed_number() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     for _ in 0..3 {
         app.new_shell_in_editor();
     }
     let mut titles: Vec<String> = app.groups.shell_tabs().map(|s| s.title.clone()).collect();
     titles.sort();
-    assert_eq!(titles, ["sh (2) ○", "sh (3) ○", "sh ○"]);
+    assert_eq!(titles, ["fakesh (2) ○", "fakesh (3) ○", "fakesh ○"]);
 
-    // Close the middle one ("sh (2)").
+    // Close the middle one ("fakesh (2)").
     app.group_mut().active = 1;
     app.test_execute(Command::CloseTab);
     let mut titles: Vec<String> = app.groups.shell_tabs().map(|s| s.title.clone()).collect();
     titles.sort();
-    assert_eq!(titles, ["sh (3) ○", "sh ○"]);
+    assert_eq!(titles, ["fakesh (3) ○", "fakesh ○"]);
 
     app.new_shell_in_editor();
-    assert_eq!(app.group().active_shell().unwrap().title, "sh (2) ○", "the free number");
+    assert_eq!(
+        app.group().active_shell().unwrap().title,
+        "fakesh (2) ○",
+        "the free number"
+    );
     let mut titles: Vec<String> = app.groups.shell_tabs().map(|s| s.title.clone()).collect();
     titles.sort();
-    assert_eq!(titles, ["sh (2) ○", "sh (3) ○", "sh ○"], "no repeated title");
+    assert_eq!(
+        titles,
+        ["fakesh (2) ○", "fakesh (3) ○", "fakesh ○"],
+        "no repeated title"
+    );
 }
 
 /// The tab's title follows the shell's OSC codes (what the shell integration and programs send):
-/// `sh ○` at the prompt, `133;B` + the snippet's OSC 0 title and the running glyph while a command
+/// `fakesh ○` at the prompt, `133;B` + the snippet's OSC 0 title and the running glyph while a command
 /// runs, a program's own OSC 2 title (vim's) until `133;D`, and back to the shell — red at the
 /// prompt after a non-zero exit. Without the codes the title stays the shell's name.
 #[tokio::test(flavor = "multi_thread")]
 async fn shell_title_follows_the_shells_osc_codes() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     let title = |a: &App| a.group().active_shell().map(|s| s.title.clone()).unwrap_or_default();
-    assert_eq!(title(&app), "sh ○", "the shell, at its prompt");
+    assert_eq!(title(&app), "fakesh ○", "the shell, at its prompt");
 
     // The integration's preexec (`133;B`) then its OSC 0 with the command's first word.
     let run = &app.group().active_shell().unwrap().run;
@@ -180,7 +195,7 @@ async fn shell_title_follows_the_shells_osc_codes() {
     let run = &app.group().active_shell().unwrap().run;
     run.write(b"printf '\\033]133;D;0\\007'\n");
     assert!(
-        app.settle(|a| title(a) == "sh ○").await,
+        app.settle(|a| title(a) == "fakesh ○").await,
         "back to the shell: {:?}",
         title(&app)
     );
@@ -198,7 +213,7 @@ async fn shell_title_follows_the_shells_osc_codes() {
     let run = &app.group().active_shell().unwrap().run;
     run.write(b"printf '\\033]133;D;0\\007'\n");
     assert!(
-        app.settle(|a| title(a) == "sh ○").await,
+        app.settle(|a| title(a) == "fakesh ○").await,
         "`133;D` resets the program's title: {:?}",
         title(&app)
     );
@@ -214,7 +229,7 @@ async fn shell_title_follows_the_shells_osc_codes() {
     let run = &app.group().active_shell().unwrap().run;
     run.write(b"printf '\\033]133;D;1\\007'\n");
     assert!(
-        app.settle(|a| title(a) == "sh ○" && a.group().active_shell().is_some_and(|s| s.error))
+        app.settle(|a| title(a) == "fakesh ○" && a.group().active_shell().is_some_and(|s| s.error))
             .await,
         "the failed command's prompt is an error: {:?}",
         title(&app)
@@ -238,7 +253,7 @@ async fn shell_title_follows_the_shells_osc_codes() {
 async fn shell_title_sees_through_sudo() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     let title = |a: &App| a.group().active_shell().map(|s| s.title.clone()).unwrap_or_default();
     let run = &app.group().active_shell().unwrap().run;
@@ -258,7 +273,7 @@ async fn shell_title_sees_through_sudo() {
 async fn shell_without_osc_codes_keeps_its_base_name() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     let title = |a: &App| a.group().active_shell().map(|s| s.title.clone()).unwrap_or_default();
 
@@ -267,22 +282,26 @@ async fn shell_without_osc_codes_keeps_its_base_name() {
     let started = Instant::now();
     let pumped = app.settle(|_| started.elapsed() >= Duration::from_secs(2)).await;
     assert!(pumped, "the app pumped while `sleep` ran");
-    assert_eq!(title(&app), "sh ○", "no OSC codes, so the title stays the base name");
+    assert_eq!(
+        title(&app),
+        "fakesh ○",
+        "no OSC codes, so the title stays the base name"
+    );
     app.group().active_shell().unwrap().run.write(b"\x03"); // Ctrl+C: `sleep` ends.
 }
 
 /// Two shells of one program keep distinct titles while a command runs: the number is the
 /// shell's (stable as its title changes), so the second shell's command is `sleep (2) ●` while the
-/// idle first shell stays `sh ○`.
+/// idle first shell stays `fakesh ○`.
 #[tokio::test(flavor = "multi_thread")]
 async fn shell_running_titles_keep_the_per_program_number() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     app.new_shell_in_editor();
     let title = |a: &App| a.group().active_shell().map(|s| s.title.clone()).unwrap_or_default();
-    assert_eq!(title(&app), "sh (2) ○", "the second shell, at its prompt");
+    assert_eq!(title(&app), "fakesh (2) ○", "the second shell, at its prompt");
 
     let run = &app.group().active_shell().unwrap().run;
     run.write(b"printf '\\033]133;B\\007\\033]0;sleep\\007'\n");
@@ -293,7 +312,7 @@ async fn shell_running_titles_keep_the_per_program_number() {
     );
     assert_eq!(
         app.groups.shell_tabs().next().map(|s| s.title.clone()).as_deref(),
-        Some("sh ○"),
+        Some("fakesh ○"),
         "the idle first shell keeps its own (un-numbered) title"
     );
 
@@ -301,7 +320,7 @@ async fn shell_running_titles_keep_the_per_program_number() {
     let run = &app.group().active_shell().unwrap().run;
     run.write(b"printf '\\033]133;D;0\\007'\n");
     assert!(
-        app.settle(|a| title(a) == "sh (2) ○").await,
+        app.settle(|a| title(a) == "fakesh (2) ○").await,
         "back to the numbered prompt: {:?}",
         title(&app)
     );
@@ -367,12 +386,12 @@ async fn shell_install_wizard_shows_the_paths_and_copies_the_line() {
     assert!(app.prompt.is_none());
 
     // `sh` has no snippet: a message instead of the wizard.
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.test_execute(Command::InstallShellIntegration);
     assert!(app.prompt.is_none());
     assert_eq!(
         message(&app),
-        "No shell integration for 'sh': zsh, bash and fish have one"
+        "No shell integration for 'fakesh': zsh, bash and fish have one"
     );
 }
 
@@ -676,7 +695,7 @@ async fn shell_bash_snippet_does_nothing_without_jed_ipc() {
 async fn shell_runs_with_a_terminal_and_no_ipc_without_a_socket() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
 
     let run = &app.group().active_shell().unwrap().run;
@@ -705,7 +724,7 @@ async fn shell_gets_jed_ipc_when_the_socket_listens() {
     app.ipc_dir = Some(crate::workspace::normalize(_d.path()).join("s"));
     app.test_start();
     assert!(app.settle(|a| a.tasks.ipc.is_some()).await, "the socket is listening");
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
 
     let expected = format!("IPC={}", app.tasks.ipc.as_ref().unwrap().display());
@@ -733,7 +752,7 @@ async fn shell_gets_jed_ipc_when_the_socket_listens() {
 async fn shell_size_is_the_active_groups_editor() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     // No side panel, odd width: the editor area's halves differ (49 / 48).
     app.ui.side_visible = false;
     let mut term = Terminal::new(TestBackend::new(101, 30)).unwrap();
@@ -762,7 +781,7 @@ async fn shell_size_is_the_active_groups_editor() {
 async fn shell_scrollback_comes_from_the_setting() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.settings.scrollback = 2;
     app.new_shell_in_editor();
 
@@ -771,7 +790,7 @@ async fn shell_scrollback_comes_from_the_setting() {
     assert!(
         app.settle(|a| {
             let text = a.group().active_shell().unwrap().run.screen().screen().contents();
-            text.contains("199")
+            text.lines().any(|l| l.trim_end() == "199")
         })
         .await,
         "the command's output arrived"
@@ -813,14 +832,14 @@ async fn task_scrollback_comes_from_the_setting() {
 async fn shell_split_leaves_the_new_group_empty() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
 
     app.test_execute(Command::SplitRight);
     assert_eq!(app.groups.len(), 2);
     assert!(app.group().tabs.is_empty(), "a shell is not copied into the new group");
     let first = app.groups.ids()[0];
-    assert_eq!(app.groups.get(first).unwrap().active_shell().unwrap().title, "sh ○");
+    assert_eq!(app.groups.get(first).unwrap().active_shell().unwrap().title, "fakesh ○");
 }
 
 /// A shell closes without asking (it's never dirty).
@@ -828,7 +847,7 @@ async fn shell_split_leaves_the_new_group_empty() {
 async fn shell_closes_without_a_prompt() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
 
     app.test_execute(Command::CloseTab);
@@ -871,7 +890,7 @@ fn group_gone(pid: u32) -> bool {
 }
 
 /// An app on `root` with a listening socket in a short temp subdir (`sun_path` is ~104 bytes on
-/// macOS), its `$SHELL` for "Terminal: New Shell" set to `/bin/sh`; with the socket path.
+/// macOS), its `tasks.shell` (for "Terminal: New Shell") set to the fake shell; with the socket path.
 pub(crate) async fn listening_app(root: &Path, state: &Path, sockets: &tempfile::TempDir) -> (App, PathBuf) {
     let dir = crate::workspace::normalize(sockets.path()).join("s");
     let socket = crate::ipc::socket_path(&dir, std::process::id());
@@ -885,8 +904,43 @@ pub(crate) async fn listening_app(root: &Path, state: &Path, sockets: &tempfile:
     app.test_start();
     assert!(app.settle(|a| a.tasks.ipc.is_some()).await, "the socket is listening");
     assert_eq!(app.tasks.ipc.as_deref(), Some(socket.as_path()));
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     (app, socket)
+}
+
+/// Opens a shell tab running the real `/bin/sh` and waits for its prompt (whatever it looks like).
+/// For the tests that run real programs from the shell (`jed`, `git`), which the fake shell can't.
+async fn real_shell(app: &mut App) {
+    app.tasks.shell = "/bin/sh".into();
+    app.new_shell_in_editor();
+    assert!(
+        app.settle(|a| jterm::testing::shows_prompt(screen_text(a).lines()))
+            .await,
+        "the real shell's prompt:\n{}",
+        screen_text(app)
+    );
+}
+
+/// A smoke test with the real `/bin/sh` (the rest of this file runs the fake shell): PTY setup,
+/// the environment, the working directory and session leadership work with a real shell, whatever
+/// its prompt.
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_runs_a_real_shell() {
+    let (_d, root, state) = dirs();
+    let mut app = shell_app(&root, &state);
+    real_shell(&mut app).await;
+    run_in_shell(&mut app, "echo real-$((20+22)); pwd");
+    assert!(
+        app.settle(|a| screen_text(a).lines().any(|l| jterm::testing::line_is(l, "real-42")))
+            .await,
+        "echo ran:\n{}",
+        screen_text(&app)
+    );
+    assert!(
+        screen_text(&app).contains(&root.display().to_string()),
+        "started in the root"
+    );
+    quit_shells(&mut app).await;
 }
 
 /// `text` into the focused shell as a paste (a long command line arrives at once).
@@ -1036,7 +1090,7 @@ async fn shell_keys_and_pastes_stop_when_the_shell_is_unfocused() {
 async fn shell_keys_follow_the_shells_terminal_modes() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     // sh prints the mode-setting sequences (DECCKM, bracketed paste), then cat echoes keys.
     app.group()
@@ -1069,12 +1123,61 @@ async fn shell_keys_follow_the_shells_terminal_modes() {
     );
 }
 
+/// jed pastes into a shell that turned bracketed paste on (the fake does at start-up) wrapped in
+/// the markers: the fake strips them and `pasted` reports the line came as a paste, while a typed
+/// line did not.
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_paste_reaches_the_fake_shell_bracketed() {
+    let (_d, root, state) = dirs();
+    let mut app = shell_app(&root, &state);
+    app.tasks.shell = jterm::testing::fake_shell();
+    app.new_shell_in_editor();
+    let at_prompt = |a: &App| screen_text(a).lines().last().is_some_and(|l| l.trim_end() == "$");
+    assert!(app.settle(at_prompt).await, "the prompt:\n{}", screen_text(&app));
+    assert!(
+        app.group()
+            .active_shell()
+            .unwrap()
+            .run
+            .screen()
+            .screen()
+            .bracketed_paste(),
+        "the shell turned bracketed paste on"
+    );
+
+    run_in_shell(&mut app, "echo pasted-$((6*7))");
+    assert!(
+        app.settle(|a| screen_text(a).lines().any(|l| l.trim_end() == "pasted-42"))
+            .await,
+        "the pasted line ran, markers stripped:\n{}",
+        screen_text(&app)
+    );
+    // `pasted` reports the previous line: that one was a paste.
+    app.type_text("pasted");
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(
+        app.settle(|a| screen_text(a).lines().any(|l| l.trim_end() == "yes"))
+            .await,
+        "the paste was bracketed:\n{}",
+        screen_text(&app)
+    );
+    // The line before this one was typed.
+    app.type_text("pasted");
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(
+        app.settle(|a| screen_text(a).lines().any(|l| l.trim_end() == "no"))
+            .await,
+        "a typed line is not a paste:\n{}",
+        screen_text(&app)
+    );
+}
+
 /// Typing a command and Enter runs it in the shell.
 #[tokio::test(flavor = "multi_thread")]
 async fn shell_typing_and_enter_run_a_command() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
 
     app.type_text("echo $((6*7))");
@@ -1093,7 +1196,7 @@ async fn shell_typing_and_enter_run_a_command() {
 async fn shell_scrollback_keys_and_wheel_scroll() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     app.group()
         .active_shell()
@@ -1101,7 +1204,7 @@ async fn shell_scrollback_keys_and_wheel_scroll() {
         .run
         .write(format!("{COUNT_TO_200}\n").as_bytes());
     assert!(
-        app.settle(|a| { screen_text(a).lines().any(|l| l.trim_end().ends_with("199")) })
+        app.settle(|a| { screen_text(a).lines().any(|l| l.trim_end() == "199") })
             .await,
         "the command's output arrived:\n{}",
         screen_text(&app)
@@ -1144,7 +1247,7 @@ async fn shell_scrollback_keys_and_wheel_scroll() {
 async fn shell_wheel_scrolls_a_non_focused_groups_shell() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     app.test_execute(Command::SplitRight);
     app.new_shell_in_editor();
@@ -1259,7 +1362,7 @@ async fn shell_draws_in_the_editor_area_and_resizes_with_it() {
 async fn shell_draws_colours_and_the_cursor() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     // The command line echoes, so wait for output the typed line can't contain.
     app.group().active_shell().unwrap().run.write(b"echo RE''ADY\n");
@@ -1346,10 +1449,10 @@ async fn shell_draws_colours_and_the_cursor() {
 async fn shell_exit_keeps_its_tab_and_the_note() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     app.group().active_shell().unwrap().run.write(b"echo leaving; exit 3\n");
-    let note = "Shell 'sh' exited with code 3";
+    let note = "Shell 'fakesh' exited with code 3";
     assert!(
         app.settle(|a| screen_text(a).lines().any(|l| l.contains(note))).await,
         "the exit note is written below the output:\n{}",
@@ -1380,10 +1483,10 @@ async fn shell_exit_keeps_its_tab_and_the_note() {
 async fn shell_exit_notes_cover_success_and_failure_to_start() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     app.group().active_shell().unwrap().run.write(b"exit\n");
-    let note = "Shell 'sh' exited with code 0";
+    let note = "Shell 'fakesh' exited with code 0";
     assert!(
         app.settle(|a| screen_text(a).lines().any(|l| l.contains(note))).await,
         "a clean exit says so:\n{}",
@@ -1456,7 +1559,7 @@ async fn shell_a_signal_ended_shell_says_so_as_a_warning() {
 async fn shell_close_kills_the_shell() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     assert!(
         app.settle(|a| a.group().active_shell().and_then(|s| s.run.pid()).is_some())
@@ -1605,7 +1708,11 @@ async fn shell_jed_ipc_is_exported_to_its_program() {
     app.tasks.shell = shell_script(
         &root,
         "record-ipc",
-        &format!("printf '%s' \"$JED_IPC\" > '{}'\nexec /bin/sh", record.display()),
+        &format!(
+            "printf '%s' \"$JED_IPC\" > '{}'\nexec {}",
+            record.display(),
+            jterm::testing::fake_shell().display()
+        ),
     );
     app.new_shell_in_editor();
 
@@ -1639,7 +1746,7 @@ async fn shell_jed_command_opens_the_file_in_this_jed() {
     let other = root.join("other.txt");
     std::fs::write(&other, "from the shell\n").unwrap();
     let (mut app, _socket) = listening_app(&root, &state, &sockets).await;
-    app.new_shell_in_editor();
+    real_shell(&mut app).await;
 
     run_in_shell(
         &mut app,
@@ -1686,7 +1793,7 @@ async fn shell_git_commit_opens_its_message_here() {
     std::fs::write(root.join("a.txt"), "a\n").unwrap();
     assert!(git_in(&root, &["add", "a.txt"]).is_some(), "git add");
     let (mut app, _socket) = listening_app(&root, &state, &sockets).await;
-    app.new_shell_in_editor();
+    real_shell(&mut app).await;
 
     let message = "Made from the shell";
     // `GIT_EDITOR` beats `core.editor`, so unset it; the flags and the config isolation keep the
@@ -1740,7 +1847,7 @@ async fn shell_git_commit_opens_its_message_here() {
 async fn shell_stty_size_follows_the_editor_area() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     draw(&mut app, 100, 24);
     app.new_shell_in_editor();
     draw(&mut app, 100, 24);
@@ -1801,7 +1908,7 @@ async fn shell_workspace_scrollback_setting() {
     std::fs::write(root.join(".workspace"), "[settings]\nscrollback = 50\n").unwrap();
     let mut app = shell_app(&root, &state);
     assert_eq!(app.settings.scrollback, 50, "the .workspace's setting is read");
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     app.group()
         .active_shell()
@@ -1809,7 +1916,8 @@ async fn shell_workspace_scrollback_setting() {
         .run
         .write(format!("{COUNT_TO_200}\n").as_bytes());
     assert!(
-        app.settle(|a| screen_has(a, "199")).await,
+        app.settle(|a| screen_text(a).lines().any(|l| l.trim_end() == "199"))
+            .await,
         "the shell ran the command:\n{}",
         shell_text(&app)
     );
@@ -1877,8 +1985,9 @@ async fn shell_startup_terminal_waits_for_the_socket() {
             &root,
             "record-ipc",
             &format!(
-                "printf '%s' \"${{JED_IPC-UNSET}}\" > '{}'\nexec /bin/sh",
-                record.display()
+                "printf '%s' \"${{JED_IPC-UNSET}}\" > '{}'\nexec {}",
+                record.display(),
+                jterm::testing::fake_shell().display()
             ),
         );
         app.test_start();

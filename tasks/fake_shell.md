@@ -2,7 +2,7 @@
 id: fake_shell
 name: Fake shell for tests
 summary: a small test-only shell (`fakesh`) with a fixed prompt and the few commands the tests type, so jed's and jmux's terminal tests stop depending on whether `/bin/sh` is bash or dash, the user is root, or readline is ready
-status: in-progress
+status: done
 priority: 0
 dependencies: []
 ---
@@ -37,6 +37,12 @@ Most of what looks like shell behaviour is the terminal line discipline's (the k
       - jmux tab titles are now `fakesh`; tests needing raw-mode programs (`stty raw`, `dd`, `vi`) run a `#!/bin/sh` script as the tab's program (`Harness::with_program`) instead of typing into a shell
       - real `/bin/sh` left in jmux: `jmux_server_runs_a_real_shell` and the zsh-symlink integration tests; `jmux/tests/cli.rs` keeps `SHELL=/bin/sh` (it never types)
       - for b: `COUNT_TO_200`'s `while` loop → `seq`; `cat` / `cat -v` / `more` and the alt-screen `printf …; read x` lines need a `shell_script` program or a check; jed tab titles become `fakesh ○`
-    - fake_shell-b: migrate jed's terminal tests (`shell`, `term_area`, `term_link`, `term_search`, `term_select`, `clear_scrollback`, `drag_tabs`, `git_marks`, `claude_ide`, `todo_tests`' shell ones, `command_driven`, `app/session.rs`), keep its real-shell smoke test, run the root and dash/bash checks, mark the task ✅
+    - ✅ fake_shell-b: migrate jed's terminal tests (`shell`, `term_area`, `term_link`, `term_search`, `term_select`, `clear_scrollback`, `drag_tabs`, `git_marks`, `claude_ide`, `todo_tests`' shell ones, `command_driven`, `app/session.rs`), keep its real-shell smoke test, run the root and dash/bash checks, mark the task ✅
+      - jed's terminal tests run `fake_shell()`; `COUNT_TO_200` is `seq 0 199`; titles and notes say `fakesh`; `fakesh -c LINE` (task commands run through `tasks.shell`); `clear_scrollback`'s `cat -v` test runs a `shell_script` program; new `shell_paste_reaches_the_fake_shell_bracketed`
+      - real `/bin/sh` left in jed: `shell_runs_a_real_shell` (smoke, via `shell_tests::real_shell`), the jed / git runs from a shell (`shell_jed_command_opens_the_file_in_this_jed`, `shell_git_commit_opens_its_message_here`: the fake never forks), `claude_ide_new_session_runs_claude_in_a_jed_shell` (a stand-in `claude` on `PATH`), the bash / zsh integration-snippet tests
+  - ✅ Task done. What it changed: jed's and jmux's terminal tests run `crates/fakesh` (fixed `$ ` prompt, bracketed paste on from the start, cooked mode) instead of `/bin/sh`; only the listed real-shell tests still depend on the system shell.
+    - Also: the paste tests check the paste arrived bracketed (`pasted`); a lost-SIGINT race in the fake was fixed with `pselect`; raw-mode programs (`stty raw`, `dd`, `vi`, `cat -v`) run as the tab's program from a script.
+    - Deferred: the done-when run with `/bin/sh` as dash (not installed on the build host; skipped at the user's request); the two jed-binary real-shell tests skip unless `target/<profile>/jed` was built beforehand (pre-existing).
+    - Still to check by hand: macOS CI passes.
   - Deferred:
     - a fake for other programs the tests start (`git` as an editor, language servers), if they turn out to cause the same kind of flake

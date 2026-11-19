@@ -14,8 +14,12 @@ use crate::shell_tests::{dirs, draw, screen_text, shell_app};
 /// Prints `line` in a fresh shell and returns the screen cell `(x, y)` of the first character
 /// of `needle` in it.
 async fn show(app: &mut App, line: &str, needle: &str) -> (u16, u16) {
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
+    assert!(
+        app.settle(|a| screen_text(a).trim_end().ends_with('$')).await,
+        "the shell's prompt"
+    );
     let run = &app.group().active_shell().unwrap().run;
     assert!(run.write(format!("printf '{line}\\n'\n").as_bytes()));
     assert!(
@@ -108,7 +112,7 @@ async fn term_link_from_the_terminal_area_goes_to_the_group_showing_the_file() {
         app.settle(|a| a.active_buffer().is_some_and(|b| b.path.ends_with("other.rs")))
             .await
     );
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.test_execute(Command::NewShell);
     let run = &app.terminals.active_group().active_shell().unwrap().run;
     assert!(run.write(b"printf 'at lib.rs:3\\n'\n"));
@@ -163,7 +167,7 @@ async fn term_link_opens_a_url_wrapped_over_rows() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     let url = format!("https://term-link-wrapped.example.com/{}/tail-end", "x".repeat(120));
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     drop(draw(&mut app, 100, 30));
     let run = &app.group().active_shell().unwrap().run;

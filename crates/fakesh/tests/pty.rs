@@ -125,3 +125,19 @@ async fn unknown_commands_are_not_found() {
     })
     .await;
 }
+
+/// `fakesh -c LINE` (how `tasks.shell` runs a task) runs the line without a prompt and exits
+/// with its status.
+#[test]
+fn dash_c_runs_the_line_and_exits_with_its_status() {
+    let run = |line: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_fakesh"))
+            .args(["-c", line])
+            .output()
+            .unwrap()
+    };
+    let out = run("echo hi; false");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hi\n");
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(run("exit 3").status.code(), Some(3));
+}

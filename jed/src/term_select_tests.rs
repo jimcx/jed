@@ -117,7 +117,7 @@ async fn shell_prompt(app: &mut App) {
 async fn term_select_shell_drag_highlights_and_copy() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     shell_prompt(&mut app).await;
     assert!(
@@ -170,22 +170,17 @@ async fn term_select_shell_drag_highlights_and_copy() {
     assert_eq!(app.clipboard.read().unwrap(), "alpha\nbeta");
 
     // Linux's Ctrl+C (its editor copy) stays the shell's SIGINT with a selection too: nothing
-    // copied, and the shell gets the interrupt: the line discipline echoes `^C`, or (macOS's
-    // /bin/sh is bash, whose readline handles it) the shell draws a fresh prompt.
-    let prompts = |a: &App| {
-        screen_text(a)
-            .lines()
-            .filter(|l| jterm::testing::ends_with_prompt(l))
-            .count()
+    // copied, and the shell gets the interrupt and draws a fresh prompt.
+    let new_prompt = |a: &App| {
+        let text = screen_text(a);
+        text.contains("^C") && text.lines().last().is_some_and(|l| l.trim_end() == "$")
     };
-    let before = prompts(&app);
     app.keymap = Keymap::default_for(Platform::Linux);
     keep_clipboard(&mut app);
     app.press(KeyCode::Char('c'), KeyModifiers::CONTROL);
     assert_eq!(app.clipboard.read().unwrap(), "keep", "Ctrl+C doesn't copy a terminal");
     assert!(
-        app.settle(|a| screen_text(a).contains("^C") || prompts(a) > before)
-            .await,
+        app.settle(new_prompt).await,
         "the shell got Ctrl+C:\n{}",
         screen_text(&app)
     );
@@ -321,7 +316,7 @@ async fn term_select_ended_task_drag_uses_the_drawn_rows() {
 async fn term_select_click_clears_and_copy_leaves_the_clipboard_alone() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     shell_prompt(&mut app).await;
     assert!(
@@ -367,7 +362,7 @@ async fn term_select_click_clears_and_copy_leaves_the_clipboard_alone() {
 async fn term_select_mouse_reporting_keeps_every_event() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     assert!(
         app.group()
@@ -499,7 +494,7 @@ async fn term_select_mouse_reporting_keeps_every_event() {
 async fn term_select_output_keeps_and_the_wheel_moves_the_selection() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     assert!(
         app.group()
@@ -727,7 +722,7 @@ fn scrolled_back_scenario(app: &mut App, id: Option<RunId>, area: Rect) {
 async fn term_select_scrollback_shell() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     drop(draw(&mut app, 100, 30));
     shell_prompt(&mut app).await;
@@ -939,7 +934,7 @@ fn double_click_checks(app: &mut App, area: Rect, row: u16, selection: impl Fn(&
 async fn term_select_double_click_shell() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     shell_prompt(&mut app).await;
     assert!(
@@ -989,7 +984,7 @@ async fn term_select_double_click_task() {
 
 // ---- term_select_keep: new output keeps the selection on its text ----
 
-/// A shell (`None`) or a task tab (`Some`, an `sh` after the count) that printed `COUNT_TO_200`,
+/// A shell (`None`) or a task tab (`Some`, a fake shell after the count) that printed `COUNT_TO_200`,
 /// drawn, with the area its terminal is drawn in.
 async fn count_run(scrollback: Option<usize>, task: bool) -> (tempfile::TempDir, App, Option<RunId>, Rect) {
     let (guard, mut app, id) = if task {
@@ -998,7 +993,10 @@ async fn count_run(scrollback: Option<usize>, task: bool) -> (tempfile::TempDir,
         let mut app = crate::milestone12_tests::open_app(
             &root,
             &state,
-            Some(&format!("[tasks.count]\ncommand = '''{COUNT_TO_200}; exec sh'''\n")),
+            Some(&format!(
+                "[tasks.count]\ncommand = '''{COUNT_TO_200}; exec '{}''''\n",
+                jterm::testing::fake_shell().display()
+            )),
         );
         if let Some(n) = scrollback {
             app.settings.scrollback = n;
@@ -1009,7 +1007,7 @@ async fn count_run(scrollback: Option<usize>, task: bool) -> (tempfile::TempDir,
     } else {
         let (dir, root, state) = dirs();
         let mut app = shell_app(&root, &state);
-        app.tasks.shell = "/bin/sh".into();
+        app.tasks.shell = jterm::testing::fake_shell();
         if let Some(n) = scrollback {
             app.settings.scrollback = n;
         }
@@ -1068,7 +1066,7 @@ fn send(app: &App, id: Option<RunId>, bytes: &[u8]) {
 /// Waits for the shell's prompt on the last row (the output before it is all in).
 async fn at_prompt(app: &mut App, id: Option<RunId>) {
     assert!(
-        app.settle(|a| text_of(a, id).lines().last().is_some_and(jterm::testing::has_prompt))
+        app.settle(|a| text_of(a, id).lines().last().is_some_and(|l| l.trim_end() == "$"))
             .await,
         "{}",
         text_of(app, id)

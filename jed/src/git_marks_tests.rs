@@ -7,7 +7,7 @@
 //! no marks column.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::command::Command;
 use crossterm::event::KeyCode;
@@ -560,7 +560,7 @@ async fn git_marks_hex_shell_and_single_file_tabs_have_none() {
         true,
     );
     app.test_start();
-    app.tasks.shell = PathBuf::from("/bin/sh");
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     assert!(app.group().active_shell().is_some(), "a shell tab");
     let term = draw_sized(&mut app, 100, 24);

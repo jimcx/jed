@@ -12,6 +12,9 @@
 //! - nothing is written for discovery (only the tool log), "Claude: New Session", the plugin's
 //!   manifests against the CLI, and `claude plugin validate` (skipped without `claude`)
 //! - the review tools (claude_ide-e) are tested in `mr_review_tests/claude.rs`
+//!
+//! The shell tabs here run the fake shell; `claude_ide_new_session_runs_claude_in_a_jed_shell`
+//! keeps a real `/bin/sh` because it runs a stand-in `claude` program found on the shell's `PATH`.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -130,7 +133,7 @@ async fn claude_ide_context_without_an_editor_is_null() {
 #[tokio::test(flavor = "multi_thread")]
 async fn claude_ide_editors_lists_every_group_tab() {
     let (_d, mut app, socket, path) = with_file(SOURCE).await;
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     let reply = query(&mut app, &socket, Query::Editors).await;
     let groups = data(&reply)["groups"].as_array().unwrap();
@@ -937,6 +940,7 @@ async fn claude_ide_new_session_runs_claude_in_a_jed_shell() {
     for f in [&fake, &wrapper] {
         std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
+    // A real shell on purpose: the fake never forks, and this runs a program off the `PATH`.
     app.tasks.shell = wrapper;
     assert_eq!(Command::ClaudeNewSession.name(), "claude.newSession");
     assert_eq!(Command::ClaudeNewSession.title(), "Claude: New Session");

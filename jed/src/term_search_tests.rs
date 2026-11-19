@@ -17,7 +17,7 @@ fn label(app: &crate::app::App) -> String {
 async fn term_search_finds_in_the_scrollback_and_steps() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     assert!(app.settle(|a| !screen_text(a).trim().is_empty()).await);
     drop(draw(&mut app, 100, 30));
@@ -39,10 +39,7 @@ async fn term_search_finds_in_the_scrollback_and_steps() {
     assert_eq!(label(&app), "12 of 12");
     // Typed keys went to the query, not the shell.
     let text = screen_text(&app);
-    assert!(
-        !text.lines().any(|l| jterm::testing::after_prompt(l) == Some("17")),
-        "{text}"
-    );
+    assert!(!text.lines().any(|l| l.strip_prefix("$ ") == Some("17")), "{text}");
 
     // Wraps to the oldest match, scrolling back to it.
     app.press(KeyCode::Enter, KeyModifiers::NONE);
@@ -84,7 +81,7 @@ async fn term_search_finds_lines_in_compressed_scrollback() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.settings.scrollback_compression = true;
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     assert!(app.settle(|a| !screen_text(a).trim().is_empty()).await);
     drop(draw(&mut app, 100, 30));

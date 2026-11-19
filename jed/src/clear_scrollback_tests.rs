@@ -27,11 +27,11 @@ fn shell_text(app: &App) -> String {
     app.group().active_shell().unwrap().run.screen().screen().contents()
 }
 
-/// A shell tab (`/bin/sh`) on a short screen after `COUNT_TO_200`, back at its prompt (the line
+/// A shell tab (the fake shell) on a short screen after `COUNT_TO_200`, back at its prompt (the line
 /// after `199` printed, so no late prompt lands on a cleared screen).
 async fn shell_with_output(root: &std::path::Path, state: &std::path::Path) -> App {
     let mut app = shell_app(root, state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     draw(&mut app, 80, 20);
     app.group()
@@ -108,17 +108,19 @@ async fn clear_scrollback_shell_blanks_screen_and_scrollback() {
 #[tokio::test(flavor = "multi_thread")]
 async fn clear_scrollback_shell_program_is_untouched() {
     let (_d, root, state) = dirs();
-    let mut app = shell_with_output(&root, &state).await;
-    // `cat -v` in the foreground shows any byte it is sent: a forwarded ^K (0x0b) would show as
-    // `^K` (readline at a prompt would swallow it silently).
+    // A program that counts and then runs `cat -v` (the fake shell runs no programs): it shows any
+    // byte it is sent, so a forwarded ^K (0x0b) would show as `^K`.
+    let mut app = shell_app(&root, &state);
+    app.tasks.shell = shell_script(&root, "catv", &format!("{COUNT_TO_200}; exec cat -v"));
+    app.new_shell_in_editor();
+    draw(&mut app, 80, 20);
+    assert!(
+        app.settle(|a| shell_text(a).lines().any(|l| l.trim_end() == "199"))
+            .await,
+        "the count arrived:\n{}",
+        shell_text(&app)
+    );
     let lines_equal = |a: &App, want: &str| shell_text(a).lines().filter(|l| l.trim_end() == want).count();
-    {
-        let run = &app.group().active_shell().unwrap().run;
-        run.write(b"cat -v\n");
-    }
-    // Let `cat` start before sending its input: a shell that reads both writes in one go (bash 5.3's
-    // readline) would take `ready` as type-ahead for itself, not for `cat`.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     app.group().active_shell().unwrap().run.write(b"ready\n");
     assert!(
         app.settle(|a| lines_equal(a, "ready") >= 2).await,
@@ -557,7 +559,7 @@ async fn clear_scrollback_without_a_mark_is_the_full_clear() {
 async fn clear_scrollback_terminal_area_shell_clears() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
-    app.tasks.shell = "/bin/sh".into();
+    app.tasks.shell = jterm::testing::fake_shell();
     app.test_execute(Command::NewShell);
     draw(&mut app, 80, 30);
     let text = |a: &App| {

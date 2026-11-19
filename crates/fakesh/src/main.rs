@@ -24,6 +24,18 @@ fn main() {
     input::install_sigint_handler();
     let mut out = std::io::stdout();
     let mut sh = Shell::new(Vars::from_env(), Box::new(input::Stdin::default()));
+    // `fakesh -c LINE` (how `tasks.shell` runs a task's command): run the line, exit with `$?`.
+    let args: Vec<String> = std::env::args().collect();
+    if let [_, flag, line, ..] = args.as_slice()
+        && flag == "-c"
+    {
+        let flow = sh.run_line(line, &mut out);
+        let _ = out.flush();
+        std::process::exit(match flow {
+            Flow::Exit(code) => code,
+            Flow::Continue => sh.vars.status,
+        });
+    }
     let _ = write!(out, "\x1b[?2004h");
     loop {
         let _ = write!(out, "{PROMPT}");
