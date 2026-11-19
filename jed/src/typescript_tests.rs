@@ -380,11 +380,11 @@ async fn typescript_real_server_references_and_rename() {
 /// `workspace/applyEdit`) and Enter applies it.
 #[tokio::test(flavor = "multi_thread")]
 async fn typescript_real_server_quick_fix() {
-    use crate::milestone9_tests::{REAL_SERVERS, children_settled, marks, put_cursor, settle_for};
+    use crate::milestone9_tests::{children_settled, marks, put_cursor, real_server_lock, settle_for};
     let Some(configure) = real_setup("typescript_real_server_quick_fix") else {
         return;
     };
-    let _one_at_a_time = REAL_SERVERS.lock().await;
+    let _one_at_a_time = real_server_lock(SERVER_NAME).await;
     let dir = tempfile::tempdir().unwrap();
     let text = "const total = 1;\nconsole.log(totl);\n";
     let root = project(dir.path(), &[("a.ts", text), ("tsconfig.json", TSCONFIG)]);

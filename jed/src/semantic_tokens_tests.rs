@@ -435,13 +435,13 @@ int plain(int p) { int v = p; return v + kMax + LIMIT; }\n\
 #[tokio::test(flavor = "multi_thread")]
 async fn semantic_tokens_done_when_clangd() {
     use crate::lsp::ProcessLauncher;
-    use crate::milestone9_tests::{REAL_SERVERS, settle_for, which};
+    use crate::milestone9_tests::{real_server_lock, settle_for, which};
     use crate::semantic::mods;
     if which("clangd").is_none() {
         eprintln!("semantic_tokens_done_when_clangd: skipped, clangd isn't on PATH");
         return;
     }
-    let _one_at_a_time = REAL_SERVERS.lock().await;
+    let _one_at_a_time = real_server_lock("clangd").await;
     let dir = tempfile::tempdir().unwrap();
     let root = project(dir.path(), &[("a.cpp", CLANGD_CPP)]);
     let path = root.join("a.cpp");

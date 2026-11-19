@@ -2478,7 +2478,7 @@ mod rust_language_server {
     use crate::lsp::fake::{FakeLauncher, FakeOptions};
     use crate::lsp::rpc::CONTENT_MODIFIED;
     use crate::lsp::{Launcher, ProcessLauncher, State};
-    use crate::milestone9_tests::{REAL_SERVERS, children_settled, settle_for};
+    use crate::milestone9_tests::{children_settled, real_server_lock, settle_for};
     use crate::selection::{Selection, Selections};
     use crate::syntax::Language;
     use crate::workspace::trust::{Trust, TrustStore};
@@ -2910,7 +2910,7 @@ mod rust_language_server {
     }
 
     /// Saves, then waits up to `secs` for `done` (rust-analyzer's `cargo check` on save),
-    /// saving again whenever 10 s pass with no answer and no work in progress: rust-analyzer
+    /// saving again whenever 3 s pass with no answer and no work in progress: rust-analyzer
     /// sometimes runs no check for a `didSave` (seen under load, right after a check that
     /// followed a workspace reload: the `didSave` went out, then no `flycheck` progress and no
     /// publish, ever). A user would save again; so does this.
@@ -2919,7 +2919,7 @@ mod rust_language_server {
         loop {
             save(app).await;
             let saved = Instant::now();
-            while saved.elapsed() < Duration::from_secs(10) || app.lsp.progress().is_some() {
+            while saved.elapsed() < Duration::from_secs(3) || app.lsp.progress().is_some() {
                 if settle_for(app, 1, &done).await {
                     return true;
                 }
@@ -2947,7 +2947,7 @@ mod rust_language_server {
     // if a wait times out.
     #[tokio::test(flavor = "multi_thread")]
     async fn real_rust_analyzer_on_a_cargo_crate() {
-        let _one_at_a_time = REAL_SERVERS.lock().await;
+        let _one_at_a_time = real_server_lock("rust-analyzer").await;
         let dir = tempfile::tempdir().unwrap();
         let toolchain = fs::read_to_string(crate::test_util::repo_root().join("rust-toolchain.toml")).unwrap();
         let root = project(
@@ -13111,7 +13111,7 @@ mod scons_settings {
     use crate::lsp::ProcessLauncher;
     use crate::lsp::config::ServerConfig;
     use crate::lsp::fake::{FakeLauncher, FakeOptions};
-    use crate::milestone9_tests::{REAL_SERVERS, idle, open, open_app_watched, project, settle_for, which};
+    use crate::milestone9_tests::{idle, open, open_app_watched, project, real_server_lock, settle_for, which};
 
     fn extra_paths(init: &Value) -> Value {
         init["initializationOptions"]["configuration"]["environment"]["extra-paths"].clone()
@@ -13225,7 +13225,7 @@ mod scons_settings {
             eprintln!("real_ty_resolves_scons_in_a_site_scons_helper: skipped, ty isn't on PATH or in .venv/bin");
             return;
         };
-        let _one_at_a_time = REAL_SERVERS.lock().await;
+        let _one_at_a_time = real_server_lock("ty").await;
         let dir = tempfile::tempdir().unwrap();
         let install = dir.path().join("install");
         fs::create_dir_all(install.join("SCons/Script")).unwrap();

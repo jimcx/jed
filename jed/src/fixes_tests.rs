@@ -1169,7 +1169,7 @@ use std::time::{Duration, Instant};
 use crate::diagnostics::Severity;
 use crate::hover::Kind;
 use crate::lsp::{ProcessLauncher, ServerConfig};
-use crate::milestone9_tests::{REAL_SERVERS, children_settled, settle_for, squiggle, which};
+use crate::milestone9_tests::{children_settled, real_server_lock, settle_for, squiggle, which};
 
 /// The hover popup's first 12 lines: (kind, text trimmed; a diagnostic's has its icon).
 fn hover_lines(app: &App) -> Vec<(Kind, String)> {
@@ -1347,7 +1347,7 @@ const RA_FIXES_MAIN: &str =
 /// squiggles, and the hover then shows none. Skipped with a note without rust-analyzer.
 #[tokio::test(flavor = "multi_thread")]
 async fn fixes_done_when_rust_analyzer() {
-    let _one_at_a_time = REAL_SERVERS.lock().await;
+    let _one_at_a_time = real_server_lock("rust-analyzer").await;
     let dir = tempfile::tempdir().unwrap();
     let toolchain = std::fs::read_to_string(crate::test_util::repo_root().join("rust-toolchain.toml")).unwrap();
     let root = project(
@@ -1532,7 +1532,7 @@ async fn fixes_done_when_clangd() {
         eprintln!("fixes_done_when_clangd: skipped, clangd isn't on PATH");
         return;
     }
-    let _one_at_a_time = REAL_SERVERS.lock().await;
+    let _one_at_a_time = real_server_lock("clangd").await;
     let dir = tempfile::tempdir().unwrap();
     let root = project(dir.path(), &[("a.c", CLANGD_C), ("b.cpp", CLANGD_CPP)]);
     let (c, cpp) = (root.join("a.c"), root.join("b.cpp"));
@@ -1677,7 +1677,7 @@ async fn fixes_done_when_ty() {
         eprintln!("fixes_done_when_ty: skipped, ty isn't on PATH or in .venv/bin");
         return;
     };
-    let _one_at_a_time = REAL_SERVERS.lock().await;
+    let _one_at_a_time = real_server_lock("ty").await;
     let dir = tempfile::tempdir().unwrap();
     let root = project(dir.path(), &[("a.py", TY_PY)]);
     let path = root.join("a.py");

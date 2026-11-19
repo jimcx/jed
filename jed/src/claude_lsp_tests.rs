@@ -26,7 +26,7 @@ use crate::app::App;
 use crate::claude::{self, Socket};
 use crate::lsp::fake::{FakeLauncher, FakeOptions};
 use crate::lsp::{Launcher, ProcessLauncher};
-use crate::milestone9_tests::{REAL_SERVERS, location, open, open_synced, project, put_cursor, settle_for};
+use crate::milestone9_tests::{location, open, open_synced, project, put_cursor, real_server_lock, settle_for};
 use crate::syntax::Language;
 use crate::workspace::trust::TrustStore;
 use crate::workspace::{self, Workspace};
@@ -429,7 +429,7 @@ async fn retry(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn claude_lsp_real_rust_analyzer_definition_references_and_workspace_symbol() {
-    let _one_at_a_time = REAL_SERVERS.lock().await;
+    let _one_at_a_time = real_server_lock("rust-analyzer").await;
     let toolchain = std::fs::read_to_string(crate::test_util::repo_root().join("rust-toolchain.toml")).unwrap();
     let probe = tempfile::tempdir().unwrap();
     let runs = std::process::Command::new("rust-analyzer")

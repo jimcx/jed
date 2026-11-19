@@ -466,13 +466,20 @@ pub(crate) fn children_settled(name: &str, want: usize) -> Option<usize> {
     Some(n)
 }
 
-/// Held by each test that runs a real server: they count the test process's children by name,
-/// so two at once would see each other's.
-pub(crate) static REAL_SERVERS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// Held by each test that runs the real server `process` (as [`children_named`] names it): they
+/// count the test process's children by name, so two tests of one server at once would see each
+/// other's. Tests of different servers run side by side.
+pub(crate) async fn real_server_lock(process: &str) -> tokio::sync::OwnedMutexGuard<()> {
+    static LOCKS: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+    > = std::sync::LazyLock::new(Default::default);
+    let lock = LOCKS.lock().unwrap().entry(process.to_string()).or_default().clone();
+    lock.lock_owned().await
+}
 
 /// Opens `file` against a real server and checks the handshake and a clean exit.
 async fn real_server(language: Language, file: (&str, &str), configure: impl FnOnce(&mut App), process: &str) {
-    let _one_at_a_time = REAL_SERVERS.lock().await;
+    let _one_at_a_time = real_server_lock(process).await;
     let dir = tempfile::tempdir().unwrap();
     let root = project(dir.path(), &[file]);
     let mut app = open_app(&root, Arc::new(ProcessLauncher));
@@ -1487,7 +1494,7 @@ pub(crate) async fn real_diagnostics(
     fix: impl FnOnce(&mut App),
     process: &str,
 ) {
-    let _one_at_a_time = REAL_SERVERS.lock().await;
+    let _one_at_a_time = real_server_lock(process).await;
     let dir = tempfile::tempdir().unwrap();
     let root = project(dir.path(), &[file]);
     let path = root.join(file.0);
@@ -3158,7 +3165,7 @@ pub(crate) async fn real_hover_and_definition(
     configure: impl FnOnce(&mut App),
     process: &str,
 ) {
-    let _one_at_a_time = REAL_SERVERS.lock().await;
+    let _one_at_a_time = real_server_lock(process).await;
     let dir = tempfile::tempdir().unwrap();
     let root = project(dir.path(), files);
     let mut app = open_app(&root, Arc::new(ProcessLauncher));
@@ -4012,7 +4019,7 @@ pub(crate) async fn real_completion(
     configure: impl FnOnce(&mut App),
     process: &str,
 ) {
-    let _one_at_a_time = REAL_SERVERS.lock().await;
+    let _one_at_a_time = real_server_lock(process).await;
     let dir = tempfile::tempdir().unwrap();
     let root = project(dir.path(), &[file]);
     let mut app = open_app(&root, Arc::new(ProcessLauncher));
@@ -4915,7 +4922,7 @@ pub(crate) async fn real_references_and_rename(
     configure: impl FnOnce(&mut App),
     process: &str,
 ) {
-    let _one_at_a_time = REAL_SERVERS.lock().await;
+    let _one_at_a_time = real_server_lock(process).await;
     let dir = tempfile::tempdir().unwrap();
     let root = project(dir.path(), files);
     // clangd finds references in other files (and renames there) through its background index,
@@ -5564,7 +5571,7 @@ async fn milestone_9_done_when_cpp_project() {
         eprintln!("milestone_9_done_when_cpp_project: skipped, clangd isn't on PATH");
         return;
     }
-    let _one_at_a_time = REAL_SERVERS.lock().await;
+    let _one_at_a_time = real_server_lock("clangd").await;
     let dir = tempfile::tempdir().unwrap();
     let files = [
         ("main.cpp", CPP_MAIN),
@@ -5627,7 +5634,7 @@ async fn milestone_9_done_when_scons_project() {
         eprintln!("milestone_9_done_when_scons_project: skipped, ty isn't on PATH or in .venv/bin");
         return;
     };
-    let _one_at_a_time = REAL_SERVERS.lock().await;
+    let _one_at_a_time = real_server_lock("ty").await;
     let dir = tempfile::tempdir().unwrap();
     let files = [("SConstruct", SCONSTRUCT), ("helpers.py", SCONS_HELPERS)];
     let root = project(dir.path(), &files);

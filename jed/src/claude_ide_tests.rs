@@ -880,7 +880,8 @@ async fn claude_ide_a_session_writes_nothing_for_discovery_and_open_file_opens_a
     assert_eq!(out[3]["result"]["isError"], false, "{out:?}");
     assert!(!start.is_empty() && !prompt.is_empty());
     assert!(app.settle(|a| a.active_buffer().is_some_and(|b| b.path == other)).await);
-    let _ = app.settle(|_| false).await;
+    // Let late writes land: the longest timer after these steps is the tool logs' 500 ms flush.
+    let _ = crate::milestone9_tests::settle_for(&mut app, 1, |_| false).await;
     let new: Vec<_> = tree(d.path()).into_iter().filter(|f| !before.contains(f)).collect();
     for file in &new {
         assert!(
