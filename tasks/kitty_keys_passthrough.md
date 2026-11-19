@@ -2,7 +2,7 @@
 id: kitty_keys_passthrough
 name: Kitty keyboard protocol in the hosted terminal
 summary: programs in jmux panes and jed's shell / task tabs can turn on the kitty keyboard protocol and get its key encoding, so jed inside jmux (or neovim, helix, fish) gets Ctrl+Shift and the other disambiguated keys
-status: open
+status: in-progress
 priority: 0
 dependencies: [fake_shell]
 ---
@@ -36,7 +36,10 @@ One encoder in `jterm` serves both hosts: jmux (`App::key`, `jmux/src/app.rs`) a
     - a program that never asks for the protocol gets exactly today's bytes (the existing key tests pass unchanged)
     - `scripts/check` passes
   - Subtasks (one agent and one commit each):
-    - kitty_keys_passthrough-a: `jterm`: the flag stacks, the reply queue (`CSI ? u`, DA1), the encoder for flags 1, 2, 4, 8 and 16, `Run::kitty_flags`, their unit tests and `jterm`'s docs
+    - ✅ kitty_keys_passthrough-a: `jterm`: the flag stacks, the reply queue (`CSI ? u`, DA1), the encoder for flags 1, 2, 4, 8 and 16, `Run::kitty_flags`, their unit tests and `jterm`'s docs
+      - `keys::encode(key, KeyModes { application_cursor, kitty_flags })` (`KITTY_*` consts name the bits); a `Release` gives `None` unless the flags include 2, so -b can pass releases straight through. With flag 1 alone, Shift+Enter / Shift+Tab / BackTab become `CSI 13;2u` / `CSI 9;2u` (modified); lock and modifier keys are sent only with 8
+      - `run.rs`: `KittyStacks` on `TitleCallback` (cap `KITTY_STACK_LIMIT` 256, a full stack drops its oldest); `feed` splits chunks at `ESC c` (RIS has no vt100 callback) and clears the stacks, also across chunks; replies go out as `Input::Reply` from the reader (`deliver_reply`: queued while starting, dropped once ended); stacks cleared when the reader ends. `Run::kitty_flags()` reads the active screen's top
+      - crossterm's `supports_keyboard_enhancement` waits 2 s when neither query is answered and returns at once on a DA1 answer, so the DA1 reply alone removes jed's startup wait in a hosted terminal, and the `CSI ? u` answer already ends the "lacks" message; the keys stay xterm-encoded until -b passes `kitty_flags()` into `encode`
     - kitty_keys_passthrough-b: wiring in jmux and jed (flags into `encode`, releases through when asked), `fakesh`'s `keyecho`, the end-to-end tests in both apps, the READMEs, the hand check of jed inside jmux, mark the task ✅
   - Deferred:
     - pushing 2 / 8 to the outer terminal, or per focused pane (a jmux server→client message), so panes can get releases and plain keys as escape codes without the host asking for them for itself

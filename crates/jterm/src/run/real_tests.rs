@@ -243,7 +243,7 @@ async fn input_reaches_the_process() {
     );
     let run = t.get(id).unwrap();
     wait_until("prompt", || run.screen().screen().contents().contains("name?")).await;
-    let key = |c| crate::keys::encode(&crossterm::event::KeyEvent::from(c), false).unwrap();
+    let key = |c| crate::keys::encode(&crossterm::event::KeyEvent::from(c), Default::default()).unwrap();
     for c in "bob".chars() {
         assert!(run.write(&key(crossterm::event::KeyCode::Char(c))));
     }
@@ -279,7 +279,7 @@ async fn ctrl_c_interrupts_the_foreground_process() {
         crossterm::event::KeyCode::Char('c'),
         crossterm::event::KeyModifiers::CONTROL,
     );
-    assert!(run.write(&crate::keys::encode(&ctrl_c, false).unwrap()));
+    assert!(run.write(&crate::keys::encode(&ctrl_c, Default::default()).unwrap()));
     let screen = || run.screen().screen().contents();
     let deadline = Instant::now() + Duration::from_secs(5);
     while run.status().is_running() {

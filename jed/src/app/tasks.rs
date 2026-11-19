@@ -431,8 +431,13 @@ pub(super) fn scroll_run(run: &Run, dir: Scroll) {
 /// on the live screen.
 pub(super) fn send_key(run: &Run, key: KeyEvent) {
     let application_cursor = run.screen().screen().application_cursor();
-    if let Some(bytes) = keys::encode(&key, application_cursor)
-        && run.write(&bytes)
+    if let Some(bytes) = keys::encode(
+        &key,
+        keys::KeyModes {
+            application_cursor,
+            kitty_flags: 0,
+        },
+    ) && run.write(&bytes)
     {
         run.scroll_to(false);
     }

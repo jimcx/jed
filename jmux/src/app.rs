@@ -874,8 +874,13 @@ impl App {
         }
         if let Some(shell) = self.groups.active_group().active_tab() {
             let application_cursor = shell.run.screen().screen().application_cursor();
-            if let Some(bytes) = keys::encode(&key, application_cursor)
-                && shell.run.write(&bytes)
+            if let Some(bytes) = keys::encode(
+                &key,
+                keys::KeyModes {
+                    application_cursor,
+                    kitty_flags: 0,
+                },
+            ) && shell.run.write(&bytes)
             {
                 shell.run.scroll_to(false);
                 self.needs_redraw = true;

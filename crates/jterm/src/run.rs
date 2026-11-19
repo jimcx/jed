@@ -26,6 +26,12 @@
 //! `Run::command_output` can read its text back while the scrollback still holds it. A run whose env has the
 //! app's IPC variable also gets the terminal variable `=<RunId>` (`EnvNames`, set in `Run::start`).
 //!
+//! The program's kitty keyboard protocol flags (`CSI > f u` push, `CSI < n u` pop, `CSI = f ; m u` set; a
+//! stack per screen, capped, cleared by `ESC c` and when the output ends) are `Run::kitty_flags`, read
+//! by the apps for `keys::encode`. The parser answers only `CSI ? u` (`CSI ? flags u`) and DA1
+//! (`CSI ? 62 ; 22 c`): the reader thread queues the answer into the writer's channel as
+//! `Input::Reply` (kept in `State::queued` while the process starts, dropped once it ended).
+//!
 //! The scroll bar (`TerminalScroll`, `Run::scrollable`) is the scrollback as a `Scrollable` in
 //! rows; the kept-line count the bar needs as `max_top` is `Screen::scrollback_len()`
 //! (`scrollbar_extent`).
@@ -119,7 +125,74 @@ pub struct TitleCallback {
     next_command: u64,
     /// The directory the shell last reported (OSC 7), the cwd of the next command.
     cwd: Option<PathBuf>,
+    /// The program's kitty keyboard flags, a stack per screen.
+    kitty: KittyStacks,
+    /// Answers to the program's queries, waiting for the reader thread to send them.
+    replies: Vec<u8>,
+    /// The last chunk fed to the parser ended in `ESC`: an `ESC c` (RIS) may straddle chunks.
+    esc_pending: bool,
 }
+
+/// kitty's limit on a flag stack, so a program pushing in a loop can't grow it without bound; a
+/// push onto a full stack drops the oldest entry.
+const KITTY_STACK_LIMIT: usize = 256;
+
+/// The flags the kitty keyboard protocol's `CSI > f u` pushes, one stack per screen (the main and
+/// the alternate one, as the spec says). The top of the active screen's stack is in force.
+#[derive(Default)]
+struct KittyStacks {
+    main: Vec<u8>,
+    alternate: Vec<u8>,
+}
+
+impl KittyStacks {
+    fn stack(&mut self, alternate: bool) -> &mut Vec<u8> {
+        if alternate { &mut self.alternate } else { &mut self.main }
+    }
+
+    fn push(&mut self, alternate: bool, flags: u8) {
+        let stack = self.stack(alternate);
+        if stack.len() == KITTY_STACK_LIMIT {
+            stack.remove(0);
+        }
+        stack.push(flags);
+    }
+
+    /// Pops `n` entries (popping past the bottom empties the stack).
+    fn pop(&mut self, alternate: bool, n: usize) {
+        let stack = self.stack(alternate);
+        stack.truncate(stack.len().saturating_sub(n));
+    }
+
+    /// `CSI = flags ; mode u` on the top entry: 1 set, 2 or, 3 and-not.
+    fn set(&mut self, alternate: bool, flags: u8, mode: u16) {
+        let stack = self.stack(alternate);
+        if stack.is_empty() {
+            stack.push(0);
+        }
+        let top = stack.last_mut().expect("just filled");
+        match mode {
+            1 => *top = flags,
+            2 => *top |= flags,
+            3 => *top &= !flags,
+            _ => {}
+        }
+    }
+
+    fn current(&self, alternate: bool) -> u8 {
+        let stack = if alternate { &self.alternate } else { &self.main };
+        stack.last().copied().unwrap_or(0)
+    }
+
+    fn clear(&mut self) {
+        self.main.clear();
+        self.alternate.clear();
+    }
+}
+
+/// DA1's answer: a VT220 with colour (`CSI ? 62 ; 22 c`). Programs send `CSI ? u` then DA1 and
+/// take the first answer as the verdict, so it has to be answered.
+const DEVICE_ATTRIBUTES: &[u8] = b"\x1b[?62;22c";
 
 /// The two environment variables an app uses to tell a process which app instance and which
 /// terminal it runs in (the app's socket variable and a terminal-number variable).
@@ -183,7 +256,20 @@ impl TitleCallback {
             ring,
             next_command: 1,
             cwd: None,
+            kitty: KittyStacks::default(),
+            replies: Vec::new(),
+            esc_pending: false,
         }
+    }
+
+    /// The kitty keyboard flags in force on the screen `alternate` says (0 = legacy keys).
+    fn kitty_flags(&self, alternate: bool) -> u8 {
+        self.kitty.current(alternate)
+    }
+
+    /// The answers queued since the last call (no allocation when there are none).
+    fn take_replies(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.replies)
     }
 
     /// The remembered commands, oldest first.
@@ -314,6 +400,40 @@ impl vt100::Callbacks for TitleCallback {
             _ => {}
         }
     }
+
+    /// The kitty keyboard protocol's `CSI > f u` (push), `CSI < n u` (pop), `CSI = f ; m u` (set)
+    /// and `CSI ? u` (query, answered `CSI ? flags u`), and DA1 (`CSI c`, `CSI 0 c`). Nothing
+    /// else is answered (not DSR, DA2 `CSI > c`, XTVERSION).
+    fn unhandled_csi(
+        &mut self,
+        screen: &mut vt100::Screen,
+        i1: Option<u8>,
+        i2: Option<u8>,
+        params: &[&[u16]],
+        c: char,
+    ) {
+        if i2.is_some() {
+            return;
+        }
+        let param = |n: usize| params.get(n).and_then(|p| p.first().copied());
+        let alternate = screen.alternate_screen();
+        match (i1, c) {
+            (Some(b'>'), 'u') => self.kitty.push(alternate, kitty_bits(param(0))),
+            (Some(b'<'), 'u') => self.kitty.pop(alternate, param(0).map_or(1, |n| usize::from(n).max(1))),
+            (Some(b'='), 'u') => self.kitty.set(alternate, kitty_bits(param(0)), param(1).unwrap_or(1)),
+            (Some(b'?'), 'u') => {
+                let flags = self.kitty.current(alternate);
+                self.replies.extend_from_slice(format!("\x1b[?{flags}u").as_bytes());
+            }
+            (None, 'c') if matches!(param(0), None | Some(0)) => self.replies.extend_from_slice(DEVICE_ATTRIBUTES),
+            _ => {}
+        }
+    }
+}
+
+/// A flags parameter as the protocol's five bits (default 0).
+fn kitty_bits(p: Option<u16>) -> u8 {
+    (p.unwrap_or(0) & 0x1f) as u8
 }
 
 /// Commands that run the command after them, which a tab title sees through: each one's name,
@@ -605,6 +725,8 @@ enum Input {
     /// while the program still asks for the mouse, so reports queued behind a slow writer never
     /// reach the shell after the program reset the mode.
     Mouse { bytes: Vec<u8>, motion: bool },
+    /// The terminal's answer to a query the program sent (`CSI ? u`, DA1): always written.
+    Reply(Vec<u8>),
 }
 
 struct State {
@@ -695,6 +817,13 @@ impl Run {
             Err(_) => shared.fail("no runtime to run tasks".into(), &sink),
         }
         run
+    }
+
+    /// The kitty keyboard protocol flags the program set on the screen it is on (0: legacy keys;
+    /// `keys::KITTY_*` name the bits).
+    pub fn kitty_flags(&self) -> u8 {
+        let parser = self.screen();
+        parser.callbacks().kitty_flags(parser.screen().alternate_screen())
     }
 
     pub fn status(&self) -> Status {
@@ -1212,15 +1341,16 @@ fn start_process(pair: &portable_pty::PtyPair, spec: &Spec, env: EnvNames) -> Re
 
 /// Feeds `bytes` to the parser and keeps the mouse selection on its text (`select::follow`).
 /// Locks the parser, then the selection (as `resize` does), so a click can't be overwritten.
-fn process_chunk(shared: &Shared, bytes: &[u8]) {
+/// Returns the answers the program's queries got (empty mostly): the caller sends them.
+fn process_chunk(shared: &Shared, bytes: &[u8]) -> Vec<u8> {
     let mut parser = lock(&shared.parser);
     let mut selection = lock(&shared.selection);
     let Some(current) = *selection else {
-        parser.process(bytes);
-        return;
+        feed(&mut parser, bytes);
+        return parser.callbacks_mut().take_replies();
     };
     let before = select::snapshot(parser.screen_mut(), &current);
-    parser.process(bytes);
+    feed(&mut parser, bytes);
     let dragging = shared.dragging.load(Ordering::Acquire);
     let scrolled = parser.screen().scrolled_lines().saturating_sub(before.scrolled());
     if dragging {
@@ -1229,6 +1359,46 @@ fn process_chunk(shared: &Shared, bytes: &[u8]) {
             .fetch_add(usize::try_from(scrolled).unwrap_or(usize::MAX / 2), Ordering::AcqRel);
     }
     *selection = select::follow(parser.screen_mut(), current, &before, dragging);
+    parser.callbacks_mut().take_replies()
+}
+
+/// `parser.process(bytes)`, except that an `ESC c` (RIS, which vt100 handles without a callback)
+/// also clears the kitty flag stacks: the bytes are fed in parts, split after each one. With none
+/// in them (nearly always) it is one `process` call after a scan for `ESC`.
+fn feed(parser: &mut vt100::Parser<TitleCallback>, bytes: &[u8]) {
+    let mut start = 0;
+    let mut pos = 0;
+    if parser.callbacks().esc_pending && bytes.first() == Some(&b'c') {
+        parser.process(&bytes[..1]);
+        parser.callbacks_mut().kitty.clear();
+        start = 1;
+        pos = 1;
+    }
+    while let Some(off) = bytes[pos..].iter().position(|&b| b == 0x1b) {
+        let at = pos + off;
+        if bytes.get(at + 1) == Some(&b'c') {
+            parser.process(&bytes[start..at + 2]);
+            parser.callbacks_mut().kitty.clear();
+            start = at + 2;
+            pos = start;
+        } else {
+            pos = at + 1;
+        }
+    }
+    parser.process(&bytes[start..]);
+    parser.callbacks_mut().esc_pending = bytes.last() == Some(&0x1b);
+}
+
+/// Hands `reply` (a terminal answer) to the process: queued while it starts, dropped once it
+/// ended.
+fn deliver_reply(state: &mut State, reply: Vec<u8>) {
+    match (&state.status, &state.input) {
+        (Status::Running, Some(input)) => {
+            let _ = input.send(Input::Reply(reply));
+        }
+        (Status::Starting, _) => state.queued.extend_from_slice(&reply),
+        _ => {}
+    }
 }
 
 /// Reader thread: PTY output into the screen until the end of output.
@@ -1239,7 +1409,10 @@ fn read_output(shared: Arc<Shared>, mut reader: Box<dyn Read + Send>) {
             Ok(0) => break,
             Ok(n) => {
                 shared.reader_busy.store(true, Ordering::Release);
-                process_chunk(&shared, &buf[..n]);
+                let reply = process_chunk(&shared, &buf[..n]);
+                if !reply.is_empty() {
+                    deliver_reply(&mut lock(&shared.state), reply);
+                }
                 shared.reader_busy.store(false, Ordering::Release);
                 if !shared.pending.swap(true, Ordering::AcqRel) {
                     shared.notify.notify_one();
@@ -1250,6 +1423,7 @@ fn read_output(shared: Arc<Shared>, mut reader: Box<dyn Read + Send>) {
             Err(_) => break,
         }
     }
+    lock(&shared.parser).callbacks_mut().kitty.clear();
     shared.reader_done.store(true, Ordering::Release);
     shared.notify.notify_one();
 }
@@ -1286,7 +1460,7 @@ fn merge(batch: Vec<Input>, mouse_on: impl FnOnce() -> bool) -> Vec<u8> {
     let mut last_motion: Option<usize> = None;
     for item in batch {
         match item {
-            Input::Bytes(bytes) => {
+            Input::Bytes(bytes) | Input::Reply(bytes) => {
                 out.extend_from_slice(&bytes);
                 last_motion = None;
             }
@@ -1779,5 +1953,176 @@ mod tests {
         parser.process(b"\x1b]133;B\x07abcdefghijklmnopq\r\nz\r\n\x1b]133;D;0\x07");
         let out = command_text(&mut parser, 1, 100).unwrap();
         assert_eq!(out.text, "abcdefghijklmnopq\nz\n");
+    }
+
+    /// The flags in force on the parser's current screen.
+    fn flags(parser: &vt100::Parser<TitleCallback>) -> u8 {
+        parser.callbacks().kitty_flags(parser.screen().alternate_screen())
+    }
+
+    /// Feeds like the reader does (`feed`), which also watches for RIS.
+    fn feed_bytes(parser: &mut vt100::Parser<TitleCallback>, bytes: &[u8]) {
+        feed(parser, bytes);
+    }
+
+    #[test]
+    fn kitty_push_and_pop() {
+        let (mut parser, _) = title_parser("t");
+        assert_eq!(flags(&parser), 0);
+        feed_bytes(&mut parser, b"\x1b[>1u");
+        assert_eq!(flags(&parser), 1);
+        feed_bytes(&mut parser, b"\x1b[>11u\x1b[>31u");
+        assert_eq!(flags(&parser), 31 & 0x1f);
+        feed_bytes(&mut parser, b"\x1b[<u");
+        assert_eq!(flags(&parser), 11);
+        feed_bytes(&mut parser, b"\x1b[<1u");
+        assert_eq!(flags(&parser), 1);
+        // Popping more than there is empties the stack (flags 0).
+        feed_bytes(&mut parser, b"\x1b[>5u\x1b[<9u");
+        assert_eq!(flags(&parser), 0);
+        // A push with no number pushes 0.
+        feed_bytes(&mut parser, b"\x1b[>3u\x1b[>u");
+        assert_eq!(flags(&parser), 0);
+        feed_bytes(&mut parser, b"\x1b[<u");
+        assert_eq!(flags(&parser), 3);
+    }
+
+    #[test]
+    fn kitty_set_modes() {
+        let (mut parser, _) = title_parser("t");
+        feed_bytes(&mut parser, b"\x1b[=5u");
+        assert_eq!(
+            flags(&parser),
+            5,
+            "set with no mode is mode 1, and fills an empty stack"
+        );
+        feed_bytes(&mut parser, b"\x1b[=2;2u");
+        assert_eq!(flags(&parser), 7, "mode 2: or");
+        feed_bytes(&mut parser, b"\x1b[=1;3u");
+        assert_eq!(flags(&parser), 6, "mode 3: and not");
+        feed_bytes(&mut parser, b"\x1b[=9;1u");
+        assert_eq!(flags(&parser), 9, "mode 1: set");
+        // It changes the top only.
+        feed_bytes(&mut parser, b"\x1b[>1u\x1b[=0;1u\x1b[<u");
+        assert_eq!(flags(&parser), 9);
+    }
+
+    #[test]
+    fn kitty_stacks_are_per_screen() {
+        let (mut parser, _) = title_parser("t");
+        feed_bytes(&mut parser, b"\x1b[>1u");
+        feed_bytes(&mut parser, b"\x1b[?1049h");
+        assert!(parser.screen().alternate_screen());
+        assert_eq!(
+            flags(&parser),
+            0,
+            "the alternate screen starts with its own, empty stack"
+        );
+        feed_bytes(&mut parser, b"\x1b[>8u");
+        assert_eq!(flags(&parser), 8);
+        feed_bytes(&mut parser, b"\x1b[?1049l");
+        assert_eq!(flags(&parser), 1, "back on the main screen its flags are back");
+        feed_bytes(&mut parser, b"\x1b[<5u");
+        feed_bytes(&mut parser, b"\x1b[?1049h");
+        assert_eq!(flags(&parser), 8, "popping on the main screen left the other alone");
+    }
+
+    #[test]
+    fn kitty_stack_is_capped_dropping_the_oldest() {
+        let (mut parser, _) = title_parser("t");
+        // Pushes 0..=10 are 4, then 1 / 2 alternating, then a last 31: the eleven 4s are the
+        // oldest and must be the ones dropped.
+        for i in 0..(KITTY_STACK_LIMIT + 10) {
+            let f = if i <= 10 { 4 } else { 1 + i % 2 };
+            feed_bytes(&mut parser, format!("\x1b[>{f}u").as_bytes());
+        }
+        feed_bytes(&mut parser, b"\x1b[>31u");
+        assert_eq!(parser.callbacks().kitty.main.len(), KITTY_STACK_LIMIT);
+        assert_eq!(flags(&parser), 31, "the newest push is the top");
+        // The bottom entries went: what's left at the bottom is no 4, and a 256 pop empties it.
+        feed_bytes(&mut parser, format!("\x1b[<{}u", KITTY_STACK_LIMIT - 1).as_bytes());
+        assert_eq!(flags(&parser), 2, "the oldest kept push (i = 11) is the bottom");
+        feed_bytes(&mut parser, b"\x1b[<1u");
+        assert_eq!(flags(&parser), 0);
+    }
+
+    #[test]
+    fn kitty_stacks_clear_on_ris_even_across_chunks() {
+        let (mut parser, _) = title_parser("t");
+        feed_bytes(&mut parser, b"\x1b[>1u\x1bc");
+        assert_eq!(flags(&parser), 0);
+        // Same chunk, after the RIS: kept.
+        feed_bytes(&mut parser, b"\x1b[>1u\x1bc\x1b[>4u");
+        assert_eq!(flags(&parser), 4);
+        feed_bytes(&mut parser, b"\x1b[>4u\x1b");
+        feed_bytes(&mut parser, b"c");
+        assert_eq!(
+            flags(&parser),
+            0,
+            "an ESC at the end of a chunk and `c` at the start of the next"
+        );
+        // `ESC [ c` (DA1) isn't a RIS.
+        feed_bytes(&mut parser, b"\x1b[>2u\x1b[c");
+        assert_eq!(flags(&parser), 2);
+        // A plain `c` after an ESC-less chunk isn't either.
+        feed_bytes(&mut parser, b"ab");
+        feed_bytes(&mut parser, b"c");
+        assert_eq!(flags(&parser), 2);
+    }
+
+    #[test]
+    fn queries_are_answered_in_order_and_taken_once() {
+        let (mut parser, _) = title_parser("t");
+        feed_bytes(&mut parser, b"\x1b[?u\x1b[c");
+        assert_eq!(parser.callbacks_mut().take_replies(), b"\x1b[?0u\x1b[?62;22c");
+        assert!(parser.callbacks_mut().take_replies().is_empty());
+        feed_bytes(&mut parser, b"\x1b[>5u\x1b[?u\x1b[0c");
+        assert_eq!(parser.callbacks_mut().take_replies(), b"\x1b[?5u\x1b[?62;22c");
+        // The answer is the active screen's flags.
+        feed_bytes(&mut parser, b"\x1b[?1049h\x1b[?u\x1b[>2u\x1b[?u");
+        assert_eq!(parser.callbacks_mut().take_replies(), b"\x1b[?0u\x1b[?2u");
+        feed_bytes(&mut parser, b"\x1b[?1049l");
+        // Nothing else is answered: DA2, DSR, a DA1 with a parameter, other `u` forms.
+        feed_bytes(&mut parser, b"\x1b[>c\x1b[6n\x1b[1c\x1b[>0q\x1b[u\x1b[s");
+        assert!(parser.callbacks_mut().take_replies().is_empty());
+    }
+
+    /// A reply goes to the writer thread's channel and out through `merge`, in order with keys,
+    /// never dropped; while the process starts it joins the queued input; after the end it's
+    /// dropped.
+    #[test]
+    fn replies_reach_the_writer() {
+        let (mut parser, _) = title_parser("t");
+        feed_bytes(&mut parser, b"\x1b[?u");
+        let reply = parser.callbacks_mut().take_replies();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut state = State {
+            status: Status::Running,
+            pid: None,
+            master: None,
+            input: Some(tx),
+            queued: Vec::new(),
+            group: None,
+            kill_when_started: None,
+            killed: false,
+        };
+        deliver_reply(&mut state, reply);
+        let batch: Vec<Input> = std::iter::once(Input::Bytes(b"k".to_vec()))
+            .chain(rx.try_iter())
+            .collect();
+        assert_eq!(merge(batch, || false), b"k\x1b[?0u");
+        state.status = Status::Starting;
+        deliver_reply(&mut state, b"R".to_vec());
+        assert_eq!(state.queued, b"R");
+        assert!(rx.try_recv().is_err());
+        state.status = Status::Failed("gone".into());
+        deliver_reply(&mut state, b"X".to_vec());
+        assert_eq!(state.queued, b"R");
+    }
+
+    #[test]
+    fn a_reply_is_never_merged_away() {
+        let batch = vec![mouse("a", true), Input::Reply(b"r".to_vec()), mouse("b", true)];
+        assert_eq!(merge(batch, || true), b"arb");
     }
 }
