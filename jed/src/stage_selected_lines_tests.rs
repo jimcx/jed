@@ -705,21 +705,7 @@ async fn stage_selected_lines_diff_tab_cancelled_save_stages_nothing() {
 // Subtask d: the done-when, as scenarios against `git apply` of hand-edited patches.
 
 use crate::git::test_repo::git_with_input;
-
-/// A copy of the repository next to it (the index and work tree as they are now).
-fn copy_repo(root: &Path, name: &str) -> std::path::PathBuf {
-    let to = root.with_file_name(name);
-    assert!(
-        std::process::Command::new("cp")
-            .arg("-a")
-            .arg(root)
-            .arg(&to)
-            .status()
-            .unwrap()
-            .success()
-    );
-    to
-}
+use crate::test_util::copy_repo;
 
 /// `git apply --unidiff-zero [--cached] [-R]` of `hunks` (zero-context, for `f.txt`) in `dir`.
 fn hand_apply(dir: &Path, cached: bool, reverse: bool, hunks: &str) {

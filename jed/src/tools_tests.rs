@@ -925,7 +925,10 @@ async fn tools_new_lines_wake_the_loop_only_for_log_tabs() {
     assert!(app.test_turn(Duration::from_secs(2)).await, "the store's first wake");
     assert_eq!(app.log_tabs.deadline(), None, "no log tab: no rearm due");
     push_lines(&app, &demo(), 1, 1);
-    assert!(!app.test_turn(Duration::from_millis(300)).await, "unarmed: no wake");
+    // Unarmed: the line doesn't wake the loop (another late start event may: count log wakes).
+    let wakes = app.log_tabs.wakes;
+    app.test_turn(Duration::from_millis(300)).await;
+    assert_eq!(app.log_tabs.wakes, wakes, "unarmed: no wake");
 
     open_log(&mut app, "demo");
     assert_eq!(tab_lines(&app), ["line 0", "line 1"]);
@@ -967,11 +970,14 @@ async fn tools_a_flood_of_lines_costs_turns_per_frame_not_per_line() {
             }
         }
     });
-    let mut turns = 0u64;
+    // `turns` woke for an event; `all_turns` also counts the ones that timed out, which still
+    // pump (and so can append: a slow run had more appends than woken turns).
+    let (mut turns, mut all_turns) = (0u64, 0u64);
     while !(pusher.is_finished() && tab_lines(&app).len() == 3001) {
         if app.test_turn(Duration::from_millis(200)).await {
             turns += 1;
         }
+        all_turns += 1;
         assert!(
             start.elapsed() < Duration::from_secs(20),
             "{} lines",
@@ -981,7 +987,11 @@ async fn tools_a_flood_of_lines_costs_turns_per_frame_not_per_line() {
     let frames = (start.elapsed().as_millis() / 20) as u64; // `tools::LOG_FRAME`
     // About 2 per frame; one per burst (300) without the throttle.
     assert!(turns <= 3 * frames + 10, "{turns} turns in {frames} frames");
-    assert!(app.log_tabs.appends - appends <= turns, "one change set per turn");
+    assert!(
+        app.log_tabs.appends - appends <= all_turns,
+        "one change set per turn: {} in {all_turns}",
+        app.log_tabs.appends - appends
+    );
     assert_eq!(tab_lines(&app)[3000], "line 2999");
 }
 

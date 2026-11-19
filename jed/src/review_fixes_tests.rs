@@ -369,6 +369,8 @@ mod thread_tab {
             ),
         ];
         let (mut app, server) = loaded_app_with(dir.path(), Some(EDITED), None, None, extra).await;
+        // Editing needs to know who the user is: the `/user` answer comes on its own.
+        assert!(app.settle(|a| a.review.user.as_deref() == Some("sam")).await);
         open_row(&mut app, 2).await;
         app.review.view.conv.focused = false;
         app.test_execute(Command::ReviewEditComment);

@@ -1846,23 +1846,26 @@ async fn milestone_8_more_languages_one_mb_frames() {
             text.push_str("  \"end\": 0\n}\n");
         }
         let (mut app, _) = open_app(&dir, "", rel, &text);
-        let t = Instant::now();
+        // Frames by `frame_clock`: a debug run's CPU time (a key took 417 ms of wall time with
+        // eight test runs at once).
+        let clock = crate::test_util::frame_clock;
+        let t = clock();
         draw(&mut term, &mut app);
-        let mut worst = t.elapsed();
+        let mut worst = clock() - t;
         assert!(!parsed(&app), "{rel}: parsed in the background");
         let t = Instant::now();
         while !parsed(&app) {
             assert!(t.elapsed() < Duration::from_secs(20), "{rel}: no tree");
-            let f = Instant::now();
+            let f = clock();
             app.pump();
             draw(&mut term, &mut app);
-            worst = worst.max(f.elapsed());
+            worst = worst.max(clock() - f);
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         let parse = t.elapsed();
-        let f = Instant::now();
+        let f = clock();
         draw(&mut term, &mut app);
-        worst = worst.max(f.elapsed());
+        worst = worst.max(clock() - f);
         let lines = text.lines().count();
         app.test_execute(Command::GoToLine);
         app.type_text(&(lines / 2).to_string());
@@ -1872,11 +1875,11 @@ async fn milestone_8_more_languages_one_mb_frames() {
         draw(&mut term, &mut app);
         let mut worst_key = Duration::ZERO;
         for c in keys.chars() {
-            let t = Instant::now();
+            let t = clock();
             app.press(K::Char(c), M::NONE);
             app.pump();
             draw(&mut term, &mut app);
-            worst_key = worst_key.max(t.elapsed());
+            worst_key = worst_key.max(clock() - t);
             if !parsed(&app) {
                 assert!(app.settle(parsed).await, "{rel}");
             }

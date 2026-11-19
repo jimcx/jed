@@ -3247,14 +3247,7 @@ mod revert_hunks {
     /// What `git checkout -p` leaves in a copy of the repository answering `answers`, and the
     /// copy's index.
     fn checkout_p(root: &Path, answers: &str) -> (String, String) {
-        let to = root.with_file_name(format!("ref-{}", answers.replace('\n', "")));
-        let ok = std::process::Command::new("cp")
-            .arg("-a")
-            .arg(root)
-            .arg(&to)
-            .status()
-            .unwrap();
-        assert!(ok.success());
+        let to = crate::test_util::copy_repo(root, &format!("ref-{}", answers.replace('\n', "")));
         git_with_input(&to, &["checkout", "-p", "--", "f.txt"], Some(answers));
         (fs::read_to_string(to.join("f.txt")).unwrap(), index(&to))
     }
@@ -8883,16 +8876,6 @@ mod discard_changes {
         )
     }
 
-    // FLAKE: 2026-11-03, failed once in a full run under load (left "a2\n", right "a\n": the
-    // open buffer of a.txt still had the changed text); passed on 3 isolated reruns.
-    // FLAKE: 2026-11-03 again (spell_check review follow-up), once in a full run under load
-    // ~8, output not captured; passed alone 3 times and in the full runs before and after.
-    // FLAKE: 2026-11-16, failed once in a full run under load (left "a2\n", right "a\n"; seen
-    // during review_forge_fixes-c); the dump below is printed with every assertion.
-    // Suspect: `settle_stage` waits for the discard's task and git, not for the open buffer's
-    // reload (`discard_done` → `check_disk`, itself off-thread), so the buffer can still hold
-    // "a2\n" (see "disk check busy" / "reloads" in the dump; the sibling test
-    // `discard_an_open_buffer_writes_the_disk_and_keeps_the_text_in_history` waits on the text).
     // Every assertion after the confirm dumps the state below.
     #[tokio::test(flavor = "multi_thread")]
     async fn discard_all_from_the_header_restores_every_change() {
@@ -8911,8 +8894,11 @@ mod discard_changes {
         assert!(settled, "settle_stage timed out\n{}", dump(&app));
         assert_eq!(read(&root, "c.txt"), "c2\n", "{}", dump(&app));
         assert_eq!(read(&root, "d.txt"), "d\n", "{}", dump(&app));
-        let buffer_text = app.buffers.iter().next().unwrap().1.rope.to_string();
-        assert_eq!(buffer_text, "a\n", "{}", dump(&app));
+        // `settle_stage` doesn't wait for the open buffer's reload (`discard_done` →
+        // `check_disk`, off-thread): a loaded run still had "a2\n" with the disk check busy.
+        let buffer_text = |app: &App| app.buffers.iter().next().unwrap().1.rope.to_string();
+        let reloaded = app.settle(|a| buffer_text(a) == "a\n").await;
+        assert!(reloaded, "{:?}\n{}", buffer_text(&app), dump(&app));
         assert!(!root.join("sub/e.txt").exists(), "{}", dump(&app));
         assert_eq!(
             read(&root, "b.txt"),
@@ -13639,7 +13625,15 @@ mod live_diagnostics {
     #[tokio::test(flavor = "multi_thread")]
     async fn related_documents_and_file_dependencies_reach_the_other_files() {
         let (mut app, fake, paths, _dir) = pull_app(true, &["a.cpp", "b.cpp"], Some(full("r1", json!([])))).await;
-        assert!(app.settle(|_| fake.requests(PULL).len() == 2).await);
+        // Edit a.cpp. Opening b.cpp made a.cpp due again (its answer to the open): count the
+        // requests from after the start's have all been answered.
+        app.test_execute(crate::command::Command::PrevTab);
+        assert_eq!(app.active_buffer().unwrap().path, paths[0]);
+        assert!(
+            app.settle(|a| fake.requests(PULL).len() >= 2 && a.test_pulls_idle())
+                .await
+        );
+        let base = fake.requests(PULL).len();
         let b = uri(&paths[1]);
         let mut report = full("r2", json!([diag(0, 0, 3, 1, "in a")]));
         report["relatedDocuments"] = json!({ b.clone(): full("b1", json!([diag(1, 0, 3, 2, "in b")])) });
@@ -13650,14 +13644,16 @@ mod live_diagnostics {
         });
         app.type_text("x");
         assert!(app.settle(|a| msgs(a, &paths[1]) == ["in b"]).await);
-        // The edited file asked (3rd request); its answer made the other open file due (4th), and
-        // that one's answer doesn't spread back: no ping-pong.
-        assert!(app.settle(|_| fake.requests(PULL).len() >= 4).await);
-        idle(&mut app).await;
+        // The edited file asked; its answer made the other open file due, and that one's answer
+        // doesn't spread back: no ping-pong.
+        assert!(
+            app.settle(|a| fake.requests(PULL).len() >= base + 2 && a.test_pulls_idle())
+                .await
+        );
         let asked = fake.requests(PULL);
-        assert_eq!(asked.len(), 4);
-        assert_eq!(asked[2]["textDocument"]["uri"], json!(uri(&paths[0])));
-        assert_eq!(asked[3]["textDocument"]["uri"], json!(uri(&paths[1])));
+        assert_eq!(asked.len(), base + 2);
+        assert_eq!(asked[base]["textDocument"]["uri"], json!(uri(&paths[0])));
+        assert_eq!(asked[base + 1]["textDocument"]["uri"], json!(uri(&paths[1])));
         app.shutdown_servers().await;
     }
 }

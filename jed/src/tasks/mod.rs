@@ -238,7 +238,8 @@ mod tests {
     }
 
     async fn wait_until(what: &str, cond: impl Fn() -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // 30 s, as `App::settle`: parallel test runs load the machine.
+        let deadline = Instant::now() + Duration::from_secs(30);
         while !cond() {
             assert!(Instant::now() < deadline, "timed out waiting for {what}");
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -316,10 +317,10 @@ mod tests {
         let id = t.run(&tpl, &root, run::SCROLLBACK);
         let run = t.get(id).unwrap();
         wait_until("exit", || !run.status().is_running()).await;
-        assert_eq!(
-            run.screen().screen().contents(),
-            format!("{}\nxterm-256color truecolor hi there", root.join("sub").display())
-        );
+        // Under load the run can end before the reader has taken the last line (it waits only
+        // `OUTPUT_GRACE` for it); the line still comes.
+        let want = format!("{}\nxterm-256color truecolor hi there", root.join("sub").display());
+        wait_until("the output", || run.screen().screen().contents() == want).await;
         assert_eq!(run.cwd, root.join("sub"));
     }
 
@@ -342,12 +343,13 @@ mod tests {
         let pa = t.get(a).unwrap().pid().unwrap();
         let at = Instant::now();
         t.shutdown().await;
-        let took = at.elapsed();
-        assert!(took >= SHUTDOWN_TIMEOUT && took < SHUTDOWN_TIMEOUT * 2, "{took:?}");
+        assert!(at.elapsed() >= SHUTDOWN_TIMEOUT, "{:?}", at.elapsed());
         wait_until("all ended", || t.running() == 0).await;
         wait_until("group gone", || !group_alive(pa)).await;
-        // Shutdown's own SIGKILL, not `kill`'s escalation a `KILL_GRACE` after the SIGHUP.
-        assert!(at.elapsed() < run::KILL_GRACE, "{:?}", at.elapsed());
+        // Shutdown's own SIGKILL, not `kill`'s escalation a `KILL_GRACE` after the SIGHUP (not
+        // told apart by time: a loaded machine took over a second).
+        assert!(t.get(a).unwrap().test_force_killed());
+        assert!(!t.get(b).unwrap().test_force_killed(), "b ended of the SIGHUP");
         let signal = |id| exit(t.get(id).unwrap()).signal.unwrap_or_default();
         assert!(signal(a).contains("Kill"), "{}", signal(a));
         assert!(signal(b).contains("Hangup"), "asked to end first: {}", signal(b));

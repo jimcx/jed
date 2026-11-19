@@ -35,6 +35,9 @@ pub struct LogTabs {
     /// Change sets applied to log buffers (tests: one per log per turn).
     #[cfg(test)]
     pub appends: u64,
+    /// The store's wakes taken in (`LogEvent::Changed`).
+    #[cfg(test)]
+    pub wakes: u64,
 }
 
 impl LogTabs {

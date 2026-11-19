@@ -60,6 +60,7 @@ use crate::command::{Command, Motion};
 use crate::disk::BannerAction;
 use crate::git::test_repo::{commit_all, git, git_with_input, init};
 use crate::git::{Change, Decoration};
+use crate::test_util::copy_repo;
 use crate::workspace::trust::TrustStore;
 use crate::workspace::{self, Workspace};
 
@@ -683,19 +684,6 @@ fn index_state(root: &Path) -> (String, String) {
         git(root, &["ls-files", "-s"]),
         git(root, &["diff", "--cached", "--no-color"]),
     )
-}
-
-/// A copy of the repository at `root` (beside it, as `name`), for `git add -p` to stage in.
-fn copy_repo(root: &Path, name: &str) -> PathBuf {
-    let to = root.with_file_name(name);
-    let ok = std::process::Command::new("cp")
-        .arg("-a")
-        .arg(root)
-        .arg(&to)
-        .status()
-        .unwrap();
-    assert!(ok.success());
-    to
 }
 
 fn place_cursor(app: &mut App, line: usize) {
@@ -2512,6 +2500,20 @@ async fn milestone_10_source_control_saves_dirty_files_before_staging() {
         app.press(KeyCode::End, M::NONE);
         app.type_text(typed);
     }
+    // Stage All takes Changes from the last status: wait for the one after a.txt's stage (a
+    // slow run can still show a.txt there, and the message then says 4 files).
+    let changes = |a: &App| -> Vec<String> {
+        a.git.status.as_ref().map_or_else(Vec::new, |s| {
+            crate::scm::files(s, Section::Changes)
+                .map(|(e, _)| e.path.display().to_string())
+                .collect()
+        })
+    };
+    assert!(
+        app.settle(|a| changes(a) == ["c.txt", "d.txt", "sub/e.txt"]).await,
+        "{:?}",
+        changes(&app)
+    );
     focus_scm(&mut app);
     let b = scm_button(&mut app, &RowKey::Header(Section::Changes));
     click(&mut app, b);

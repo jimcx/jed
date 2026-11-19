@@ -292,19 +292,18 @@ async fn claude_lsp_requests_wait_ask_again_time_out_and_retry() {
     e.fake.fail("textDocument/definition", -32801, "content modified");
     let asked = e.fake.requests("textDocument/definition").len();
     let worker = mcp(&e.socket, one("find_definition"));
+    // Asked again (each ask fails until `unfail`): waiting for the first ask alone let a loaded
+    // run unfail before the fake answered it, so it succeeded at once.
     assert!(
         e.app
-            .settle(|_| e.fake.requests("textDocument/definition").len() > asked)
-            .await
+            .settle(|_| e.fake.requests("textDocument/definition").len() > asked + 1)
+            .await,
+        "asked again"
     );
     assert!(!worker.is_finished(), "not answered with the routine error");
     e.fake.unfail("textDocument/definition");
     let out = finish(&mut e.app, worker).await;
     assert_eq!(answer(&out[1]).unwrap()["count"], 1);
-    assert!(
-        e.fake.requests("textDocument/definition").len() > asked + 1,
-        "asked again"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

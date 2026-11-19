@@ -2648,6 +2648,14 @@ async fn milestone_9_hover_popup_hides_squiggles_under_it() {
 /// the popup stays while the pointer moves within the word or onto the popup, and closes when it
 /// moves off. Moving to another word while an answer is pending cancels it (`$/cancelRequest`)
 /// and the next word's answer is the one shown. A click closes the popup.
+/// `pending_requests` without the lightbulb's code actions, which a slow run's rest timer can
+/// add at any point.
+fn pending_but_bulb(app: &App) -> Vec<(&'static str, usize)> {
+    let mut v = app.pending_requests();
+    v.retain(|(k, _)| *k != "lightbulb");
+    v
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn milestone_9_hover_on_mouse_rest() {
     use crossterm::event::MouseEventKind as E;
@@ -2700,12 +2708,11 @@ async fn milestone_9_hover_on_mouse_rest() {
     let (ix, iy) = find_cells(&term, "int x").unwrap();
     app.mouse(E::Moved, ix + 1, iy);
     app.test_hover_tick(Instant::now() + crate::hover::DELAY);
-    // FLAKE: 2026-11-02, failed once under load (loadavg ~14): `pending_requests()` was
-    // [("lightbulb", 0), ("mouse hover", 123)] — the lightbulb's code-action request was still pending.
+    // A slow run can also have the lightbulb's code actions pending.
     assert_eq!(
-        app.pending_requests(),
+        pending_but_bulb(&app),
         [("mouse hover", text.find("int x").unwrap() + 1)],
-        "FLAKE milestone_9_hover_on_mouse_rest: pending requests include a lightbulb request; hover ids {:?}",
+        "hover ids {:?}",
         request_ids(&fake, "textDocument/hover")
     );
     assert!(
@@ -2838,7 +2845,7 @@ async fn milestone_9_hover_requests_superseded_cancelled_and_stale() {
     app.press(K::F(12), M::NONE);
     show_hover(&mut app);
     assert_eq!(
-        app.pending_requests(),
+        pending_but_bulb(&app),
         [("definition", value_at + 1), ("hover", value_at + 1)]
     );
     // The definition request failed (the fake doesn't know it): "No definition found".
@@ -4095,16 +4102,20 @@ async fn milestone_9_quick_suggestions_only_in_code() {
     );
     assert!(app.settle(|a| a.active_buffer().unwrap().syntax.tree().is_some()).await);
     let later = || Instant::now() + crate::completion::QUICK_DELAY;
+    // Only completion requests count: a slow run has others in flight (lightbulb, ...).
+    let asked = |app: &App| {
+        app.pending_requests()
+            .into_iter()
+            .filter(|(k, _)| *k == "completion")
+            .collect::<Vec<_>>()
+    };
     // In a comment.
     put_cursor(&mut app, src.find("note").unwrap() + 5);
     app.type_text("ab");
     assert!(app.completion.quick.is_some());
     app.pump(); // the loop turn re-parses
     app.test_completion_tick(later());
-    assert!(
-        app.completion.quick.is_none() && app.pending_requests().is_empty(),
-        "comment"
-    );
+    assert!(app.completion.quick.is_none() && asked(&app).is_empty(), "comment");
     // In a string.
     put_cursor(&mut app, src.find("\"\"").unwrap() + 1 + 2);
     app.press(K::Left, M::NONE);
@@ -4112,18 +4123,22 @@ async fn milestone_9_quick_suggestions_only_in_code() {
     app.type_text("ab");
     app.pump();
     app.test_completion_tick(later());
-    assert!(app.pending_requests().is_empty(), "string");
+    assert!(asked(&app).is_empty(), "string");
     // In code: asks.
     let code = text(&app).find("\n  \n").unwrap() + 3;
     put_cursor(&mut app, code);
+    // Before the typing: its deadline is `QUICK_DELAY` (10 ms) after it, which a loaded run's
+    // `type_text` + `pump` can take.
+    let before = Instant::now();
     app.type_text("a");
     app.pump();
-    app.test_completion_tick(Instant::now());
-    assert!(app.pending_requests().is_empty(), "not before the deadline");
+    app.test_completion_tick(before);
+    let pending = asked(&app);
+    assert!(pending.is_empty(), "not before the deadline: {pending:?}");
     app.type_text("b");
     app.pump();
     app.test_completion_tick(later());
-    assert_eq!(app.pending_requests(), [("completion", code + 2)]);
+    assert_eq!(asked(&app), [("completion", code + 2)]);
     assert!(app.settle(list_shown).await);
     app.press(K::Esc, M::NONE);
     // Off.

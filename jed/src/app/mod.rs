@@ -1759,7 +1759,8 @@ impl App {
             // Focusing the Explorer gives the keys to the tree, not the history section.
             self.git_history.set_focused(false);
             self.file_history_view.set_focused(false);
-            if self.explorer.selected.is_none() {
+            // Not over a reveal still waiting for its listing (the active file's, at start).
+            if self.explorer.selected.is_none() && !self.explorer.revealing() {
                 self.explorer.select_index(0);
             }
         }
@@ -1769,6 +1770,10 @@ impl App {
         // New log lines redraw only what shows them: log tabs take them in at the turn's
         // `sync_logs`; the Tools view only when its error badges changed.
         if let AppEvent::Logs(tools::LogEvent::Changed) = ev {
+            #[cfg(test)]
+            {
+                self.log_tabs.wakes += 1;
+            }
             if self.logs_changed() {
                 self.needs_redraw = true;
             }
@@ -1987,6 +1992,11 @@ impl App {
     /// Takes in a workspace search batch as if the running search had sent it.
     pub fn test_search_batch(&mut self, batch: crate::workspace_search::Batch) {
         self.handle_app_event(AppEvent::Search(workspace_search::SearchEvent::Results(batch)));
+    }
+
+    /// No pull diagnostics request due or in flight.
+    pub fn test_pulls_idle(&self) -> bool {
+        self.pull.deadline().is_none() && !self.pending_requests().iter().any(|(k, _)| *k == "pull diagnostics")
     }
 
     /// The `resultId` kept for `buffer`'s pull diagnostics.

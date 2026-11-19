@@ -23,8 +23,36 @@ impl Watcher {
     }
 }
 
-pub fn start(root: &Path, on_change: impl Fn(Vec<PathBuf>) + Send + 'static) -> notify::Result<Watcher> {
-    let mut w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| match res {
+/// `notify::recommended_watcher`. In tests it waits (up to 30 s) for a free inotify instance
+/// when the per-user limit (`fs.inotify.max_user_instances`, often 128) is used up: several
+/// parallel test runs each start hundreds of watching apps, and a test whose watcher failed
+/// would wait out its settle for events that never come.
+fn new_watcher(handler: impl notify::EventHandler + Clone) -> notify::Result<RecommendedWatcher> {
+    #[cfg(test)]
+    {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            match notify::recommended_watcher(handler.clone()) {
+                Err(e) if out_of_instances(&e) && std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                r => return r,
+            }
+        }
+    }
+    #[cfg(not(test))]
+    notify::recommended_watcher(handler)
+}
+
+/// EMFILE from `inotify_init`: the user's inotify instances are all in use.
+#[cfg(test)]
+fn out_of_instances(e: &notify::Error) -> bool {
+    matches!(&e.kind, notify::ErrorKind::Io(io) if io.raw_os_error() == Some(24))
+}
+
+pub fn start(root: &Path, on_change: impl Fn(Vec<PathBuf>) + Send + Sync + 'static) -> notify::Result<Watcher> {
+    let on_change = std::sync::Arc::new(on_change);
+    let mut w = new_watcher(move |res: notify::Result<notify::Event>| match res {
         Ok(ev) if !matches!(ev.kind, EventKind::Access(_)) => on_change(ev.paths),
         Ok(_) => {}
         Err(e) => tracing::warn!("watch error: {e}"),
@@ -40,12 +68,13 @@ pub fn start(root: &Path, on_change: impl Fn(Vec<PathBuf>) + Send + 'static) -> 
 pub fn start_file(
     file: &Path,
     config_dir: &Path,
-    on_change: impl Fn(Vec<PathBuf>) + Send + 'static,
+    on_change: impl Fn(Vec<PathBuf>) + Send + Sync + 'static,
 ) -> notify::Result<Watcher> {
+    let on_change = std::sync::Arc::new(on_change);
     let dir = file.parent().unwrap_or(Path::new("/")).to_path_buf();
     let target = file.to_path_buf();
     let config = config_dir.to_path_buf();
-    let mut w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| match res {
+    let mut w = new_watcher(move |res: notify::Result<notify::Event>| match res {
         Ok(ev) if !matches!(ev.kind, EventKind::Access(_)) => {
             let paths: Vec<PathBuf> = ev
                 .paths

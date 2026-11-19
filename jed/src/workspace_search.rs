@@ -1454,8 +1454,8 @@ mod tests {
         };
         cancel.store(true, Ordering::Relaxed);
         let stats = thread.join().unwrap();
+        // (Not `searched < 1000`: a loaded machine can run the whole walk before the store.)
         assert!(stats.cancelled && !done.load(Ordering::Relaxed));
-        assert!(stats.searched < 1000, "searched {}", stats.searched);
         assert_eq!(run(job(), &AtomicBool::new(false), &|_| {}).searched, 1000);
         // A `Handle` cancels when told to, and when dropped.
         let flag = Arc::new(AtomicBool::new(false));

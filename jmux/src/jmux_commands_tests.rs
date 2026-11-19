@@ -248,10 +248,8 @@ async fn jmux_commands_a_a_command_is_a_running_row_then_finished_with_its_exit_
         "FLAKE: duration text {:?}",
         r.duration_text(Instant::now())
     );
-    assert!(
-        took.is_some_and(|t| t >= Duration::from_secs(2)),
-        "FLAKE: took {took:?}"
-    );
+    // `sleep 2`, less however late jmux read the B mark (1.999 s seen under load).
+    assert!(took.is_some_and(|t| t >= Duration::from_millis(1500)), "took {took:?}");
     h.fake("bad", 0, 1);
     flake("a failed row", &h);
     h.settle("a failed row", |h| {
@@ -454,7 +452,12 @@ async fn jmux_commands_b_a_command_is_a_running_row_with_its_title_then_a_check_
     })
     .await;
     let row = h.side_rows().into_iter().find(|r| r.contains("slow")).unwrap();
-    assert!(row.contains("2.") || row.contains("3."), "the duration shows: {row:?}");
+    // About 2 s: the start is when jmux reads the B mark, which a loaded machine can read late
+    // (1.9s seen with eight test runs at once).
+    assert!(
+        ["1.", "2.", "3."].iter().any(|d| row.contains(d)),
+        "the duration shows: {row:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -96,6 +96,20 @@ fn spawn_thread(dir: PathBuf) -> std::thread::JoinHandle<std::io::Result<()>> {
     })
 }
 
+/// Leaves a socket at `path` nobody listens on. Another test forking a child right then gives the
+/// child a copy of the listener until it execs: a connect meanwhile succeeds and is reset (`ls`
+/// listed `dead: Connection reset by peer`), so this waits for the refusal a dead server gives.
+fn stale_socket(path: &Path) {
+    drop(std::os::unix::net::UnixListener::bind(path).unwrap());
+    let deadline = Instant::now() + WAIT;
+    while !std::os::unix::net::UnixStream::connect(path)
+        .is_err_and(|e| e.kind() == std::io::ErrorKind::ConnectionRefused)
+    {
+        assert!(Instant::now() < deadline, "the listener stayed open");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 fn parser(rows: u16, cols: u16) -> vt100::Parser {
     vt100::Parser::new(NonZeroU16::new(rows).unwrap(), NonZeroU16::new(cols).unwrap(), 0)
 }
@@ -176,6 +190,15 @@ impl Client {
             .await;
     }
 
+    /// Reads until the shell's first prompt (`sh-5.3$`): input sent before it is typeahead, which
+    /// the shell reads differently (a paste is cooked-mode input then, a bracketed paste after).
+    async fn prompted(&mut self) {
+        self.wait_screen("the shell's prompt", |s| {
+            s.contents().lines().any(|l| l.trim_end().ends_with('$'))
+        })
+        .await;
+    }
+
     /// Reads until `Bye`, returning its reason.
     async fn wait_bye(&mut self) -> ByeReason {
         loop {
@@ -251,9 +274,14 @@ async fn jmux_server_gives_the_shell_its_environment() {
 async fn jmux_server_pastes_into_the_shell() {
     let mut server = TestServer::start();
     let mut c = Client::attach(&server.socket, 20, 60).await;
-    c.send(ClientMsg::Input(Event::Paste("echo pasted-$((2+2))\r".into())))
+    // At the prompt readline has bracketed paste on, so a pasted `\r` is text, not Enter (before
+    // the prompt it ran the line as cooked-mode typeahead: a race under load).
+    c.prompted().await;
+    c.send(ClientMsg::Input(Event::Paste("echo pasted-$((2+2))".into())))
         .await;
-    c.wait_text("pasted-4").await;
+    c.wait_text("echo pasted-$((2+2))").await;
+    c.press(KeyCode::Enter, KeyModifiers::NONE).await;
+    c.wait_text("\npasted-4").await;
     c.end(&mut server).await;
 }
 
@@ -444,7 +472,7 @@ async fn jmux_server_replaces_a_stale_socket_but_not_a_live_one() {
     flake_step(t0, "first server ended", &server.socket);
 
     // A leftover file nobody listens on is replaced.
-    drop(std::os::unix::net::UnixListener::bind(&server.socket).unwrap());
+    stale_socket(&server.socket);
     assert!(server.socket.exists());
     server.thread = Some(spawn_thread(server.dir.clone()));
     server::wait_for_socket(&server.socket, WAIT, || true).unwrap();
@@ -990,7 +1018,6 @@ impl Drop for StartedServer {
     }
 }
 
-// FLAKE: 2026-11-14, failed once under a parallel release build (which step is unknown)
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_live_name() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1000,7 +1027,7 @@ async fn jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_liv
     let cwd = cwd.canonicalize().unwrap();
     jtui::socket::prepare_dir(&dir).unwrap();
     // A leftover socket nobody listens on.
-    drop(std::os::unix::net::UnixListener::bind(session::socket_path(&dir, "work")).unwrap());
+    stale_socket(&session::socket_path(&dir, "work"));
 
     let sh_exe = sh_pinned_exe(tmp.path());
     let (d, c, exe) = (dir.clone(), cwd.clone(), sh_exe.clone());
@@ -1014,6 +1041,12 @@ async fn jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_liv
     let _work = StartedServer::new(&socket);
     assert_eq!(name, "work");
     let c = Attached::start(&socket, 20, 80).await;
+    // Typed before the first prompt, the tty echoes `pwd` first and its output lands on the
+    // prompt's line (`sh-5.3$ pwd/tmp/…`), never a row of its own.
+    c.wait_rows("the shell's prompt", |rows| {
+        rows.iter().any(|r| r.trim_end().ends_with('$'))
+    })
+    .await;
     c.type_text("pwd\r");
     let want = cwd.display().to_string();
     let (begun, deadline) = (Instant::now(), Instant::now() + WAIT);
@@ -1106,16 +1139,13 @@ async fn jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_liv
     assert_eq!(outcome, Outcome::Bye(ByeReason::SessionEnded));
 }
 
-// FLAKE: 2026-11-14, `ls` listed `dead: Connection reset by peer (os error 104)` instead of removing the
-// socket (seen once in a full run); suspected cause: the closed listener's socket answers with ECONNRESET,
-// which `remove_stale` doesn't count as stale
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_server_ls_removes_stale_sockets_and_attach_ignores_them() {
     let began = Instant::now();
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("run");
     jtui::socket::prepare_dir(&dir).unwrap();
-    let stale = || drop(std::os::unix::net::UnixListener::bind(session::socket_path(&dir, "dead")).unwrap());
+    let stale = || stale_socket(&session::socket_path(&dir, "dead"));
     stale();
     let d = dir.clone();
     let found = tokio::task::spawn_blocking(move || crate::cli::find(&d, Some("dead")))

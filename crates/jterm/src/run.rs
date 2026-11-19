@@ -13,8 +13,8 @@
 //!
 //! The waiter sees the exit with `waitid(WNOWAIT)` and reaps only with the state locked, so a kill
 //! never signals a reaped (reusable) pid. It reaps after the reader hit end of output (bounded by
-//! `OUTPUT_GRACE`: a background process can hold the PTY open), so `Exited` means the screen holds
-//! all the output.
+//! `OUTPUT_GRACE`: a background process can hold the PTY open; longer, up to `OUTPUT_MAX`, while
+//! output is still unread or being parsed), so `Exited` means the screen holds all the output.
 //!
 //! A shell's tab follows the OSC codes its terminal sends: `133;B` (a command starts) and
 //! `133;D;<code>` (it finished) from the shell integration, and a program's own window title
@@ -64,6 +64,9 @@ pub const FRAME: Duration = Duration::from_millis(20);
 pub const KILL_GRACE: Duration = Duration::from_secs(1);
 /// After the process exits, how long to wait for the rest of its output.
 const OUTPUT_GRACE: Duration = Duration::from_millis(250);
+/// Past `OUTPUT_GRACE`, the wait goes on while output is left to read (a reader thread starved on
+/// a loaded machine), up to this: a background process writing on can't hold the exit back.
+const OUTPUT_MAX: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RunId(pub u64);
@@ -584,6 +587,10 @@ struct Shared {
     pending: AtomicBool,
     /// The reader is done (end of output) or there's none (failed to start).
     reader_done: AtomicBool,
+    /// The reader has a chunk it hasn't parsed yet.
+    reader_busy: AtomicBool,
+    /// A `force_kill` sent SIGKILL (not the `kill` escalation): for tests.
+    force_killed: AtomicBool,
     /// Wakes the notifier task (output, or the reader ending).
     notify: tokio::sync::Notify,
 }
@@ -667,6 +674,8 @@ impl Run {
             }),
             pending: AtomicBool::new(false),
             reader_done: AtomicBool::new(false),
+            reader_busy: AtomicBool::new(false),
+            force_killed: AtomicBool::new(false),
             notify: tokio::sync::Notify::new(),
         });
         let run = Run {
@@ -925,13 +934,20 @@ impl Scrollable for TerminalScroll<'_> {
     }
 }
 
-/// Test hooks (always compiled, `cfg(test)` doesn't cross crates) for the lock order: the spawn holds the state lock while it takes the screen's, so
+/// Test hooks (always compiled, `cfg(test)` doesn't cross crates) for how a run was killed, and for
+/// the lock order: the spawn holds the state lock while it takes the screen's, so
 /// a caller that took the screen first and then waited for the state would deadlock with it.
 impl Run {
     /// Holds the state lock until the guard is dropped.
     #[doc(hidden)]
     pub fn test_hold_state(&self) -> impl Drop + '_ {
         lock(&self.shared.state)
+    }
+
+    /// Whether `force_kill` sent the running process SIGKILL (the `kill` escalation doesn't count).
+    #[doc(hidden)]
+    pub fn test_force_killed(&self) -> bool {
+        self.shared.force_killed.load(Ordering::Acquire)
     }
 
     /// Whether the screen's lock is free right now (nothing holds it).
@@ -950,6 +966,9 @@ impl Shared {
                 let Some(pid) = state.pid else { return };
                 state.killed = true;
                 signal_group(pid, force);
+                if force {
+                    self.force_killed.store(true, Ordering::Release);
+                }
                 if !force {
                     let shared = self.clone();
                     std::thread::spawn(move || {
@@ -1191,7 +1210,9 @@ fn read_output(shared: Arc<Shared>, mut reader: Box<dyn Read + Send>) {
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
+                shared.reader_busy.store(true, Ordering::Release);
                 process_chunk(&shared, &buf[..n]);
+                shared.reader_busy.store(false, Ordering::Release);
                 if !shared.pending.swap(true, Ordering::AcqRel) {
                     shared.notify.notify_one();
                 }
@@ -1266,8 +1287,14 @@ fn merge(batch: Vec<Input>, mouse_on: impl FnOnce() -> bool) -> Vec<u8> {
 /// Waiter thread: blocks until the process exits, lets the reader finish, reaps it.
 fn wait_exit(shared: Arc<Shared>, mut child: Box<dyn Child + Send + Sync>, pid: i32, sink: Sink) {
     wait_without_reaping(pid);
-    let until = Instant::now() + OUTPUT_GRACE;
-    while !shared.reader_done.load(Ordering::Acquire) && Instant::now() < until {
+    let exited = Instant::now();
+    while !shared.reader_done.load(Ordering::Acquire) {
+        let waited = exited.elapsed();
+        if waited >= OUTPUT_MAX
+            || (waited >= OUTPUT_GRACE && !shared.reader_busy.load(Ordering::Acquire) && !output_unread(&shared))
+        {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(2));
     }
     {
@@ -1292,6 +1319,19 @@ fn wait_exit(shared: Arc<Shared>, mut child: Box<dyn Child + Send + Sync>, pid: 
         // when they do.
     }
     sink(Event::Ended(shared.id));
+}
+
+/// The PTY holds output the reader hasn't taken yet.
+fn output_unread(shared: &Shared) -> bool {
+    let state = lock(&shared.state);
+    let Some(fd) = state.master.as_ref().and_then(|m| m.as_raw_fd()) else {
+        return false;
+    };
+    let mut n: libc::c_int = 0;
+    // SAFETY: FIONREAD writes the count of readable bytes into `n`; the fd stays open while
+    // `state` (which owns the master) is locked.
+    let r = unsafe { libc::ioctl(fd, libc::FIONREAD, &mut n) };
+    r == 0 && n > 0
 }
 
 /// Blocks until `pid` has exited, leaving it a zombie (its pid can't be reused until reaped).

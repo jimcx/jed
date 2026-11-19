@@ -286,6 +286,11 @@ impl Explorer {
         self.scroll_to_selected();
     }
 
+    /// A reveal is waiting for a directory's listing.
+    pub fn revealing(&self) -> bool {
+        self.reveal.is_some()
+    }
+
     /// Expands the ancestors of `path` and selects it, listing directories as needed.
     /// Returns directories to list.
     pub fn reveal(&mut self, path: &Path) -> Vec<PathBuf> {
@@ -348,14 +353,16 @@ impl Explorer {
         self.selected_index()
     }
 
+    /// Selects row `index` (clamped); with no rows (not listed yet) nothing changes, a pending
+    /// reveal included.
     pub fn select_index(&mut self, index: usize) {
-        self.reveal = None;
         let picked = {
             let cache = self.cache();
             let n = index.min(cache.rows.len().saturating_sub(1));
             (n < cache.rows.len()).then(|| (n, self.entry_at(&cache, n).path.clone()))
         };
         if let Some((n, path)) = picked {
+            self.reveal = None;
             if let Some(c) = self.cache.get_mut().as_mut() {
                 c.selected = Some((path.clone(), Some(n)));
             }
@@ -754,6 +761,21 @@ mod tests {
         assert_eq!(again, vec![root.join("src")]);
         let src = x.find(&root.join("src")).unwrap();
         assert!(src.ignored && src.expanded && src.children.is_some());
+    }
+
+    /// Selecting a row before the first listing (focusing the Explorer at start) changes
+    /// nothing: the active file's reveal still selects it when the listing comes.
+    #[test]
+    fn select_index_before_the_listing_keeps_the_reveal() {
+        let (_d, root) = tree();
+        let mut x = Explorer::new(root.clone());
+        let target = root.join("b.txt");
+        assert_eq!(x.reveal(&target), vec![root.clone()]);
+        x.select_index(0);
+        assert!(x.revealing() && x.selected.is_none());
+        x.set_children(&root, list_dir(&root, &Override::empty()).unwrap());
+        assert_eq!(x.selected, Some(target));
+        assert!(!x.revealing());
     }
 
     #[test]

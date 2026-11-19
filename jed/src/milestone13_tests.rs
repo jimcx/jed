@@ -1252,7 +1252,12 @@ async fn milestone_13_done_when_quit_and_reopen_gives_back_the_same_screen() {
     quick_open(&mut app, "lib.rs").await;
     app.press(KeyCode::PageDown, KeyModifiers::NONE);
     app.press(KeyCode::PageDown, KeyModifiers::NONE);
-    assert!(app.settle(|a| a.git.status.is_some()).await);
+    // The status with lib.rs's change (one without it, read first, has no changes to open).
+    let lib = std::path::Path::new("src/lib.rs");
+    assert!(
+        app.settle(|a| a.git.status.as_ref().is_some_and(|s| s.entry(lib).is_some()))
+            .await
+    );
     palette_command(&mut app, "Git: Open Changes");
     assert!(app.group().active_diff().is_some(), "the diff tab");
     // Group 2, right: README.md near its end, "Paragraph" and its next match selected with Cmd+D.
