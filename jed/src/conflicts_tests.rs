@@ -921,3 +921,42 @@ async fn milestone_conflicts_typing_does_not_rescan_at_a_cost_per_frame() {
         assert!(worst < budget, "a keystroke took {worst:?}");
     }
 }
+
+/// Issue 58: accepting a side from the action row keeps the viewport where it was (the line
+/// before the conflict stays on the same screen row) instead of jumping to the top.
+#[tokio::test(flavor = "multi_thread")]
+async fn accepting_a_conflict_keeps_the_scroll_position() {
+    let mut src = String::new();
+    for i in 0..60 {
+        src.push_str(&format!("line {i}\n"));
+    }
+    src.push_str(&format!("{}{}\nours\n{}\ntheirs\n{}{}\n", "<<<<<<", "< HEAD", "=======", ">>>>>>", "> main"));
+    for i in 60..120 {
+        src.push_str(&format!("line {i}\n"));
+    }
+    let (_dir, mut app) = open(&src);
+    let _ = draw(&mut app, 160);
+    let start = at(&app, &format!("{}{}", "<<<<<<", "< HEAD"));
+    // The cursor stays at the top of the file while the view is scrolled to the conflict.
+    {
+        let (buf, view) = app.active_mut().unwrap();
+        view.set_top_line(&buf.rope, 55);
+    }
+    let _ = draw(&mut app, 160);
+    assert_eq!(app.group().active_tab().unwrap().view.top_line(), 55);
+    let start = ByteIdx(start);
+    let rect = app.hits.groups[0]
+        .merge_buttons
+        .iter()
+        .find(|(_, button, conflict)| *button == MergeButton::Accept(Choice::Incoming) && *conflict == start)
+        .map(|(rect, _, _)| *rect)
+        .expect("Accept Incoming button");
+    app.mouse(MouseEventKind::Down(MouseButton::Left), rect.x + 1, rect.y);
+    let _ = draw(&mut app, 160);
+    assert!(!text(&app).contains("ours"));
+    assert_eq!(
+        app.group().active_tab().unwrap().view.top_line(),
+        55,
+        "resolving a conflict scrolled the editor"
+    );
+}
