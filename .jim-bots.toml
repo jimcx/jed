@@ -4,13 +4,12 @@
 [review]
 criteria_file = "docs/dev/review.md"
 
-# Dispositions the bot fixes itself before it approves: blocking findings (up to its fix-round limit) and `fix`
-# findings (one cleanup round per merge request). `followup` findings and hand checks are filed in an issue.
-fix = ["blocking", "fix"]
+# The bot only reviews: `blocking` and `fix` findings go back to the branch's author (/task fixes them through
+# `scripts/mr -w`), `followup` findings are filed in an issue, and hand checks are listed for information.
 followups = "issue"
 followup_label = "bot:followup"
 
-# A change touching one of these is reviewed and fixed as usual, then waits for a human to approve instead of
+# A change touching one of these is reviewed as usual, then waits for a human to approve instead of
 # merging on its own: forge tokens and requests (a leak is hard for a test to rule out), and the process itself.
 hold_paths = [
     "jed/src/forge/config.rs",

@@ -1,28 +1,43 @@
 #!/bin/sh
 # Hand a finished task branch to review: push it to `origin` (Gitea) and open a
-# merge request (pull request) against main. Nothing is merged here: the review
-# and merge bots, or the user, take it from there. Prints the MR's URL.
+# merge request (pull request) against main, or update the one already open for
+# the branch. Nothing is merged here: the review and merge bots take it from
+# there. Prints the MR's URL.
 #
 # Needs GITEA_TOKEN (a Gitea access token with repository write access) in the
-# environment, or a configured `tea` CLI (used instead when it is installed).
+# environment. Without it, a configured `tea` CLI opens the MR instead (no -w).
 # Run from the branch's own worktree (it must be checked out and clean).
 #
-# Usage: scripts/mr [-e <evidence file>] <branch> [title]
+# Usage: scripts/mr [-e <evidence file>] [-w] <branch> [title]
 #   title defaults to the branch's only commit subject, or the branch name when
 #   there are several; the body lists the branch's commits (subject + body).
 #   -e appends the file under an "## Evidence" heading (docs/dev/review.md:
 #   who built it, mutation results, deviations, flaky tests, hand checks), for
 #   the reviewer to check against. A missing or empty file is skipped.
+#   -w then waits for the review bot's result on the MR's head and prints it
+#   (polls every 30s, up to MR_WAIT_MINUTES, default 90). It reads only the
+#   machine-readable copy at the end of a review comment by the bots' forge
+#   account (JIMBOTS_LOGIN, default the token's own user). If someone else
+#   (merge-bot resolving a rebase) pushed the branch meanwhile, it waits on the
+#   new head and resets this clean worktree to it, so the next fix starts there.
+#   Exit status with -w: 0 approved (or merged), 1 changes requested (the
+#   findings to fix are printed), 3 waits for the user, 4 no usable result
+#   (review error, empty diff, MR closed, timed out).
+#   With no new commits, -w just waits again (the push and update are no-ops).
 set -e
 
 evidence=
-if [ "$1" = "-e" ]; then
-    evidence=$2
-    shift 2
-fi
+wait=
+while :; do
+    case $1 in
+        -e) evidence=$2; shift 2 ;;
+        -w) wait=1; shift ;;
+        *) break ;;
+    esac
+done
 branch=$1
 title=$2
-[ -n "$branch" ] || { echo "usage: scripts/mr [-e <evidence file>] <branch> [title]" >&2; exit 2; }
+[ -n "$branch" ] || { echo "usage: scripts/mr [-e <evidence file>] [-w] <branch> [title]" >&2; exit 2; }
 [ -z "$(git status --porcelain)" ] || { echo "scripts/mr: working tree not clean" >&2; exit 1; }
 
 range="main..$branch"
@@ -39,28 +54,135 @@ if [ -n "$evidence" ] && [ -s "$evidence" ]; then
     body=$(printf '%s\n\n## Evidence\n\n%s' "$body" "$(cat "$evidence")")
 fi
 
+# The lease is the branch as this clone last saw it: a push by someone else
+# since (merge-bot resolving a rebase) is never overwritten.
 git push --force-with-lease -u origin "$branch"
+head=$(git rev-parse "$branch")
 
-if command -v tea >/dev/null 2>&1; then
-    tea pulls create --base main --head "$branch" --title "$title" --description "$body"
-    exit 0
+if [ -z "$GITEA_TOKEN" ]; then
+    if command -v tea >/dev/null 2>&1 && [ -z "$wait" ]; then
+        tea pulls create --base main --head "$branch" --title "$title" --description "$body"
+        exit 0
+    fi
+    echo "scripts/mr: pushed $branch, but GITEA_TOKEN is not set, so no MR was opened or waited on" >&2
+    exit 1
 fi
-
-[ -n "$GITEA_TOKEN" ] || { echo "scripts/mr: pushed $branch, but GITEA_TOKEN is not set (and tea is not installed) so no MR was opened" >&2; exit 1; }
 
 # origin is https://host/owner/repo(.git), ssh://[user@]host[:port]/owner/repo(.git)
 # or [user@]host:owner/repo(.git); the web/API URL is https://host/owner/repo (the
-# ssh port and user don't apply to it).
-url=$(git remote get-url origin | sed -E \
+# ssh port and user don't apply to it). MR_FORGE_URL overrides it.
+url=${MR_FORGE_URL:-$(git remote get-url origin | sed -E \
     -e 's#^ssh://([^@/]+@)?([^:/]+)(:[0-9]+)?/#https://\2/#' \
     -e 's#^[^@:/]+@([^:/]+):#https://\1/#' \
-    -e 's#\.git$##')
-api=$(printf '%s' "$url" | sed -E 's#^(https?://[^/]+)/(.*)$#\1/api/v1/repos/\2#')
+    -e 's#\.git$##')}
+host=$(printf '%s' "$url" | sed -E 's#^(https?://[^/]+)/.*$#\1#')
+repo=$(printf '%s' "$url" | sed -E 's#^https?://[^/]+/##')
 
-payload=$(python3 -I -c 'import json,sys; print(json.dumps({"head": sys.argv[1], "base": "main", "title": sys.argv[2], "body": sys.argv[3]}))' "$branch" "$title" "$body")
-resp=$(curl -sS -X POST "$api/pulls" -H "Authorization: token $GITEA_TOKEN" -H 'Content-Type: application/json' -d "$payload")
-python3 -I -c 'import json,sys
-r = json.loads(sys.argv[1])
-if "html_url" not in r:
-    sys.exit("scripts/mr: " + r.get("message", sys.argv[1]))
-print(r["html_url"])' "$resp"
+exec python3 -I - "$host/api/v1" "$repo" "$branch" "$title" "$body" "$head" "$wait" <<'EOF'
+import json, os, subprocess, sys, time, urllib.error, urllib.request
+
+api, repo, branch, title, body, pushed, wait = sys.argv[1:]
+TAG = "<!-- jimbots-review "
+MINUTES = os.environ.get("MR_WAIT_MINUTES", "90")
+
+
+def call(method, path, data=None):
+    req = urllib.request.Request(api + path, method=method,
+                                 data=None if data is None else json.dumps(data).encode(),
+                                 headers={"Authorization": "token " + os.environ["GITEA_TOKEN"],
+                                          "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        sys.exit(f"scripts/mr: {method} {path}: {e.code} {e.read().decode(errors='replace')[:300]}")
+
+
+def pages(path):
+    page = 1
+    while True:
+        items = call("GET", f"{path}{'&' if '?' in path else '?'}limit=50&page={page}")
+        yield from items
+        if len(items) < 50:
+            return
+        page += 1
+
+
+R = f"/repos/{repo}"
+pr = next((p for p in pages(f"{R}/pulls?state=open") if p["head"]["ref"] == branch and p["base"]["ref"] == "main"),
+          None)
+if pr:  # a later round: keep the description current (commits, evidence)
+    pr = call("PATCH", f"{R}/pulls/{pr['number']}", {"title": title, "body": body})
+else:
+    pr = call("POST", f"{R}/pulls", {"head": branch, "base": "main", "title": title, "body": body})
+print(pr["html_url"], flush=True)
+if not wait:
+    sys.exit(0)
+
+n = pr["number"]
+bot = os.environ.get("JIMBOTS_LOGIN") or call("GET", "/user")["login"]
+deadline = time.time() + 60 * float(MINUTES)
+
+
+def result(sha):
+    """The bots' newest review result for `sha`, or None."""
+    found = None
+    for c in pages(f"{R}/issues/{n}/comments"):
+        if c["user"]["login"] == bot and TAG in c["body"]:
+            try:
+                r = json.loads(c["body"].rsplit(TAG, 1)[1].split(" -->", 1)[0])
+            except ValueError:
+                continue
+            if r.get("sha") == sha:
+                found = r
+    return found
+
+
+def git(*args):
+    return subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout.strip()
+
+
+print(f"waiting for review-bot on {pushed[:10]} (as {bot}, up to {MINUTES} min)...", flush=True)
+head = pushed
+while True:
+    pr = call("GET", f"{R}/pulls/{n}")
+    if pr.get("merged"):
+        print("merged")
+        sys.exit(0)
+    if pr["state"] != "open":
+        print("the MR was closed unmerged")
+        sys.exit(4)
+    if pr["head"]["sha"] != head:
+        head = pr["head"]["sha"]
+        print(f"the branch was pushed by someone else: now at {head[:10]}", flush=True)
+        if git("rev-parse", "HEAD") == pushed and not git("status", "--porcelain"):
+            git("fetch", "-q", "origin", branch)
+            git("reset", "-q", "--hard", head)
+            pushed = head
+            print(f"reset this worktree to it (origin/{branch})", flush=True)
+        else:
+            print(f"this worktree changed since the push, so it was not reset: "
+                  f"git fetch origin && git reset --hard origin/{branch} once that is safe", flush=True)
+    r = result(head)
+    if r:
+        break
+    if time.time() > deadline:
+        print(f"no review of {head[:10]} after {MINUTES} minutes (is jim-bots@review running?); "
+              f"scripts/mr -w {branch} waits again")
+        sys.exit(4)
+    time.sleep(float(os.environ.get("MR_POLL_SECONDS", "30")))
+
+out = r.get("outcome")
+print(f"review of {head[:10]}: {out}")
+if out == "changes":
+    print("Fix these, commit, and run scripts/mr -w again:")
+for i, f in enumerate(r.get("findings") or [], 1):
+    print(f"{i}. [{f.get('disposition')}] [{f.get('lens')}] {f.get('location')}: {f.get('problem')}")
+    if f.get("fix"):
+        print(f"   fix: {f['fix']}")
+for x in r.get("needs_you") or []:
+    print(f"needs the user: {x}")
+for x in r.get("hand_checks") or []:
+    print(f"hand check (information only): {x}")
+sys.exit({"approve": 0, "changes": 1, "hold": 3}.get(out, 4))
+EOF

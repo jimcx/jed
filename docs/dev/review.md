@@ -4,9 +4,10 @@ What a change to jed is held to. This file is criteria only, no workflow: `/task
 the review bot (which reads it from `main`, with [`.jim-bots.toml`](../../.jim-bots.toml)) all apply it, each with
 its own steps. Change a rule here, not in a copy.
 
-The work is written by agents, with a human directing. So a review is not advice for an author to weigh: the
-author's session is over. Every finding is either fixed now or routed somewhere it will be handled
-([Dispositions](#dispositions)), and what reaches the human is only what is theirs to decide.
+The work is written by agents, with a human directing who does not review by hand. So a review is not advice for
+an author to weigh: every finding is either fixed by the author before the change lands or routed somewhere it will
+be handled ([Dispositions](#dispositions)). Look and feel are judged by the human after the merge: report no findings
+on them, and list what can only be checked by hand as hand checks, for information.
 
 ## Start from the task
 
@@ -87,9 +88,11 @@ Each finding gets one. Fixing is cheap and a deferred finding is usually lost, s
 | disposition | when | what happens |
 |---|---|---|
 | `blocking` | see below | fixed before the change lands |
-| `fix` | correct, local to the diff, keeps behaviour, needs no decision | fixed now, by whoever is reviewing (the bot's fix stage before it approves) |
+| `fix` | correct, local to the diff, keeps behaviour | fixed now: in a session, by the reviewer; on a merge request, by the branch's author (`/task`), asked once per MR (later ones are filed) |
 | `followup` | reaches well outside the diff, or is a piece of work of its own | filed: the bot opens a follow-up issue; in a session, it goes under the task's "Deferred:" |
-| `decision` | a behaviour or design question the task doesn't settle, or a trade-off costly to reverse | goes to the human, with the options and a recommendation; nothing merges until answered |
+
+There is no "ask the human": where the task leaves a choice open, judge it. Accept it, or report it as `blocking`
+or `fix` with the fix you recommend, or as a `followup`.
 
 Blocking in this project:
 
