@@ -2,7 +2,7 @@
 id: jmux_touch_gestures
 name: "jmux: touch gestures on the tab bar"
 summary: in the touch layout a finger swipe on a tab bar scrolls its tabs, a tap acts on release, and a tab is moved only after a hold picks it up
-status: open
+status: done
 priority: 0
 dependencies: [jmux_touch]
 ---
@@ -23,3 +23,9 @@ In the touch layout (`--touch`) a press on a tab starts a drag at once, as with 
   - Docs: `jmux/README.md` (the `--touch` row: swipe, tap, hold to move), `jmux/PLAN.md` (Terminals, tabs and splits: the touch gestures), [crates](../docs/dev/crates.md) (`jtui::touch`), and `jed_touch`'s "Needs" gains `jtui::touch` so jed's bars behave the same.
   - Deferred: a hold then release without moving opening a tab menu (close, close others, split right / down, move to group n), for a screen with no middle or right click; the same gestures over a terminal (swipe scrolls the scrollback when the program hasn't asked for the mouse, hold starts a selection); `HOLD` / `SLOP` as settings.
   - Still to check by hand: in a tablet's and a phone's SSH app (e.g. Termius, Blink), whether a long press reaches jmux as a still press or the app takes it for its own selection / paste menu (if the app takes it, tabs can't be picked up there and move-tab commands are the fallback); whether a swipe arrives as mouse drags or as wheel events; whether 450 ms feels right.
+- ✅ Done. With `--touch`, a swipe on a tab bar scrolls its tabs under the finger, a tap acts on release (focus, close with the running-command question, scroll, new tab, focus the group), and a press held still for `HOLD` lifts a tab (drawn `tab.lifted`) for an ordinary tab drag; a plain client keeps press-and-drag.
+  - `jtui::touch` (`Press`, `Gesture { Idle, Tap, Swipe { dx }, Lifted, Drag, Drop }`, `HOLD`, `SLOP`) is the clock-free state machine `jed_touch` reuses. jmux drives it from `jmux/src/app/touch.rs`: `Drag::Press { group, hit, gesture, carry, serial }`, `AppEvent::Hold(serial)` from a one-shot `sleep(HOLD)`, `press_moved` (swipe with a carried remainder), `press_released`, `hold`.
+  - `tabbar::max_scroll(widths, width, metrics)` is shared by the renderer and the swipe, so a fast swipe stops at the scroll the bar actually draws; `tabbar::render` takes `Marks { drop, lifted }`.
+  - Also: `jmux_touch_tests.rs`'s `Harness` is `pub(crate)` and reused by `jmux_touch_gestures_tests.rs`; its `press_and_move` now presses, delivers `Hold`, then drags.
+  - Deferred: as listed above (a tab menu on hold-and-release, gestures over a terminal, `HOLD` / `SLOP` as settings).
+  - Still to check by hand: as listed above (whether a long press reaches jmux as a still press in Termius / Blink, whether a swipe arrives as drags or wheel events, whether 450 ms feels right).

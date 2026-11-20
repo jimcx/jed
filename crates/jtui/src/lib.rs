@@ -18,6 +18,7 @@
 //!   generic over the app's `KeyContext` / `KeyCommand` types
 //!
 //! - `tabs`: `TabMetrics`, a tab bar's rows, padding and target widths (normal and touch)
+//! - `touch`: the finger's press on a bar: swipe, tap or hold (`Press`, a state machine with no clock)
 //! - `stream_backend`: `StreamBackend`, a ratatui `Backend` writing into a byte buffer, sized by the caller
 //!   (a server drawing for a remote client)
 //!
@@ -42,4 +43,5 @@ pub mod tabs;
 pub mod terminal;
 pub mod text;
 pub mod theme;
+pub mod touch;
 pub mod url;

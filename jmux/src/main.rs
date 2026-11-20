@@ -35,6 +35,8 @@ mod jmux_server_tests;
 #[cfg(test)]
 mod jmux_tabs_at_bottom_tests;
 #[cfg(test)]
+mod jmux_touch_gestures_tests;
+#[cfg(test)]
 mod jmux_touch_tests;
 #[cfg(test)]
 mod kitty_keys_passthrough_tests;

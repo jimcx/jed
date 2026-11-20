@@ -4,10 +4,10 @@
 //! Covered by `jmux_touch_*`: the bar is three rows with padded tabs, the title on the middle row
 //! and the tab's background on all three, at the top and with `tabs_at_bottom`
 //! (`..._the_bar_is_three_rows_...`); a tap on any row of a tab, padding included, focuses it
-//! (`..._a_tap_on_any_row_...`); the three cells of `×` close it, the cell beside them does not,
+//! (`..._a_tap_on_any_row_...`; the gestures themselves are `jmux_touch_gestures_tests`); the three cells of `×` close it, the cell beside them does not,
 //! and a running command still asks first (`..._the_close_target_...`, `..._closing_a_running_...`);
 //! the three-cell arrows scroll an overflowing bar (`..._the_arrows_...`); a tab drags to another
-//! bar and to a terminal half (`..._a_tab_drags_...`); the shells are two rows shorter than for a
+//! bar and to a terminal half, after a hold (`..._a_tab_drags_...`); the shells are two rows shorter than for a
 //! plain client (`..._shells_are_two_rows_shorter_...`); a plain client taking the session over
 //! gets the normal bar (`..._a_plain_client_taking_over_...`); a `Hello` without `touch` is
 //! accepted (`..._a_hello_without_touch_...`); a tap on any row of the `+` at the bar's right end
@@ -28,20 +28,20 @@ use crate::protocol::{ClientMsg, PROTOCOL_VERSION, ServerMsg};
 
 const WAIT: Duration = Duration::from_secs(10);
 
-struct Harness {
-    app: App,
-    events: UnboundedReceiver<AppEvent>,
-    conn_rx: Receiver<ServerMsg>,
-    terminal: Terminal<StreamBackend>,
-    screen: vt100::Parser,
-    rows: u16,
-    cols: u16,
-    _dir: tempfile::TempDir,
+pub(crate) struct Harness {
+    pub(crate) app: App,
+    pub(crate) events: UnboundedReceiver<AppEvent>,
+    pub(crate) conn_rx: Receiver<ServerMsg>,
+    pub(crate) terminal: Terminal<StreamBackend>,
+    pub(crate) screen: vt100::Parser,
+    pub(crate) rows: u16,
+    pub(crate) cols: u16,
+    pub(crate) _dir: tempfile::TempDir,
 }
 
 impl Harness {
     /// A started session (one tab) at `rows` x `cols` whose settings file holds `text`.
-    async fn new(rows: u16, cols: u16, text: &str, touch: bool) -> Harness {
+    pub(crate) async fn new(rows: u16, cols: u16, text: &str, touch: bool) -> Harness {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(crate::settings::FILE_NAME);
         std::fs::write(&path, text).unwrap();
@@ -92,7 +92,7 @@ impl Harness {
         h
     }
 
-    async fn step(&mut self) {
+    pub(crate) async fn step(&mut self) {
         if let Ok(Some(ev)) = tokio::time::timeout(Duration::from_millis(10), self.events.recv()).await {
             self.app.handle(ev);
             while let Ok(ev) = self.events.try_recv() {
@@ -109,7 +109,7 @@ impl Harness {
         }
     }
 
-    async fn settle(&mut self, what: &str, done: impl Fn(&Harness) -> bool) {
+    pub(crate) async fn settle(&mut self, what: &str, done: impl Fn(&Harness) -> bool) {
         let deadline = Instant::now() + WAIT;
         self.step().await;
         while !done(self) {
@@ -122,15 +122,15 @@ impl Harness {
         }
     }
 
-    async fn frame(&mut self) {
+    pub(crate) async fn frame(&mut self) {
         self.settle("a frame", |h| !h.app.needs_redraw).await;
     }
 
-    fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         self.screen.screen().contents()
     }
 
-    fn row(&self, row: u16) -> String {
+    pub(crate) fn row(&self, row: u16) -> String {
         self.screen
             .screen()
             .rows(0, self.cols)
@@ -138,12 +138,12 @@ impl Harness {
             .unwrap_or_default()
     }
 
-    fn click(&mut self, button: MouseButton, column: u16, row: u16) {
+    pub(crate) fn click(&mut self, button: MouseButton, column: u16, row: u16) {
         self.app.send_mouse(MouseEventKind::Down(button), column, row);
     }
 
     /// Another client connects and says hello, taking the session over.
-    async fn take_over(&mut self, conn: u64, touch: bool) {
+    pub(crate) async fn take_over(&mut self, conn: u64, touch: bool) {
         let (ctx, rx) = tokio::sync::mpsc::channel(256);
         let writer = tokio::spawn(std::future::pending::<()>());
         self.app.handle(AppEvent::Connected { conn, tx: ctx, writer });
@@ -163,38 +163,41 @@ impl Harness {
         self.settle("the new client's frame", |h| h.text().contains("sh")).await;
     }
 
-    fn shell_size(&self, group: u64) -> (u16, u16) {
+    pub(crate) fn shell_size(&self, group: u64) -> (u16, u16) {
         let tab = self.app.groups.get(group).unwrap().active_tab().unwrap();
         let (rows, cols) = tab.run.screen().screen().size();
         (rows.get(), cols.get())
     }
 
-    fn shells_fit(&self) -> bool {
+    pub(crate) fn shells_fit(&self) -> bool {
         let fit = |g: &crate::hit::GroupHit| self.shell_size(g.id) == (g.text.height, g.text.width);
         self.app.hit.groups.iter().all(fit)
     }
 
-    fn tab_count(&self) -> usize {
+    pub(crate) fn tab_count(&self) -> usize {
         self.app.groups.tab_count()
     }
 
-    fn active(&self) -> usize {
+    pub(crate) fn active(&self) -> usize {
         self.app.groups.active_group().active
     }
 
-    fn bg_at(&self, x: u16, y: u16) -> vt100::Color {
+    pub(crate) fn bg_at(&self, x: u16, y: u16) -> vt100::Color {
         self.screen.screen().cell(y, x).unwrap().bgcolor()
     }
 
-    async fn press_and_move(&mut self, from: (u16, u16), to: (u16, u16)) {
+    pub(crate) async fn press_and_move(&mut self, from: (u16, u16), to: (u16, u16)) {
         self.app
             .send_mouse(MouseEventKind::Down(MouseButton::Left), from.0, from.1);
+        // Held still for `HOLD` (the timer's event, delivered at once) the tab is lifted.
+        let serial = self.app.pending_press_serial().expect("a pending press");
+        self.app.handle(AppEvent::Hold(serial));
         self.app.send_mouse(MouseEventKind::Drag(MouseButton::Left), to.0, to.1);
         self.frame().await;
     }
 
     /// Opens tabs until there are `n`, waiting until the shells fit.
-    async fn tabs(&mut self, n: usize) {
+    pub(crate) async fn tabs(&mut self, n: usize) {
         for i in 1..n {
             self.app.run(Command::NewTerminal);
             self.settle("a new tab", |h| h.tab_count() == i + 1 && h.shells_fit())
@@ -209,7 +212,7 @@ impl Drop for Harness {
     }
 }
 
-const BOTTOM: &str = "tabs_at_bottom = true\n";
+pub(crate) const BOTTOM: &str = "tabs_at_bottom = true\n";
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_touch_the_bar_is_three_rows_with_padded_tabs_at_the_top() {
@@ -259,7 +262,7 @@ async fn jmux_touch_the_bar_is_three_rows_with_padded_tabs_at_the_bottom() {
 }
 
 /// A tap (press and release) at the cell.
-fn tap(h: &mut Harness, x: u16, y: u16) {
+pub(crate) fn tap(h: &mut Harness, x: u16, y: u16) {
     h.click(MouseButton::Left, x, y);
     h.app.send_mouse(MouseEventKind::Up(MouseButton::Left), x, y);
 }

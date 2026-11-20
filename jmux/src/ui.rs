@@ -89,8 +89,20 @@ pub fn render(f: &mut Frame, app: &mut App) {
             Some(TabDrop::TabBar { group, index }) if group == id => Some(index),
             _ => None,
         };
-        let crate::hit::BarHit { tabs, arrows, new_tab } =
-            tabbar::render(f, bar, group, &app.theme, &metrics, focused, drop);
+        // In the touch layout a tab drag only starts from a hold: show the tab picked up.
+        let lifted = match &app.drag {
+            Some(Drag::Tab(t)) if app.touch && t.from == id => Some(t.index),
+            _ => None,
+        };
+        let crate::hit::BarHit { tabs, arrows, new_tab } = tabbar::render(
+            f,
+            bar,
+            group,
+            &app.theme,
+            &metrics,
+            focused,
+            tabbar::Marks { drop, lifted },
+        );
         let (text, track) = shell_area(term);
         let mut scroll = ScrollBarHit::default();
         if let Some(shell) = group.active_tab() {

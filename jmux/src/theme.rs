@@ -21,6 +21,8 @@ pub fn dark_plus(truecolor: bool) -> Theme {
         ("statusBar", fg_bg(0xFFFFFF, 0x007ACC)),
         ("statusBar.detail", fg_bg(0xE0E0E0, 0x007ACC)),
         // The zone a dragged tab would take (as jed's `editor.dropBackground`).
+        // A tab a finger has held down and picked up (touch layout).
+        ("tab.lifted", fg_bg(0xFFFFFF, 0x0E639C)),
         ("terminal.dropBackground", fg_bg(0xFFFFFF, 0x0A4A7A)),
         // The close question that replaces the status bar.
         ("statusBar.prompt", fg_bg(0x000000, 0xD7BA7D)),
@@ -55,6 +57,7 @@ mod tests {
                 "statusBar.prompt",
                 "statusBar.notice",
                 "terminal.dropBackground",
+                "tab.lifted",
                 "sideBar",
                 "sideBar.dim",
                 "sideBar.border",

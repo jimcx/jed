@@ -14,9 +14,33 @@ use unicode_width::UnicodeWidthStr;
 use crate::group::Group;
 use crate::hit::{BarHit, TabArrows, TabHit};
 
+/// What a drag marks on a bar.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Marks {
+    /// The gap a dragged tab would land in, marked with one cell across the bar's rows.
+    pub drop: Option<usize>,
+    /// The tab a finger has picked up (touch layout), drawn as `tab.lifted`.
+    pub lifted: Option<usize>,
+}
+
+/// The furthest a bar `width` cells wide (without its `+`) scrolls, given its tabs' `widths`: the
+/// last tabs fill it (the last one whole). Shared by `render` and the touch swipe.
+pub fn max_scroll(widths: &[u32], width: u16, metrics: TabMetrics) -> usize {
+    let total: u32 = widths.iter().sum();
+    let overflow = total > u32::from(width) && width > 2 * metrics.arrow;
+    let inner = u32::from(width) - if overflow { 2 * u32::from(metrics.arrow) } else { 0 };
+    let mut max = widths.len().saturating_sub(1);
+    let mut used = widths.get(max).copied().unwrap_or(0);
+    while max > 0 && used + widths[max - 1] <= inner {
+        used += widths[max - 1];
+        max -= 1;
+    }
+    max
+}
+
 /// Draws the bar into `area` (`metrics.rows` tall: the title and `×` on its middle row, the other
-/// rows filled with each tab's background); returns where its tabs, arrows and `+` landed. `drop`
-/// is the gap a dragged tab would land in, marked with one cell across the bar's rows.
+/// rows filled with each tab's background); returns where its tabs, arrows and `+` landed.
+/// `marks` is what a drag shows on it.
 pub fn render(
     f: &mut Frame,
     area: Rect,
@@ -24,7 +48,7 @@ pub fn render(
     theme: &Theme,
     metrics: &TabMetrics,
     focused: bool,
-    drop: Option<usize>,
+    marks: Marks,
 ) -> BarHit {
     // A group squeezed out of a tiny window can lie outside the frame.
     let mut area = area.intersection(f.area());
@@ -62,13 +86,7 @@ pub fn render(
     };
     let inner = (right - left) as u32;
     let last = widths.len() - 1;
-    // The furthest the bar scrolls: the last tabs fill it (the last one whole).
-    let mut max_scroll = last;
-    let mut used = widths[last];
-    while max_scroll > 0 && used + widths[max_scroll - 1] <= inner {
-        used += widths[max_scroll - 1];
-        max_scroll -= 1;
-    }
+    let max_scroll = max_scroll(&widths, area.width, *metrics);
     // Scroll so the active tab is fully visible when it or the bar's width changed since the
     // last reveal; otherwise the bar stays where the wheel or an arrow left it.
     let active = group.active.min(last);
@@ -112,6 +130,7 @@ pub fn render(
         }
         let w = width(&tab.title).min(right - x);
         let style = match (i == group.active, focused) {
+            _ if marks.lifted == Some(i) => theme.get("tab.lifted"),
             (true, true) => theme.get("tab.active"),
             (true, false) => theme.get("tab.unfocusedActive"),
             _ => theme.get("tab.inactive"),
@@ -150,7 +169,7 @@ pub fn render(
         });
         x += w;
     }
-    if let Some(index) = drop {
+    if let Some(index) = marks.drop {
         // The gap before tab `index`, or after the last tab drawn; on a scrolled bar a gap can
         // name a tab that isn't drawn, which is the one just after the last drawn.
         let gap_x = match hits.iter().find(|t| t.index == index).map(|t| t.x0) {

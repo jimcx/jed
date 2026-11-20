@@ -85,6 +85,7 @@ One cargo workspace at the repository root; jed is the `jed/` package, the root 
 - Starting `jmux` inside a jmux terminal (`$JMUX` set) is refused with a message
 
 ### Terminals, tabs and splits
+- Touch gestures on a tab bar (`--touch`, rules in `jtui::touch`, driven by `app/touch.rs`): a press records a pending `Drag::Press` and starts a `HOLD` (450 ms) timer that sends `AppEvent::Hold(serial)`; motion past `SLOP` (1 cell) is a swipe that scrolls the bar by whole tabs following the finger (never focusing or closing); a release within `SLOP` is a tap, acted on at release; a hold on a tab lifts it (active, drawn `tab.lifted`) and it is then an ordinary tab drag. Wheel events still scroll; a plain client keeps press-and-drag.
 - New terminal, close terminal (confirm when a command is running), next / previous tab, go to the Nth tab
 - Split right / down, focus the group left / right / up / down, drag a divider
 - Drag a tab along its bar, to another group, or onto a group's edge to split there (jed's `drag_tabs` rules)

@@ -128,6 +128,8 @@ pub enum AppEvent {
     Settings(Option<Settings>, Option<JmuxKeymap>, Vec<String>),
     /// Once a second (`App::start`'s timer): the side bar's durations and ages move on.
     Tick,
+    /// A touch press's `HOLD` timer fired (the press's serial): lift the tab under the finger.
+    Hold(u64),
 }
 
 /// What the off-thread integration jobs report.
@@ -159,6 +161,7 @@ struct Conn {
 mod commands;
 mod search;
 mod side;
+mod touch;
 
 pub struct App {
     pub name: String,
@@ -205,6 +208,8 @@ pub struct App {
     pub(crate) attached: Option<u64>,
     /// The attached client asked for the touch layout (`--touch`); false while none is attached.
     pub touch: bool,
+    /// The serial of the latest touch press (`Drag::Press`), which its `HOLD` timer reports back.
+    hold_serial: u64,
     /// The attached client's screen: rows, columns.
     size: (u16, u16),
     /// The next draw starts from a cleared screen at `size` (an attach or a resize).
@@ -220,6 +225,16 @@ pub struct App {
 pub enum Drag {
     Divider(Divider),
     Tab(TabDrag),
+    /// A touch press on a bar, not yet a tap, a swipe or a lifted tab (`touch_press`); `carry` is
+    /// the swipe's motion not yet worth a whole tab, `serial` tells its `HOLD` timer's event apart
+    /// from an older press's.
+    Press {
+        group: GroupId,
+        hit: Hit,
+        gesture: jtui::touch::Press,
+        carry: i32,
+        serial: u64,
+    },
     /// Selecting text in a terminal; `anchor` is the pressed range (a word or line for a double /
     /// triple click), `text` the shell's cells on screen.
     Terminal {
@@ -304,6 +319,7 @@ impl App {
             closing: Vec::new(),
             attached: None,
             touch: false,
+            hold_serial: 0,
             size: INITIAL_SIZE,
             resync: false,
             created: std::time::SystemTime::now()
@@ -577,6 +593,7 @@ impl App {
             AppEvent::Integration(ev) => self.integration_event(ev),
             AppEvent::Settings(settings, keymap, errors) => self.apply_settings(settings, keymap, errors),
             AppEvent::Tick => self.tick(),
+            AppEvent::Hold(serial) => self.hold(serial),
         }
     }
 
@@ -938,6 +955,8 @@ impl App {
                 }
                 (Drag::SideBorder | Drag::SideScroll { .. }, MouseEventKind::Up(_)) => self.drag = None,
                 (Drag::Tab(_), MouseEventKind::Up(_)) => self.finish_tab_drag(m.column, m.row),
+                (Drag::Press { .. }, MouseEventKind::Drag(MouseButton::Left)) => self.press_moved(m.column, m.row),
+                (Drag::Press { .. }, MouseEventKind::Up(_)) => self.press_released(m.column, m.row),
                 _ => {}
             }
             self.needs_redraw = true;
@@ -961,6 +980,9 @@ impl App {
             self.side.focused = false;
         }
         match at {
+            Some(
+                hit @ (Hit::Tab { .. } | Hit::Close { .. } | Hit::Arrow { .. } | Hit::NewTab { .. } | Hit::Bar { .. }),
+            ) if self.touch && down(MouseButton::Left) => self.touch_press(hit, m.column, m.row),
             Some(Hit::Tab { group, index }) if down(MouseButton::Left) => {
                 self.groups.active = group;
                 if let Some(g) = self.groups.get_mut(group) {
@@ -1249,7 +1271,9 @@ impl App {
         match &self.drag {
             Some(Drag::Divider(d)) => return resize(d),
             Some(Drag::SideBorder) => return Pointer::ColResize,
-            Some(Drag::Tab(_) | Drag::ScrollBar { .. } | Drag::SideScroll { .. }) => return Pointer::Default,
+            Some(Drag::Tab(_) | Drag::Press { .. } | Drag::ScrollBar { .. } | Drag::SideScroll { .. }) => {
+                return Pointer::Default;
+            }
             // Held for the whole selection, as jed holds the I-beam during a text drag.
             Some(Drag::Terminal { .. }) => return Pointer::Text,
             None => {}
