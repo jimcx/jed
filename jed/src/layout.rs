@@ -117,10 +117,25 @@ pub struct Regions {
 /// `terminal_height` (the terminal area, the same) is carved off the bottom of the editor's column
 /// first, so the groups and the panel are above it; the activity bar and side panel run down to
 /// the status bar beside it.
+#[cfg(test)]
 pub fn compute(
     area: Rect,
     side_visible: bool,
     side_width: u16,
+    panel_height: Option<u16>,
+    terminal_height: Option<u16>,
+) -> Regions {
+    compute_with(area, side_visible, side_width, false, panel_height, terminal_height)
+}
+
+/// `compute`, with the side panel laid over the editor column's left edge (`float`, the touch
+/// layout) instead of beside it: the other regions don't depend on whether it shows, and it
+/// leaves at least `MIN_EDITOR_WIDTH` columns of editor visible.
+pub fn compute_with(
+    area: Rect,
+    side_visible: bool,
+    side_width: u16,
+    float: bool,
     panel_height: Option<u16>,
     terminal_height: Option<u16>,
 ) -> Regions {
@@ -152,7 +167,9 @@ pub fn compute(
             width: w,
             height: full_h,
         };
-        x += w;
+        if !float {
+            x += w;
+        }
         r
     });
     let mut editor = Rect {

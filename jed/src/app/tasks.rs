@@ -149,10 +149,11 @@ impl App {
             // The title bar's row isn't part of what `compute` lays out.
             let rows = status.y + status.height - self.hits.regions.title.map_or(0, |t| t.height);
             let screen = ratatui::layout::Rect::new(0, 0, status.width, rows);
-            let regions = layout::compute(
+            let regions = layout::compute_with(
                 screen,
                 self.ui.side_visible,
                 self.ui.side_width,
+                self.touch(),
                 Some(self.ui.panel_height),
                 self.ui.terminal_visible.then_some(self.ui.terminal_height),
             );

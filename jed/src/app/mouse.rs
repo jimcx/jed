@@ -508,6 +508,9 @@ impl App {
         if self.find_mouse(m) {
             return;
         }
+        if !replay && self.touch_dismiss_side(&m) {
+            return;
+        }
         if !replay && self.touch() && m.kind == MouseEventKind::Down(MouseButton::Left) && Self::is_view_hit(hit) {
             // A finger on a view or an Explorer row: a swipe, a tap or a hold, decided as it goes.
             self.drag = None;
@@ -737,8 +740,10 @@ impl App {
                 self.explorer.selected = Some(entry.0.clone());
                 self.explorer_drag_start(entry.0.clone());
                 // Folders toggle on a single click; files open on a double click.
-                if entry.1 || count >= 2 {
-                    self.toggle_or_open(&entry.0, count >= 2);
+                // (A finger has no double click: in the touch layout a tap opens a file too.)
+                let touch = self.touch();
+                if entry.1 || count >= 2 || touch {
+                    self.toggle_or_open(&entry.0, count >= 2 || touch);
                 }
             }
             Hit::SidePanel if self.ui.side_panel == SidePanel::Search => self.search_click(m, count),
@@ -784,6 +789,7 @@ impl App {
                     // The branch's commits have no file to highlight or open first.
                     let file = if branch { None } else { self.git_history_file() };
                     self.open_commit(&id, file);
+                    self.side_opened();
                 }
             }
             Hit::HistoryDivider => self.drag = Some(Drag::HistoryDivider),

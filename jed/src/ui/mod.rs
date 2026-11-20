@@ -102,20 +102,23 @@ pub fn render(f: &mut Frame, app: &mut App) {
     };
     let panel_height = app.ui.panel_visible.then_some(app.ui.panel_height);
     let terminal_height = app.ui.terminal_visible.then_some(app.ui.terminal_height);
-    let mut regions = layout::compute(
+    let float = app.touch();
+    let mut regions = layout::compute_with(
         area,
         app.ui.side_visible,
         app.ui.side_width,
+        float,
         panel_height,
         terminal_height,
     );
     regions.title = title_bar.then_some(Rect { height: 1, ..screen });
     let terminal_strip = (!app.ui.terminal_visible)
         .then(|| {
-            layout::compute(
+            layout::compute_with(
                 area,
                 app.ui.side_visible,
                 app.ui.side_width,
+                float,
                 panel_height,
                 Some(app.ui.terminal_height),
             )
@@ -133,7 +136,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
     hits.icons = activity::render(f, regions.activity, app);
     let mut side_rules = Vec::new();
-    if let Some(side) = regions.side {
+    // In the touch layout the side panel floats: it is drawn after the groups and the panels.
+    if let Some(side) = regions.side.filter(|_| !float) {
         let side = side::render(f, side, app);
         (hits.explorer_rows, hits.search, hits.scm, hits.tools, hits.review) =
             (side.explorer_rows, side.search, side.scm, side.tools, side.review);
@@ -683,6 +687,28 @@ pub fn render(f: &mut Frame, app: &mut App) {
         hits.panel_scrollbar = panel.scrollbar;
     }
 
+    if let Some(rect) = regions.side.filter(|_| float) {
+        let side = side::render(f, rect, app);
+        (hits.explorer_rows, hits.search, hits.scm, hits.tools, hits.review) =
+            (side.explorer_rows, side.search, side.scm, side.tools, side.review);
+        hits.side_scrollbar = side.scrollbar;
+        hits.history = side.history;
+        hits.file_history = side.file_history;
+        hits.history_scrollbar = side.history_scrollbar;
+        hits.file_history_scrollbar = side.file_history_scrollbar;
+        // No other border shows through the panel; its own edge (kept above) and rules do.
+        let edge = segments.remove(0);
+        segments.retain(|s| !s.rect.intersects(rect));
+        segments.insert(0, edge);
+        for r in side.rules {
+            segments.push(borders::Segment::new(
+                r,
+                SplitDir::Down,
+                Some("sideBar"),
+                "sideBar.border",
+            ));
+        }
+    }
     app.borders.apply(f, segments, &app.theme);
     let status = status::render(f, regions.status, app);
     (hits.status_problems, hits.status_indentation) = (status.problems, status.indentation);

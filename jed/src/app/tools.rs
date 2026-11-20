@@ -384,6 +384,7 @@ impl App {
             row => {
                 if let Some(tool) = row.tool() {
                     self.open_tool_log(tool);
+                    self.side_opened();
                 }
             }
         }

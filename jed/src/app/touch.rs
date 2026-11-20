@@ -12,9 +12,9 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use jtui::tabs::TabMetrics;
 use jtui::touch::{Gesture, HOLD, Press};
 
-use super::App;
 use super::mouse::Drag;
 use super::tab_drag::TabDrag;
+use super::{App, Focus};
 use crate::group::{Tab, is_terminal_group};
 use crate::layout::{GroupId, Hit};
 
@@ -40,6 +40,63 @@ impl App {
         } else {
             TabMetrics::NORMAL
         }
+    }
+
+    /// Brings the editor groups in line with the layout: in the touch layout side-by-side groups
+    /// merge into one (`Groups::merge_side_by_side`) and new splits stack; with it off splits are
+    /// as always (merged groups stay merged). Run at start, after the session restores and when the
+    /// settings reload.
+    pub(crate) fn sync_touch_layout(&mut self) {
+        let touch = self.touch();
+        self.groups.stacked = touch;
+        if touch && self.groups.merge_side_by_side() {
+            self.reveal_active();
+        }
+    }
+
+    /// Hides the side panel as `ToggleSidebar` does; focus leaves it for the editor. Its width and
+    /// view are kept.
+    pub(super) fn hide_side(&mut self) {
+        self.ui.side_visible = false;
+        if self.ui.focus == Focus::SidePanel {
+            self.ui.focus = Focus::Editor;
+        }
+    }
+
+    /// The side panel opened or showed a tab in an editor group: in the touch layout (where it floats
+    /// over the editor) it hides and focus goes to the editor.
+    pub(super) fn side_opened(&mut self) {
+        if self.touch() && self.ui.side_visible {
+            self.hide_side();
+            self.ui.focus = Focus::Editor;
+        }
+    }
+
+    /// A problem or location was opened from the bottom panel: in the touch layout the panel hides
+    /// (keeping its tab and height) and the editor has the keys.
+    pub(super) fn panel_opened(&mut self) {
+        if self.touch() && self.ui.panel_visible {
+            self.hide_panel();
+            self.ui.focus = Focus::Editor;
+        }
+    }
+
+    /// A left press in the editor, bottom panel or terminal area outside the floating side panel
+    /// hides it and goes no further.
+    pub(super) fn touch_dismiss_side(&mut self, m: &MouseEvent) -> bool {
+        if !self.touch() || !self.ui.side_visible || m.kind != MouseEventKind::Down(MouseButton::Left) {
+            return false;
+        }
+        let r = &self.hits.regions;
+        let p = ratatui::layout::Position { x: m.column, y: m.row };
+        let outside = r.side.is_some_and(|s| !s.contains(p))
+            && (r.editor.contains(p)
+                || r.panel.is_some_and(|a| a.contains(p))
+                || r.terminal.is_some_and(|a| a.contains(p)));
+        if outside {
+            self.hide_side();
+        }
+        outside
     }
 
     /// Whether a press on `hit` is on a tab bar.

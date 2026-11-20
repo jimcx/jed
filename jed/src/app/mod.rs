@@ -749,6 +749,7 @@ impl App {
     /// Background work that needs the runtime: watching, the first listing and git status,
     /// language servers.
     fn start(&mut self) {
+        self.sync_touch_layout();
         self.start_tool_logs();
         self.load_grammars();
         if self.mode.is_single() {
@@ -999,6 +1000,7 @@ impl App {
         self.workspace.user_settings = user.overrides;
         self.workspace.user_window = user.window;
         self.settings = self.workspace.settings();
+        self.sync_touch_layout();
         let title = self.workspace.window_title();
         if title.as_deref() != self.identity.title_override() {
             self.identity.set_title(title.as_deref());
@@ -1103,9 +1105,16 @@ impl App {
     }
 
     /// Whether long lines wrap: the `word_wrap` setting, or — after "View: Toggle Word Wrap" —
-    /// the other mode for this session.
+    /// the other mode for this session. The touch layout wraps unless a `word_wrap` is set.
     pub fn word_wrap(&self) -> WordWrap {
-        if (self.settings.word_wrap == WordWrap::On) != self.ui.word_wrap_toggled {
+        let set =
+            self.workspace.user_settings.word_wrap.is_some() || self.workspace.config.settings.word_wrap.is_some();
+        let base = if self.touch() && !set {
+            WordWrap::On
+        } else {
+            self.settings.word_wrap
+        };
+        if (base == WordWrap::On) != self.ui.word_wrap_toggled {
             WordWrap::On
         } else {
             WordWrap::Off
@@ -1455,9 +1464,10 @@ impl App {
             Command::NextTab => self.cycle_tab(1),
             Command::PrevTab => self.cycle_tab(-1),
             Command::ToggleSidebar => {
-                self.ui.side_visible = !self.ui.side_visible;
-                if !self.ui.side_visible && self.ui.focus == Focus::SidePanel {
-                    self.ui.focus = Focus::Editor;
+                if self.ui.side_visible {
+                    self.hide_side();
+                } else {
+                    self.ui.side_visible = true;
                 }
             }
             Command::FocusExplorer => self.focus_side(SidePanel::Explorer),

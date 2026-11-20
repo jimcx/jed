@@ -363,8 +363,10 @@ impl App {
                 let Some(path) = view.path.clone() else { return };
                 if cmd == C::Open {
                     self.open_diff(path, Pair::history(snapshot));
+                    self.side_opened();
                 } else if cmd == C::OpenVersion {
                     self.open_version(path, VersionSource::Snapshot(snapshot));
+                    self.side_opened();
                 } else if let Some(rel) = history::relative(&self.workspace.root, &path) {
                     self.restore_history(path, rel, snapshot);
                 }

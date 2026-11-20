@@ -88,6 +88,7 @@ impl App {
     /// Then offers the crash backups found meanwhile (their tabs now exist).
     pub(super) fn session_read(&mut self, result: Result<Option<Restore>, String>) {
         self.apply_session(result);
+        self.sync_touch_layout();
         self.drop_open_untitled_offers();
         self.offer_backups();
     }

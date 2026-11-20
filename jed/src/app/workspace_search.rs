@@ -255,6 +255,7 @@ impl App {
         } else {
             self.open_result(t, focus);
         }
+        self.side_opened();
     }
 
     /// The replace preview of a result's file (VS Code's): a diff tab of the file as it is

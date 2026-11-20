@@ -341,6 +341,9 @@ pub struct Groups {
     pub active: GroupId,
     pub tree: SplitTree,
     next: GroupId,
+    /// The touch layout: no side-by-side groups, a split to the right (or left) goes below (or
+    /// above) instead. Only the editor area's `Groups` sets it.
+    pub stacked: bool,
 }
 
 impl Default for Groups {
@@ -350,6 +353,7 @@ impl Default for Groups {
             active: 0,
             tree: SplitTree::new(0),
             next: 1,
+            stacked: false,
         }
     }
 }
@@ -371,6 +375,7 @@ impl Groups {
             active: first,
             tree: SplitTree::new(first),
             next: first + 1,
+            stacked: false,
         }
     }
 
@@ -567,6 +572,7 @@ impl Groups {
     pub fn split_empty(&mut self, dir: SplitDir) -> GroupId {
         let id = self.next;
         self.next += 1;
+        let dir = if self.stacked { SplitDir::Down } else { dir };
         self.tree.split(self.active, dir, id);
         self.map.insert(id, Group::default());
         self.active = id;
@@ -578,6 +584,8 @@ impl Groups {
     /// `None` (and nothing changes) if `target` isn't in the tree.
     pub fn split_empty_of(&mut self, target: GroupId, side: DropSide) -> Option<GroupId> {
         let (dir, new_first) = match side {
+            DropSide::Left if self.stacked => (SplitDir::Down, false),
+            DropSide::Right if self.stacked => (SplitDir::Down, false),
             DropSide::Left => (SplitDir::Right, true),
             DropSide::Right => (SplitDir::Right, false),
             DropSide::Up => (SplitDir::Down, true),
@@ -610,6 +618,55 @@ impl Groups {
         self.tree = tree;
         self.active = active;
         Ok(())
+    }
+
+    /// Merges every side-by-side split's groups into one (the touch layout): the right half's tabs
+    /// are appended to the left half's first group, in order. A tab showing what the target
+    /// already has (`Tab::same_as`) isn't added twice: the target keeps its own, taking the
+    /// view of the one in the active group when that is where it came from. The active group's
+    /// active tab stays active. `Down` splits stay. Returns whether anything merged.
+    pub fn merge_side_by_side(&mut self) -> bool {
+        let mut merged = false;
+        while let Some((into, from)) = self.tree.first_right_split() {
+            for g in from {
+                self.merge_group(into, g);
+            }
+            merged = true;
+        }
+        merged
+    }
+
+    /// Appends `from`'s tabs to `into`'s and removes `from`.
+    fn merge_group(&mut self, into: GroupId, from: GroupId) {
+        let focused = self.active == from;
+        let Some(src) = self.map.remove(&from) else { return };
+        self.tree.remove(from);
+        let active = src.active;
+        let dst = self.map.get_mut(&into).expect("target group exists");
+        let mut now = None;
+        for (i, tab) in src.tabs.into_iter().enumerate() {
+            let at = match dst.tabs.iter().position(|t| t.same_as(&tab)) {
+                Some(j) => {
+                    if focused {
+                        dst.tabs[j] = tab;
+                    }
+                    j
+                }
+                None => {
+                    dst.tabs.push(tab);
+                    dst.tabs.len() - 1
+                }
+            };
+            if i == active {
+                now = Some(at);
+            }
+        }
+        if focused {
+            self.active = into;
+            if let Some(at) = now {
+                dst.active = at;
+            }
+        }
     }
 
     /// Removes a group (never the last one). Its neighbour becomes active if it was.

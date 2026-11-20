@@ -113,6 +113,7 @@ impl App {
                 // VS Code opens a conflicted file, not a diff: its markers are resolved in it.
                 let path = status.repo.workdir.join(&entry.path);
                 self.open_file(path, focus, None);
+                self.side_opened();
             }
             Some(Row::File { section, entry, .. }) => {
                 let path = status.repo.workdir.join(&entry.path);
@@ -120,6 +121,7 @@ impl App {
                 if !focus {
                     self.ui.focus = Focus::SidePanel;
                 }
+                self.side_opened();
             }
             None => {}
         }

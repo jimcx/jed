@@ -132,7 +132,10 @@ impl App {
                     self.request_listing(dir);
                 }
             }
-            Some(_) => self.open_file(path.to_path_buf(), focus, None),
+            Some(_) => {
+                self.open_file(path.to_path_buf(), focus, None);
+                self.side_opened();
+            }
             None => {}
         }
     }
@@ -383,6 +386,7 @@ impl App {
         let associations_changed = config.files.associations != self.workspace.config.files.associations;
         self.workspace.config = config;
         self.settings = self.workspace.settings();
+        self.sync_touch_layout();
         // `[window] title`: re-sent as OSC 2 (no title-stack push) on the next run turn. The
         // status bar's colour is read from the config when it draws.
         let title = self.workspace.window_title();

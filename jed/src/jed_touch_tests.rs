@@ -13,6 +13,11 @@
 //! the cursor or caret, a hold then drag selects, double- and triple-tap select a word and a line, a
 //! hold released in place opens the context menu on the editor, an Explorer row and a tab; with the
 //! layout off, presses behave as today.
+//!
+//! jed_touch-c, "Done when" (the `jed_touch_c_*` tests): the side panel floats over the editor (nothing resized) and a tap
+//! beside it hides it; opening a file, diff, result, commit or log from it hides it, expanding or staging does not;
+//! a problem or location hides the bottom panel; side-by-side groups merge (start, reload), Split Right and an edge
+//! drop split down; lines wrap unless `word_wrap` is set; with the layout off nothing changes.
 
 use std::fs;
 use std::path::PathBuf;
@@ -49,6 +54,8 @@ fn open_app(dir: &tempfile::TempDir, names: &[&str], touch: bool) -> (App, PathB
     let mut app = App::new(ws, trust, Some(InitialFile { buffer, goto: None }), true);
     app.touch_flag = touch;
     app.test_start();
+    // The touch layout's side panel floats over the editor's left edge, where the first tabs are.
+    app.ui.side_visible = !touch;
     for name in &names[1..] {
         app.test_open(Buffer::open(&root.join(name)).unwrap());
     }
@@ -245,7 +252,6 @@ async fn jed_touch_a_arrows_and_a_swipe_scroll_an_overflowing_bar() {
         "file6.txt",
     ];
     let (mut app, _) = open_app(&dir, &files, true);
-    app.test_execute(Command::ToggleSidebar);
     draw_sized(&mut app, 60, 20);
     let id = app.groups.active;
     let g = app.hits.group(id).unwrap().clone();
@@ -403,7 +409,6 @@ async fn jed_touch_a_middle_right_click_and_the_wheel_work_on_the_pad_rows() {
         "file6.txt",
     ];
     let (mut app, _) = open_app(&dir, &files, true);
-    app.test_execute(Command::ToggleSidebar);
     draw_sized(&mut app, 60, 20);
     let id = app.groups.active;
     let (bar, tabs) = bar_of(&app, id);
@@ -470,6 +475,7 @@ async fn jed_touch_a_the_setting_applies_on_reload_and_the_flag_wins() {
 
     // `--touch` stays on whatever the file says.
     app.touch_flag = true;
+    app.ui.side_visible = false;
     fs::write(&user_file, "[settings]\ntouch_layout = false\n").unwrap();
     assert!(app.settle(|a| !a.settings.touch_layout).await);
     assert!(app.touch());
@@ -488,6 +494,7 @@ async fn jed_touch_a_a_shell_is_sized_to_the_area_left_over() {
     for touch in [false, true] {
         let (_d, root, state) = dirs();
         let mut app = shell_app(&root, &state);
+        app.ui.side_visible = !touch;
         app.touch_flag = touch;
         draw_sized(&mut app, 100, 30);
         app.test_execute(Command::NewShell);
@@ -583,6 +590,8 @@ async fn jed_touch_b_a_sideways_swipe_scrolls_long_lines_in_the_fingers_directio
     let long: String = (0..30).map(|_| format!("{}\n", "x".repeat(300))).collect();
     fs::write(root.join("long.txt"), &long).unwrap();
     app.test_open(Buffer::open(&root.join("long.txt")).unwrap());
+    // Lines wrap in the touch layout; this scrolls the unwrapped ones.
+    app.test_execute(Command::ToggleWordWrap);
     draw(&mut app);
     let t = app.hits.group(app.groups.active).unwrap().text;
     let left = |app: &App| app.group().active_tab().unwrap().view.left_col;
@@ -755,6 +764,7 @@ async fn jed_touch_b_a_held_explorer_folder_runs_find_in_folder() {
 async fn shell_touch_app(root: &std::path::Path, state: &std::path::Path, reports: bool) -> (App, Rect) {
     let mut app = crate::shell_tests::shell_app(root, state);
     app.touch_flag = true;
+    app.ui.side_visible = false;
     app.tasks.shell = jterm::testing::fake_shell();
     app.new_shell_in_editor();
     assert!(
@@ -850,6 +860,7 @@ async fn jed_touch_b_swipe_scrolls_a_hex_view_and_a_tap_moves_its_caret() {
     let (_d, _root, mut app) = crate::hex_tests::hex_app().await;
     crate::hex_tests::quick_open(&mut app, "bin.dat").await;
     app.touch_flag = true;
+    app.ui.side_visible = false;
     crate::hex_tests::draw(&mut app, 100, 12);
     let rect = crate::hex_tests::rows_rect(&app);
     let (x, y) = (rect.x + 5, rect.y + 6);
@@ -878,6 +889,7 @@ async fn jed_touch_b_swipe_scrolls_a_diff_and_a_tap_moves_its_caret() {
     run_command(&mut app, "Git: Open Changes");
     assert!(settle_diffs(&mut app).await);
     app.touch_flag = true;
+    app.ui.side_visible = false;
     draw_sized(&mut app, 150, 24);
     let h = app.hits.group(app.groups.active).unwrap().diff.clone().unwrap();
     let (x, y) = (h.text_x[0] + 2, h.rows.y + 8);
@@ -895,4 +907,506 @@ async fn jed_touch_b_swipe_scrolls_a_diff_and_a_tap_moves_its_caret() {
         caret,
         "the tap moved the caret"
     );
+}
+
+// ---- jed_touch-c: room for the editor ----
+
+fn text_rect(app: &App) -> Rect {
+    app.hits.group(app.groups.active).unwrap().text
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jed_touch_c_the_side_panel_floats_over_the_editor_and_a_tap_beside_it_hides_it() {
+    for touch in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = open_app(&dir, &["a.txt"], touch);
+        app.ui.side_visible = false;
+        draw(&mut app);
+        let (hidden, region) = (text_rect(&app), app.hits.regions.editor);
+        app.test_execute(Command::ToggleSidebar);
+        assert!(app.ui.side_visible);
+        let term = draw(&mut app);
+        let side = app.hits.regions.side.expect("the side panel shows");
+        if touch {
+            assert_eq!(text_rect(&app), hidden, "the editor keeps its size");
+            assert_eq!(app.hits.regions.editor, region);
+            assert!(side.intersects(region), "drawn over the editor's left edge");
+            assert!(region.width - side.width >= 20, "20 columns of editor stay visible");
+            // Its border is on its right edge, over the editor.
+            let edge = side.x + side.width - 1;
+            assert_eq!(term.backend().buffer()[(edge, side.y + 2)].symbol(), "│");
+            // A tap in the editor outside it hides it and is not passed on.
+            let before = app.group().active_tab().unwrap().view.selections.clone();
+            let (x, y) = (side.x + side.width + 3, text_rect(&app).y + 1);
+            tap(&mut app, x, y);
+            assert!(!app.ui.side_visible);
+            assert_eq!(app.group().active_tab().unwrap().view.selections, before);
+            // A tap inside the panel doesn't hide it.
+            app.test_execute(Command::ToggleSidebar);
+            draw(&mut app);
+            tap(&mut app, side.x + 2, side.y + side.height - 3);
+            assert!(app.ui.side_visible);
+        } else {
+            assert!(text_rect(&app).width < hidden.width, "beside the editor, as ever");
+            assert!(!side.intersects(app.hits.regions.editor));
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jed_touch_c_only_a_tap_beside_the_side_panel_dismisses_it() {
+    // The bottom panel is beside it too; the activity bar, the status bar and the panel itself are not.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _) = open_app(&dir, &["a.txt"], true);
+    app.test_execute(Command::ToggleProblems);
+    app.ui.side_visible = true;
+    draw(&mut app);
+    let (side, status) = (app.hits.regions.side.unwrap(), app.hits.regions.status);
+    tap(&mut app, side.x + 2, side.y + side.height - 3);
+    assert!(app.ui.side_visible, "a tap on the panel");
+    let activity = app.hits.regions.activity;
+    let icon_row = app.hits.icons[1].0;
+    tap(&mut app, activity.x, icon_row);
+    assert!(app.ui.side_visible, "a tap on the activity bar");
+    draw(&mut app);
+    tap(&mut app, status.x + 1, status.y);
+    assert!(app.ui.side_visible, "a tap on the status bar");
+    let panel = app.hits.regions.panel.expect("the bottom panel shows");
+    tap(&mut app, side.x + side.width + 2, panel.y + 1);
+    assert!(!app.ui.side_visible, "a tap on the bottom panel");
+    // The layout off: a click in the editor never hides it.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _) = open_app(&dir, &["a.txt"], false);
+    assert!(app.ui.side_visible);
+    draw(&mut app);
+    let e = app.hits.regions.editor;
+    tap(&mut app, e.x + 5, e.y + 5);
+    assert!(app.ui.side_visible);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jed_touch_c_showing_the_side_panel_leaves_a_shell_unresized() {
+    use crate::shell_tests::{dirs, shell_app};
+    let (_d, root, state) = dirs();
+    let mut app = shell_app(&root, &state);
+    app.touch_flag = true;
+    app.ui.side_visible = false;
+    draw_sized(&mut app, 100, 30);
+    app.test_execute(Command::NewShell);
+    let size = |a: &App| {
+        let shell = a.terminals.active_group().active_shell().unwrap();
+        crate::tasks::select::size(shell.run.screen().screen())
+    };
+    draw_sized(&mut app, 100, 30);
+    let before = size(&app);
+    app.test_execute(Command::ToggleSidebar);
+    draw_sized(&mut app, 100, 30);
+    draw_sized(&mut app, 100, 30);
+    assert!(app.ui.side_visible);
+    assert_eq!(size(&app), before);
+}
+
+/// A touch app on a git repo with Source Control changes, the side panel shown.
+fn scm_touch_app() -> (tempfile::TempDir, App, PathBuf) {
+    let (d, root, state) = crate::milestone10_tests::dirs();
+    crate::milestone10_tests::scm_repo(&root);
+    let ws = Workspace::load(root.clone());
+    let trust = TrustStore::load(state.join("trust.toml"));
+    let mut app = App::new(ws, trust, None, true);
+    app.touch_flag = true;
+    app.ui.side_visible = false;
+    app.test_start();
+    app.ui.side_visible = true;
+    (d, app, root)
+}
+
+fn explorer_row_of(app: &App, name: &str) -> u16 {
+    let i = app
+        .explorer
+        .rows()
+        .iter()
+        .position(|r| r.entry.path.file_name().is_some_and(|n| n == name))
+        .unwrap_or_else(|| panic!("{name} in the Explorer"));
+    app.hits.explorer_rows.y + (i - app.explorer.scroll) as u16
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jed_touch_c_the_side_panel_hides_after_opening_a_file_and_keeps_its_view() {
+    let (_d, mut app, root) = scm_touch_app();
+    assert!(app.settle(|a| a.explorer.rows().len() >= 4).await);
+    app.ui.side_width = 31;
+    draw(&mut app);
+    // Expanding a folder opens nothing: the panel stays.
+    let (x, y) = (app.hits.explorer_rows.x + 3, explorer_row_of(&app, "sub"));
+    tap(&mut app, x, y);
+    assert!(
+        app.settle(|a| a.explorer.rows().iter().any(|r| r.entry.path.ends_with("sub/e.txt")))
+            .await
+    );
+    assert!(app.ui.side_visible);
+    draw(&mut app);
+    // A tap on a file opens it, hides the panel and focuses the editor.
+    let y = explorer_row_of(&app, "a.txt");
+    tap(&mut app, x, y);
+    assert!(
+        app.settle(|a| a.active_buffer().is_some_and(|b| b.path == root.join("a.txt")))
+            .await
+    );
+    assert!(!app.ui.side_visible);
+    assert_eq!(app.ui.focus, crate::app::Focus::Editor);
+    // Brought back as it was: the same width, the Explorer, the folder still open.
+    app.test_execute(Command::ToggleSidebar);
+    assert!(app.ui.side_visible);
+    assert_eq!(
+        (app.ui.side_width, app.ui.side_panel),
+        (31, crate::layout::SidePanel::Explorer)
+    );
+    assert!(app.explorer.rows().iter().any(|r| r.entry.path.ends_with("sub/e.txt")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jed_touch_c_the_side_panel_hides_after_a_diff_not_after_staging() {
+    use crate::command::ScmCommand as S;
+    let (_d, mut app, _root) = scm_touch_app();
+    crate::milestone10_tests::focus_scm(&mut app);
+    assert!(crate::milestone10_tests::settle_git(&mut app, |s| !s.entries.is_empty()).await);
+    // A section header collapses and expands, opening nothing.
+    app.test_execute(Command::Scm(S::Down));
+    app.test_execute(Command::Scm(S::Open));
+    assert!(app.ui.side_visible);
+    app.test_execute(Command::Scm(S::Open));
+    assert!(app.ui.side_visible);
+    // Down to a file, then unstage it: still shown.
+    app.test_execute(Command::Scm(S::Down));
+    app.test_execute(Command::UnstageFile);
+    assert!(crate::milestone10_tests::settle_stage(&mut app).await);
+    assert!(app.ui.side_visible, "staging opens nothing");
+    // Opening a change's diff hides it.
+    app.test_execute(Command::Scm(S::Preview));
+
+    assert!(app.settle(|a| a.group().active_diff().is_some()).await);
+    assert!(!app.ui.side_visible);
+    assert_eq!(app.ui.focus, crate::app::Focus::Editor);
+    // Opening from outside the panel (the keyboard) leaves a shown panel alone.
+    app.test_execute(Command::ToggleSidebar);
+    app.ui.focus = crate::app::Focus::Editor;
+    app.test_execute(Command::NextTab);
+    assert!(app.ui.side_visible);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jed_touch_c_the_side_panel_hides_after_a_search_result_a_commit_and_a_log() {
+    use crate::command::{GitHistoryCommand as H, SearchCommand as Q};
+    let (_d, mut app, _root) = scm_touch_app();
+    // A search result.
+    app.test_execute(Command::FindInFiles);
+    app.type_text("a2");
+    app.search_tick(std::time::Instant::now() + crate::search_view::DEBOUNCE);
+    assert!(app.settle(|a| a.search.as_ref().is_some_and(|r| r.done)).await);
+    app.test_execute(Command::Search(Q::FocusResults));
+    app.test_execute(Command::Search(Q::Down));
+    app.test_execute(Command::Search(Q::Open));
+    assert!(
+        app.settle(|a| a.active_buffer().is_some_and(|b| b.name() == "a.txt"))
+            .await
+    );
+    assert!(!app.ui.side_visible, "a search result");
+    // A Git History commit.
+    app.test_execute(Command::FocusExplorer);
+    assert!(app.ui.side_visible);
+    assert!(app.settle(|a| !a.git_history.commits.is_empty()).await);
+    app.ui.focus = crate::app::Focus::SidePanel;
+    app.git_history.set_focused(true);
+    app.test_execute(Command::GitHistory(H::Open));
+    assert!(app.settle(|a| a.active_commit().is_some()).await);
+    assert!(!app.ui.side_visible, "a commit");
+    // A tool's log.
+    app.test_execute(Command::ShowTools);
+    assert!(app.ui.side_visible);
+    app.test_execute(Command::Tools(crate::command::ToolsCommand::Open));
+    assert!(!app.ui.side_visible, "a tool's log");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jed_touch_c_with_the_layout_off_the_side_panel_stays_after_opening() {
+    let (_d, mut app, _root) = scm_touch_app();
+    app.touch_flag = false;
+    assert!(app.settle(|a| a.explorer.rows().len() >= 4).await);
+    draw(&mut app);
+    let y = explorer_row_of(&app, "a.txt");
+    let x = app.hits.explorer_rows.x + 3;
+    app.mouse(DOWN, x, y);
+    app.mouse(UP, x, y);
+    app.mouse(DOWN, x, y);
+    app.mouse(UP, x, y);
+    assert!(app.settle(|a| a.active_buffer().is_some()).await);
+    assert!(app.ui.side_visible);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jed_touch_c_the_bottom_panel_hides_after_a_problem_and_a_location() {
+    use crate::layout::PanelTab;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _fake, _root) = crate::milestone9_tests::problems_project(dir.path()).await;
+    app.touch_flag = true;
+    app.test_execute(Command::ToggleProblems);
+    for _ in 0..4 {
+        app.press(KeyCode::Down, KeyModifiers::NONE);
+    }
+    let height = app.ui.panel_height;
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(!app.ui.panel_visible, "the problem was opened");
+    assert_eq!(
+        (app.ui.focus, app.ui.panel_tab, app.ui.panel_height),
+        (crate::app::Focus::Editor, PanelTab::Problems, height)
+    );
+    // The toggle brings it back as it was.
+    app.test_execute(Command::ToggleProblems);
+    assert!(app.ui.panel_visible && app.ui.panel_tab == PanelTab::Problems);
+
+    // A location.
+    let dir = tempfile::tempdir().unwrap();
+    let (a_text, b_text) = ("int target = 1;\nint use = target;\n", "int z;\n");
+    let (mut app, fake, root) =
+        crate::milestone9_tests::lsp_project(dir.path(), &[("a.cpp", a_text), ("b.cpp", b_text)], true).await;
+    app.touch_flag = true;
+    let a = root.join("a.cpp");
+    crate::milestone9_tests::put_cursor(&mut app, a_text.find("= target").unwrap() + 4);
+    let loc = crate::milestone9_tests::location;
+    fake.respond(
+        "textDocument/references",
+        serde_json::json!([loc(&a, 0, 4, 10), loc(&a, 1, 10, 16)]),
+    );
+    app.test_execute(Command::GoToReferences);
+    assert!(app.settle(|a| a.locations.is_some()).await);
+    assert!(app.ui.panel_visible);
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(!app.ui.panel_visible, "the location was opened");
+    assert_eq!(app.ui.focus, crate::app::Focus::Editor);
+    // With the layout off the panel stays.
+    app.touch_flag = false;
+    app.test_execute(Command::GoToReferences);
+    assert!(app.settle(|a| a.ui.panel_visible).await);
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.ui.panel_visible);
+}
+
+/// Touch off, one group: a second column (`b.txt` again, the cursor moved, then `c.txt`) and a
+/// third (`c.txt` again, then `d.txt`).
+fn columns(app: &mut App, root: &std::path::Path) {
+    app.test_execute(Command::SplitRight);
+    app.press(KeyCode::Down, KeyModifiers::NONE);
+    app.test_open(Buffer::open(&root.join("c.txt")).unwrap());
+    app.test_execute(Command::SplitRight);
+    app.test_open(Buffer::open(&root.join("d.txt")).unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jed_touch_c_side_by_side_groups_merge_into_the_first_and_down_splits_stay() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, root) = open_app(&dir, &["a.txt", "b.txt"], false);
+    for n in ["c.txt", "d.txt"] {
+        fs::write(root.join(n), format!("{n} 1\n{n} 2\n")).unwrap();
+    }
+    columns(&mut app, &root);
+    let ids = app.groups.ids();
+    assert_eq!(ids.len(), 3);
+    assert_eq!(names(&app, ids[1]), ["b.txt", "c.txt"]);
+    // A stacked group under the first column.
+    app.test_execute(Command::FocusGroup(1));
+    app.test_execute(Command::SplitDown);
+    assert_eq!(app.groups.ids().len(), 4);
+    // Focus the second column (`c.txt` active there) and merge.
+    let second = ids[1];
+    app.test_execute(Command::FocusGroup(3));
+    assert_eq!(app.groups.active, second);
+    app.touch_flag = true;
+    app.sync_touch_layout();
+    let ids = app.groups.ids();
+    assert_eq!(ids.len(), 2, "the stacked pair stays: {ids:?}");
+    assert_eq!(names(&app, ids[0]), ["a.txt", "b.txt", "c.txt", "d.txt"]);
+    assert_eq!(names(&app, ids[1]), ["b.txt"], "the Down split's copy");
+    assert_eq!(app.groups.active, ids[0]);
+    assert_eq!(active_name(&app), "c.txt");
+    // `b.txt` was in the first column and the focused second: it keeps the focused group's view.
+    let b = &app.groups.get(ids[0]).unwrap().tabs[1];
+    let cursor = b.text().unwrap().view.selections.primary().head.0;
+    assert!(cursor > 0, "the focused group's view won: {cursor}");
+    // No side-by-side split is made now.
+    app.test_execute(Command::SplitRight);
+    draw(&mut app);
+    let all = app.groups.ids();
+    assert_eq!(all.len(), 3);
+    let x0 = app.hits.group(all[0]).unwrap().tab_bar.x;
+    assert!(
+        all.iter().all(|&id| app.hits.group(id).unwrap().tab_bar.x == x0),
+        "{all:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jed_touch_c_split_right_and_an_edge_drop_split_down() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _) = open_app(&dir, &["a.txt", "b.txt"], true);
+    app.ui.side_visible = false;
+    draw(&mut app);
+    let first = app.groups.active;
+    app.test_execute(Command::SplitRight);
+    draw(&mut app);
+    assert_eq!(app.groups.ids().len(), 2);
+    let x0 = app.hits.group(first).unwrap().tab_bar.x;
+    let stacked = |app: &App| {
+        app.groups
+            .ids()
+            .iter()
+            .all(|&id| app.hits.group(id).unwrap().tab_bar.x == x0)
+    };
+    assert!(stacked(&app), "Split Editor Right split down");
+    // A tab held and dropped on a group's right edge: the marker shows the bottom half.
+    let (bar, tabs) = bar_of(&app, first);
+    let editor = app.hits.group(first).unwrap().editor;
+    app.mouse(DOWN, tabs[0].x0 + 3, bar.y + 1);
+    assert!(app.press_pending());
+    app.test_hold();
+    let (x, y) = edge_point(editor, DropSide::Right);
+    app.mouse(DRAG, x, y);
+    let shade = app.tab_drop_shade(first, editor).unwrap();
+    assert_eq!((shade.x, shade.width), (editor.x, editor.width));
+    assert!(shade.y > editor.y, "the bottom half: {shade:?}");
+    app.mouse(UP, x, y);
+    assert_eq!(app.groups.ids().len(), 3);
+    draw(&mut app);
+    assert!(stacked(&app));
+    // Cmd+N one past the last group.
+    app.test_execute(Command::FocusGroup(4));
+    draw(&mut app);
+    assert_eq!(app.groups.ids().len(), 4);
+    assert!(stacked(&app));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jed_touch_c_a_reload_turning_the_layout_on_merges_and_off_leaves_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, user_file) = open_with_settings(&dir, "touch_layout = false\n");
+    let root = user_file.parent().unwrap().parent().unwrap().join("ws");
+    for n in ["b.txt", "c.txt"] {
+        fs::write(root.join(n), format!("{n}\n")).unwrap();
+    }
+    app.test_open(Buffer::open(&root.join("b.txt")).unwrap());
+    app.test_execute(Command::SplitRight);
+    app.test_open(Buffer::open(&root.join("c.txt")).unwrap());
+    assert_eq!(app.groups.ids().len(), 2);
+    fs::write(&user_file, "[settings]\ntouch_layout = true\n").unwrap();
+    assert!(app.settle(|a| a.groups.ids().len() == 1).await, "merged by the reload");
+    let id = app.groups.active;
+    assert_eq!(names(&app, id), ["a.txt", "b.txt", "c.txt"]);
+    // Off again: the one group stays, and splits go right.
+    fs::write(&user_file, "[settings]\ntouch_layout = false\n").unwrap();
+    assert!(app.settle(|a| !a.groups.stacked).await);
+    assert_eq!(app.groups.ids().len(), 1);
+    app.test_execute(Command::SplitRight);
+    draw(&mut app);
+    let ids = app.groups.ids();
+    assert!(app.hits.group(ids[1]).unwrap().tab_bar.x > app.hits.group(ids[0]).unwrap().tab_bar.x);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jed_touch_c_lines_wrap_in_the_touch_layout_unless_word_wrap_is_set() {
+    use crate::edit::WordWrap;
+    let dir = tempfile::tempdir().unwrap();
+    let (app, _) = open_app(&dir, &["a.txt"], false);
+    assert_eq!(app.word_wrap(), WordWrap::Off);
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _) = open_app(&dir, &["a.txt"], true);
+    assert_eq!(app.word_wrap(), WordWrap::On);
+    // The session toggle still flips it.
+    app.test_execute(Command::ToggleWordWrap);
+    assert_eq!(app.word_wrap(), WordWrap::Off);
+    // A setting wins: off in the user's file with the layout on.
+    let dir = tempfile::tempdir().unwrap();
+    let (app, _) = open_with_settings(&dir, "touch_layout = true\nword_wrap = \"off\"\n");
+    assert!(app.touch());
+    assert_eq!(app.word_wrap(), WordWrap::Off);
+    let dir = tempfile::tempdir().unwrap();
+    let (app, _) = open_with_settings(&dir, "touch_layout = true\n");
+    assert_eq!(app.word_wrap(), WordWrap::On);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jed_touch_c_a_tap_in_the_terminal_area_beside_the_side_panel_hides_it_and_is_not_passed_on() {
+    use crate::shell_tests::{dirs, shell_app};
+    let (_d, root, state) = dirs();
+    let mut app = shell_app(&root, &state);
+    app.touch_flag = true;
+    app.test_execute(Command::NewShell);
+    app.ui.side_visible = true;
+    draw_sized(&mut app, 100, 30);
+    let (side, term) = (
+        app.hits.regions.side.unwrap(),
+        app.hits.regions.terminal.expect("the terminal area"),
+    );
+    assert!(app.ui.side_visible);
+    let before = app
+        .terminals
+        .active_group()
+        .active_shell()
+        .map(|s| s.run.screen().screen().cursor_position());
+    tap(&mut app, side.x + side.width + 3, term.y + 2);
+    assert!(!app.ui.side_visible);
+    assert_eq!(
+        app.terminals
+            .active_group()
+            .active_shell()
+            .map(|s| s.run.screen().screen().cursor_position()),
+        before
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jed_touch_c_a_workspace_reload_turning_the_layout_on_merges() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, user_file) = open_with_settings(&dir, "");
+    let root = user_file.parent().unwrap().parent().unwrap().join("ws");
+    fs::write(root.join("b.txt"), "b\n").unwrap();
+    app.test_execute(Command::SplitRight);
+    app.test_open(Buffer::open(&root.join("b.txt")).unwrap());
+    assert_eq!(app.groups.ids().len(), 2);
+    fs::write(root.join(".workspace"), "[settings]\ntouch_layout = true\n").unwrap();
+    assert!(app.settle(|a| a.groups.ids().len() == 1).await, "merged by the reload");
+    assert!(app.groups.stacked);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jed_touch_c_the_side_panel_hides_after_opening_from_file_history() {
+    use crate::command::FileHistoryCommand as F;
+    for open_version in [false, true] {
+        let (_d, mut app) = crate::history_view_tests::app();
+        crate::history_view_tests::two_saves(&mut app).await;
+        app.touch_flag = true;
+        app.test_execute(Command::ShowFileHistory);
+        assert!(app.ui.side_visible && app.file_history_view.focused());
+        app.test_execute(Command::FileHistory(if open_version {
+            F::OpenVersion
+        } else {
+            F::Open
+        }));
+        assert!(!app.ui.side_visible, "open_version {open_version}");
+        assert_eq!(app.ui.focus, crate::app::Focus::Editor);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jed_touch_c_the_side_panel_hides_after_a_code_review_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _server, _main) = crate::mr_review_tests::shown(dir.path()).await;
+    app.touch_flag = true;
+    assert!(app.ui.side_visible);
+    let path = app
+        .review
+        .files()
+        .first()
+        .map(|f| f.path.clone())
+        .expect("a review file");
+    crate::mr_review_tests::open_file(&mut app, &path).await;
+    assert!(!app.ui.side_visible, "a Code Review file");
 }

@@ -61,8 +61,10 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
 ```
 - **Activity bar** (left edge): icons for Explorer, Search, Source Control, Code Review, Tools
 - **Side panel**: switches with the activity bar; can be toggled and resized
+  - Touch layout (`jed_touch`): it floats over the editor's left edge (right border; its width leaves at least 20 editor columns), so showing or hiding it resizes nothing; a tap beside it (editor, bottom panel or terminal area) hides it. Opening a tab from it (an Explorer file, a Source Control diff, a search result, a Git History commit or file, a file history version, a tool's log, a Code Review file) hides it and focuses the editor, keeping its width and view; expanding, staging and menus leave it shown, and a tap on an Explorer file opens it
 - **Editor area**: groups with tabs, split horizontally or vertically
 - **Bottom panel**: Problems list, task terminals
+  - Touch layout: a tap or Enter on a problem or a location hides the panel (its tab and height kept) and focuses the editor; a task tab doesn't
 - **Terminal area**: in the editor's column under the bottom panel, above the status bar, shown when a terminal opens (Ctrl+`) and hidden when the last closes. Its own tab bar and split tree of terminal groups, so shells reorder, split and drag as editor tabs do; only shells dock there. A shell moves to an editor group by dragging it there or "Terminal: Move Terminal into Editor Area" and back with "… into Terminal Area" (dragging an editor tab into the area is refused). A new session opens one terminal in it; its shown / height / splits are not session state
 - **Status bar**: git branch, diagnostic counts, cursor position, language mode, line ending
 
@@ -243,6 +245,7 @@ Go back to any earlier save of a file, independent of git.
 - Selection highlight (the [Selection highlight](tasks/selection_highlight.md) task, VS Code's `editor.selectionHighlight`): the selected text's other occurrences highlighted, their count in the status bar while the find widget is closed
 - Soft wrap (the [Soft wrap](tasks/soft_wrap.md) task), VS Code's `editor.wordWrap`:
   - A `word_wrap` setting (`off` / `on`, default `off`) and "View: Toggle Word Wrap" (`view.toggleWordWrap`, Alt+Z as VS Code; session-only like the render whitespace toggle)
+  - Touch layout: `word_wrap` defaults to `on` unless `settings.toml` or `.workspace` sets it
   - Lines wrap at the editor's width (left of the scroll bar), breaking after spaces, else between graphemes (wide chars and tabs never split); continuation rows keep the line's indentation (VS Code's `wrappingIndent: same`); the line number only on a line's first row; no horizontal scroll while wrapping
   - Up / Down, PageUp / PageDown and the goal column work on screen rows; Home / End go to the row's start / end first, then the line's (VS Code); add cursor above / below, box select and line commands stay per line
   - Scrolling, the scroll bar, mouse hits (click, drag, double click, Alt+Click), the find widget and popups (completion, hover) use screen rows; the view's top is a (line, row) pair, kept in sessions
@@ -337,6 +340,7 @@ The VS Code behaviour, especially Cmd+D and Cmd+Shift+L, is a must-have.
 - Drag tabs with the mouse: along the bar to reorder, onto another group's bar or editor to move it there (an empty group closes), onto an editor within a quarter of its width or height of an edge to split that group on that side and move it into the new split
   - The drop target is shaded while dragging (a theme key); a press that never leaves its tab is a click; Esc or a release outside any target cancels
 - Touch layout (`--touch` on the command line, or `touch_layout = true` in `settings.toml`, applied on Reload Settings): every group's tab bar, the terminal area's too, is 3 rows tall with 2 cells of padding, a 3-cell close target, 3-cell `‹` / `›` and a `+` that opens a tab in its group; a swipe on a bar scrolls its tabs, a tap acts on release, a hold lifts a tab to drag to another group or onto a split edge — [tasks/jed_touch.md](tasks/jed_touch.md)
+- Touch layout: no side-by-side groups. They merge at start-up (after the session restores) and when a settings reload turns the layout on: each `Right` split's tabs are appended left to right, a buffer in both keeps one view (the focused group's), the focused tab stays active, `Down` splits stay; the session saves the merged layout and nothing is restored when the layout turns off. Split Editor Right, Cmd+N past the last group, the Markdown and commit side splits and a left or right edge drop split down. The terminal area's splits are left alone
 - Same buffer open in several views
   - Edits (incl. undo/redo) map every other view's selections and viewport through the changes
   - Cursors at an insertion point in other views stay before the inserted text
@@ -722,7 +726,6 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Snippets** (`snippets`): LSP snippet completions with tab stops, mirrors and choices — [tasks/snippets.md](tasks/snippets.md)
 - **Stale cargo check diagnostics** (`stale_cargo_check`): dim cargo-check diagnostics until the next save — [tasks/stale_cargo_check.md](tasks/stale_cargo_check.md)
 - **Themes** (`themes`): a built-in Light+, a `theme` setting, a picker with live preview and theme files — [tasks/themes.md](tasks/themes.md)
-- **Touch layout** (`jed_touch`): `jed --touch` (or `touch_layout = true`) draws taller, wider tab bars with bigger close and scroll targets for a touch screen, using jmux's touch metrics; text and shells scroll by swipe, a hold opens the context menu, the side panel floats over the editor and hides once it opens a tab, the bottom panel hides after a jump, side-by-side editor groups merge into one, and lines wrap — [tasks/jed_touch.md](tasks/jed_touch.md)
 - **Transform, sort and dedupe lines** (`transform_sort_dedupe`): change case, sort, and deduplicate lines — [tasks/transform_sort_dedupe.md](tasks/transform_sort_dedupe.md)
 - **VHDL: tree-sitter and VHDL-LS** (`vhdl`): VHDL files get syntax colours, comment / pair / indent behaviour and a language server (`vhdl_ls` from rust_hdl), as C++ / Python / Rust do — [tasks/vhdl.md](tasks/vhdl.md)
 - **Multiple git repos in one workspace** (`multi_repo` [p-10]): source control, quick diff marks, blame, history and the git tools work with several repositories under one workspace folder, as VS Code does — [tasks/multi_repo.md](tasks/multi_repo.md)
@@ -830,6 +833,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - ✅ **Text field mouse** (`text_field_mouse`): click, drag, Shift+click, double and triple click in the find widget, Search view and palette inputs — [tasks/text_field_mouse.md](tasks/text_field_mouse.md)
 - ✅ **Text field selection and keys** (`text_field_selection`): selection and keys in the find widget, Search view, palette and prompts (one `field::TextField`) — [tasks/text_field_selection.md](tasks/text_field_selection.md)
 - ✅ **Tools view and logs** (`tools`): a side panel view of every tool jed runs, each with its log in a read-only editor tab — [tasks/tools.md](tasks/tools.md)
+- ✅ **Touch layout** (`jed_touch`): `jed --touch` (or `touch_layout = true`) draws taller, wider tab bars with bigger close and scroll targets for a touch screen, using jmux's touch metrics; text and shells scroll by swipe, a hold opens the context menu, the side panel floats over the editor and hides once it opens a tab, the bottom panel hides after a jump, side-by-side editor groups merge into one, and lines wrap — [tasks/jed_touch.md](tasks/jed_touch.md)
 - ✅ **TypeScript and JavaScript** (`typescript`): JavaScript, JSX, TypeScript and TSX files get syntax colours, comment / pair / indent behaviour and a language server (`typescript-language-server`) — [tasks/typescript.md](tasks/typescript.md)
 - ✅ **Untitled files and Save As** (`untitled`): new untitled buffers, Save As and Save All — [tasks/untitled.md](tasks/untitled.md)
 - ✅ **Warn when the shell integration is missing or stale** (`shell_integration_check`): the first shell tab of a run checks its shell's integration off-thread and warns once when it isn't installed or is out of date, pointing at "Terminal: Install Shell Integration" — [tasks/shell_integration_check.md](tasks/shell_integration_check.md)

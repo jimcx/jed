@@ -272,6 +272,7 @@ impl App {
             L::Open => {
                 if let Some(t) = list.target() {
                     self.open_location(t, true);
+                    self.panel_opened();
                 }
             }
             L::FocusEditor => {
@@ -310,6 +311,7 @@ impl App {
             && let Some(t) = list.target()
         {
             self.open_location(t, count >= 2);
+            self.panel_opened();
         }
         self.hits.panel_list = Some(hit);
     }

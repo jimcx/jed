@@ -13,7 +13,7 @@ use ratatui::layout::Rect;
 use crate::app::App;
 use crate::milestone10_tests::{dirs, open_file_app};
 
-fn app() -> (tempfile::TempDir, App) {
+pub(crate) fn app() -> (tempfile::TempDir, App) {
     let (d, root, state) = dirs();
     fs::write(root.join("a.txt"), "one\n").unwrap();
     let mut app = open_file_app(&root, &state, "a.txt");
@@ -431,7 +431,7 @@ async fn history_view_history_done_invalidates_a_read_in_flight() {
 use crate::command::{Command, FileHistoryCommand};
 
 /// Two saves of a.txt ("xone\n", then "xyyone\n"), the section loaded with two entries.
-async fn two_saves(app: &mut App) {
+pub(crate) async fn two_saves(app: &mut App) {
     app.type_text("x");
     save(app).await;
     std::thread::sleep(std::time::Duration::from_millis(2));

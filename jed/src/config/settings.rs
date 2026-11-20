@@ -17,7 +17,7 @@
 //! | `quick_suggestions`| bool | true      | Typing a word asks the language server for completions         |
 //! | `word_based_suggestions` | bool | true | Ctrl+Space and quick suggestions offer the words of open buffers (same language) where no language server answers |
 //! | `render_whitespace`| str  | `"all"`   | Draw spaces `·` / tabs `→`: `none` `boundary` `selection` `trailing` `all` |
-//! | `word_wrap`       | str  | `"off"`   | Wrap long lines at the editor's width: `off` or `on`             |
+//! | `word_wrap`       | str  | `"off"`   | Wrap long lines at the editor's width: `off` or `on` (the touch layout: `on` unless set) |
 //! | `cursor_style`     | str  | `"line"`  | The cursor's shape: `line` (a bar), `block` or `underline`     |
 //! | `cursor_blinking`  | bool | true      | The cursor blinks                                              |
 //! | `hex_bytes_per_line` | int | 32       | A hex tab's widest row: a power of two from 1 to 64            |

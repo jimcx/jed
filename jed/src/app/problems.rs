@@ -46,7 +46,7 @@ impl App {
         }
     }
 
-    fn hide_panel(&mut self) {
+    pub(super) fn hide_panel(&mut self) {
         self.ui.panel_visible = false;
         if self.panel_focused() {
             self.focus_editor_or_side();
@@ -106,6 +106,7 @@ impl App {
                 if let Some(t) = self.problems.target(&files) {
                     drop(files);
                     self.open_problem(t, true, true);
+                    self.panel_opened();
                 }
             }
             P::FocusEditor => {
@@ -199,6 +200,7 @@ impl App {
                 drop(files);
                 if let Some(t) = target {
                     self.open_problem(t, true, count >= 2);
+                    self.panel_opened();
                 }
             }
         }

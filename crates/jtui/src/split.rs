@@ -135,6 +135,30 @@ impl SplitTree {
         true
     }
 
+    /// The first (outermost, leftmost) side-by-side split: the first group of its left half and
+    /// every group of its right half, in reading order. `None` when no split is `Right`.
+    pub fn first_right_split(&self) -> Option<(GroupId, Vec<GroupId>)> {
+        fn leaves(n: &Node, out: &mut Vec<GroupId>) {
+            match n {
+                Node::Leaf(g) => out.push(*g),
+                Node::Split { a, b, .. } => {
+                    leaves(a, out);
+                    leaves(b, out);
+                }
+            }
+        }
+        fn find(n: &Node) -> Option<(GroupId, Vec<GroupId>)> {
+            let Node::Split { dir, a, b, .. } = n else { return None };
+            if *dir == SplitDir::Right {
+                let mut right = Vec::new();
+                leaves(b, &mut right);
+                return Some((a.first_leaf(), right));
+            }
+            find(a).or_else(|| find(b))
+        }
+        find(&self.root)
+    }
+
     /// Removes a group; its sibling takes the space. Returns the group that should get focus,
     /// or `None` if `group` is the last one (or not in the tree).
     pub fn remove(&mut self, group: GroupId) -> Option<GroupId> {
@@ -308,6 +332,17 @@ mod tests {
             r#"{"root":{"split":{"dir":"right","ratio":0.5,"a":{"leaf":0},"b":{"split":{"dir":"down","ratio":0.5,"a":{"leaf":1},"b":{"leaf":2}}}}}}"#
         );
         assert_eq!(serde_json::from_str::<SplitTree>(&json).unwrap(), t);
+    }
+
+    #[test]
+    fn first_right_split_names_the_left_group_and_the_right_half() {
+        let mut t = SplitTree::new(0);
+        assert_eq!(t.first_right_split(), None);
+        assert!(t.split(0, SplitDir::Down, 1));
+        assert_eq!(t.first_right_split(), None);
+        assert!(t.split(0, SplitDir::Right, 2));
+        assert!(t.split(2, SplitDir::Down, 3));
+        assert_eq!(t.first_right_split(), Some((0, vec![2, 3])));
     }
 
     #[test]

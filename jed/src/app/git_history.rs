@@ -252,6 +252,7 @@ impl App {
                 };
                 let file = self.git_history_file();
                 self.open_commit(&id, file);
+                self.side_opened();
             }
             C::FocusTree => self.git_history.set_focused(false),
         }

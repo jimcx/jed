@@ -107,6 +107,13 @@ impl App {
             return None;
         }
         let (half_w, half_h) = (editor.width / 2, editor.height / 2);
+        // The touch layout has no side-by-side groups: a left or right edge splits down.
+        let side = match side {
+            Some(DropSide::Left | DropSide::Right) if self.groups.stacked && !is_terminal_group(group) => {
+                &Some(DropSide::Down)
+            }
+            s => s,
+        };
         Some(match side {
             None => editor,
             Some(DropSide::Left) => Rect {

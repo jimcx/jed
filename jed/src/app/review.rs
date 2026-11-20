@@ -443,6 +443,7 @@ impl App {
         self.needs_redraw = true;
         self.sync_diffs();
         self.sync_review_threads();
+        self.side_opened();
     }
 
     /// "Code Review: Open Thread": the selected thread's tab, whatever its placement.
@@ -741,6 +742,7 @@ impl App {
             };
             self.start_open(abs, request);
         }
+        self.side_opened();
     }
 
     /// A click in the panel: the summary switches merge request, a file row selects.

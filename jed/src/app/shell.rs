@@ -247,10 +247,11 @@ impl App {
         let planned = (status.width > 0)
             .then(|| {
                 let screen = ratatui::layout::Rect::new(0, 0, status.width, status.y + status.height);
-                let t = crate::layout::compute(
+                let t = crate::layout::compute_with(
                     screen,
                     self.ui.side_visible,
                     self.ui.side_width,
+                    self.touch(),
                     None,
                     Some(self.ui.terminal_height),
                 )
