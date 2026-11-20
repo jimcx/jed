@@ -930,7 +930,10 @@ async fn accepting_a_conflict_keeps_the_scroll_position() {
     for i in 0..60 {
         src.push_str(&format!("line {i}\n"));
     }
-    src.push_str(&format!("{}{}\nours\n{}\ntheirs\n{}{}\n", "<<<<<<", "< HEAD", "=======", ">>>>>>", "> main"));
+    src.push_str(&format!(
+        "{}{}\nours\n{}\ntheirs\n{}{}\n",
+        "<<<<<<", "< HEAD", "=======", ">>>>>>", "> main"
+    ));
     for i in 60..120 {
         src.push_str(&format!("line {i}\n"));
     }

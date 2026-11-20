@@ -865,7 +865,10 @@ impl App {
                     .find(|c| c.start == start)
                     .cloned();
                 if let Some(conflict) = conflict {
+                    // The cursor may be far from the conflict: keep the viewport where it is.
+                    let reveal = view.reveal_cursor;
                     crate::edit::accept_merge(buf, view, choice, std::slice::from_ref(&conflict));
+                    view.reveal_cursor = reveal;
                 }
             }
             MergeButton::Compare => self.compare_conflict(Some(start)),
