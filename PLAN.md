@@ -230,6 +230,7 @@ Go back to any earlier save of a file, independent of git.
   - Paste, cut and each multi-cursor command are one step each
   - Each step stores the selections from before and after it
 - Select with mouse drag, Shift+arrows, double/triple-click
+  - Touch layout (`jed_touch`): a press in a text, diff or hex view or a shell runs through `jtui::touch`: a tap places the cursor (double / triple tap select a word / line; a shell whose program reports the mouse gets the click), a swipe scrolls by the rows and columns moved without selecting (a shell's scrollback, or wheel events to a program that reports the mouse), a hold then drag selects from the press, and a hold released without moving opens the context menu the right button would (an Explorer row runs its right-click action; a tab's menu after a hold that lifted it)
 - Clipboard — see [Clipboard](#clipboard)
 - Find/replace in the file (regex, case, whole word)
   - Same matcher and options as [Workspace search](#workspace-search) and Cmd+D

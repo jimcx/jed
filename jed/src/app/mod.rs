@@ -136,6 +136,8 @@ enum Timer {
     Hover,
     /// The mouse has rested on a tab for `tab_tip::DELAY`.
     TabTip,
+    /// A touch press has lasted `jtui::touch::HOLD` (`app/touch.rs`).
+    TouchHold,
     /// A word char was typed `completion::QUICK_DELAY` ago.
     Completion,
     /// The cursor rested `code_action::BULB_DELAY`: the lightbulb's request.
@@ -251,8 +253,6 @@ enum AppEvent {
     Ipc(ipc::IpcEvent),
     /// Task runs, shell tabs, shell integration, terminal links and recent-workspace launches.
     Terminal(shell::TerminalEvent),
-    /// The hold timer of the touch press with this serial fired (`app/touch.rs`).
-    Hold(u64),
     /// Tool logs: new lines and the newest log file.
     Logs(tools::LogEvent),
     /// A buffer's gutter markers, inline blame and a stage from the gutter.
@@ -364,8 +364,8 @@ pub struct App {
     should_quit: bool,
     /// Also set by drawing itself (the horizontal bar's row appeared or went: draw again).
     pub(crate) needs_redraw: bool,
-    /// Serial of the newest touch press (`app/touch.rs`): a stale hold timer carries an older one.
-    hold_serial: u64,
+    /// A touch hold in progress, whose release opens a menu unless the finger moved (`app/touch.rs`).
+    touch_hold: Option<touch::TouchHold>,
     tx: mpsc::UnboundedSender<AppEvent>,
     rx: mpsc::UnboundedReceiver<AppEvent>,
     /// Whether `start` creates the file watcher. Always on in production; in test builds it is
@@ -637,7 +637,7 @@ impl App {
             needs_redraw: true,
             tx,
             rx,
-            hold_serial: 0,
+            touch_hold: None,
             watch_files: !cfg!(test),
             startup_terminal: false,
             watcher: None,
@@ -922,6 +922,7 @@ impl App {
             (self.search_view.deadline(), Timer::SearchDebounce),
             (self.hover.deadline(), Timer::Hover),
             (self.tab_tip.deadline(), Timer::TabTip),
+            (self.touch_deadline(), Timer::TouchHold),
             (self.completion.deadline(), Timer::Completion),
             (self.code_actions.deadline(), Timer::Bulb),
             (self.semantic.deadline(), Timer::Semantic),
@@ -959,6 +960,7 @@ impl App {
             Timer::SearchDebounce => self.search_tick(Instant::now()),
             Timer::Hover => self.hover_tick(Instant::now()),
             Timer::TabTip => self.tab_tip_tick(Instant::now()),
+            Timer::TouchHold => self.touch_tick(Instant::now()),
             Timer::Completion => self.completion_tick(Instant::now()),
             Timer::Bulb => self.bulb_tick(Instant::now()),
             Timer::Semantic => self.semantic_tick(Instant::now()),
@@ -1199,6 +1201,10 @@ impl App {
                     && (esc || enter);
                 if !peek && !matches!(key.code, KeyCode::Modifier(_)) {
                     self.close_peek();
+                }
+                if esc {
+                    // Esc abandons a touch hold: its release opens no menu.
+                    self.touch_hold = None;
                 }
                 if esc
                     && matches!(self.drag, Some(mouse::Drag::Tab(_) | mouse::Drag::Explorer(_)))
@@ -1831,7 +1837,6 @@ impl App {
             AppEvent::Disk(ev) => self.handle_disk_event(ev),
             AppEvent::Ipc(ev) => self.handle_ipc_event(ev),
             AppEvent::Terminal(ev) => self.handle_terminal_event(ev),
-            AppEvent::Hold(serial) => self.hold(serial),
             AppEvent::Logs(ev) => self.handle_log_event(ev),
             AppEvent::Gutter(ev) => self.handle_gutter_event(ev),
             AppEvent::Diff(ev) => self.handle_diff_event(ev),

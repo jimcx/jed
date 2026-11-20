@@ -1,4 +1,5 @@
-//! The finger's gesture on a bar: a swipe scrolls, a tap selects, a hold picks the item up. A pure
+//! The finger's gesture on a bar or a view: a swipe scrolls (`dx` columns, `dy` rows), a tap selects, a
+//! hold picks the item up (a tab) or starts a selection / opens a menu (text). A pure
 //! state machine with no clock: the app starts a `HOLD` timer at the press and calls `Press::held`
 //! when it fires (a finger held still sends no events), and feeds it the motion and the release.
 //! Motion within `SLOP` cells on either axis of the press is still a hold or a tap, so the jitter
@@ -19,8 +20,8 @@ pub enum Gesture {
     Idle,
     /// Released within `SLOP` before `HOLD`.
     Tap,
-    /// Moved past `SLOP` before `HOLD`; `dx` is the columns moved since the last motion.
-    Swipe { dx: i32 },
+    /// Moved past `SLOP` before `HOLD`; `dx` / `dy` are the columns / rows moved since the last motion.
+    Swipe { dx: i32, dy: i32 },
     /// `HOLD` passed within `SLOP`: the item is picked up.
     Lifted,
     /// Motion after the lift.
@@ -41,6 +42,7 @@ enum Phase {
 pub struct Press {
     origin: (u16, u16),
     last_x: u16,
+    last_y: u16,
     phase: Phase,
 }
 
@@ -50,6 +52,7 @@ impl Press {
         Press {
             origin: at,
             last_x: at.0,
+            last_y: at.1,
             phase: Phase::Down,
         }
     }
@@ -66,8 +69,10 @@ impl Press {
             Phase::Down | Phase::Swiping => {
                 self.phase = Phase::Swiping;
                 let dx = i32::from(at.0) - i32::from(self.last_x);
+                let dy = i32::from(at.1) - i32::from(self.last_y);
                 self.last_x = at.0;
-                Gesture::Swipe { dx }
+                self.last_y = at.1;
+                Gesture::Swipe { dx, dy }
             }
         }
     }
@@ -119,17 +124,18 @@ mod tests {
     #[test]
     fn motion_past_slop_swipes_by_the_delta_since_the_last_motion() {
         let mut p = Press::new((10, 5));
-        assert_eq!(p.moved((7, 5)), Gesture::Swipe { dx: -3 });
-        assert_eq!(p.moved((8, 5)), Gesture::Swipe { dx: 1 });
-        assert_eq!(p.moved((8, 5)), Gesture::Swipe { dx: 0 });
+        assert_eq!(p.moved((7, 5)), Gesture::Swipe { dx: -3, dy: 0 });
+        assert_eq!(p.moved((8, 5)), Gesture::Swipe { dx: 1, dy: 0 });
+        assert_eq!(p.moved((8, 5)), Gesture::Swipe { dx: 0, dy: 0 });
         // Back near where it landed, it is still a swipe.
-        assert_eq!(p.moved((10, 5)), Gesture::Swipe { dx: 2 });
+        assert_eq!(p.moved((10, 5)), Gesture::Swipe { dx: 2, dy: 0 });
     }
 
     #[test]
-    fn vertical_motion_past_slop_swipes_with_no_dx() {
+    fn vertical_motion_past_slop_swipes_by_dy() {
         let mut p = Press::new((10, 5));
-        assert_eq!(p.moved((10, 8)), Gesture::Swipe { dx: 0 });
+        assert_eq!(p.moved((10, 8)), Gesture::Swipe { dx: 0, dy: 3 });
+        assert_eq!(p.moved((9, 6)), Gesture::Swipe { dx: -1, dy: -2 });
     }
 
     #[test]

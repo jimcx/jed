@@ -105,14 +105,18 @@ pub enum Drag {
         word: bool,
         area: Rect,
     },
-    /// The touch layout's finger on a tab bar, not yet a tap, swipe or lift (`app/touch.rs`).
+    /// The touch layout's finger on a tab bar, a text / diff / hex / shell view or an Explorer
+    /// row, not yet a tap, swipe or hold (`app/touch.rs`).
     Press {
-        group: crate::layout::GroupId,
         hit: Hit,
         gesture: jtui::touch::Press,
-        /// Columns swiped but not yet worth a whole tab.
+        /// Columns swiped but not yet worth a whole tab (tab bars only).
         carry: i32,
-        serial: u64,
+        /// When it becomes a hold (`Timer::TouchHold`).
+        deadline: Instant,
+        /// The press itself, replayed through the ordinary handling by a tap or a hold on a view
+        /// or row.
+        event: MouseEvent,
     },
     /// Selecting text in one of the one-line inputs (`app/find.rs`, `app/workspace_search.rs`,
     /// `app/palette.rs`).
@@ -258,7 +262,7 @@ impl App {
     /// what it lands on. Nothing while the program hasn't asked for the mouse or has ended, or
     /// the view is scrolled back (the wheel scrolls the scrollback then). True when the program
     /// has the event, so jed's click / wheel handling stays out of it.
-    fn terminal_mouse(&mut self, hit: Hit, m: MouseEvent) -> bool {
+    pub(super) fn terminal_mouse(&mut self, hit: Hit, m: MouseEvent) -> bool {
         // A drag jed started elsewhere (text, a scroll bar, a tab, a border) keeps its moves
         // and release.
         if self.drag.is_some() {
@@ -432,6 +436,12 @@ impl App {
     }
 
     fn mouse_event(&mut self, m: MouseEvent) {
+        self.mouse_event_with(m, false);
+    }
+
+    /// `replay`: a touch press (tap or hold) replayed as the plain click, so it skips the touch
+    /// branch that would record it again.
+    pub(super) fn mouse_event_with(&mut self, m: MouseEvent, replay: bool) {
         // The mouse's back / forward buttons navigate wherever the pointer is, and over a terminal
         // or a popup too, so they are handled before anything looks at the hit. A drag while one
         // is held and its release are consumed here too: the button is jed's, so a terminal
@@ -450,6 +460,9 @@ impl App {
             | MouseEventKind::Up(MouseButton::Back)
             | MouseEventKind::Up(MouseButton::Forward) => return,
             _ => {}
+        }
+        if !replay && self.touch_hold_event(&m) {
+            return;
         }
         let hit = match self.hits.hit(m.column, m.row) {
             // The wheel over a scroll bar scrolls what it scrolls, as the wheel over that.
@@ -493,6 +506,15 @@ impl App {
             return;
         }
         if self.find_mouse(m) {
+            return;
+        }
+        if !replay && self.touch() && m.kind == MouseEventKind::Down(MouseButton::Left) && Self::is_view_hit(hit) {
+            // A finger on a view or an Explorer row: a swipe, a tap or a hold, decided as it goes.
+            self.drag = None;
+            if self.inline_rename.is_some() {
+                self.commit_inline_rename();
+            }
+            self.touch_press(hit, m);
             return;
         }
         if self.diff_mouse(&m, hit) || self.hex_mouse(&m, hit) || self.markdown_mouse(&m, hit) {
@@ -571,9 +593,9 @@ impl App {
                 if self.inline_rename.is_some() {
                     self.commit_inline_rename();
                 }
-                if self.touch() && Self::is_bar_hit(hit) {
+                if !replay && self.touch() && Self::is_bar_hit(hit) {
                     // A finger on a tab bar: a swipe, a tap or a hold, decided as it goes.
-                    self.touch_press(hit, m.column, m.row);
+                    self.touch_press(hit, m);
                     return;
                 }
                 let count = self.clicks.click(Instant::now(), m.column, m.row);
@@ -899,7 +921,7 @@ impl App {
     /// in a text tab's text, the same menu for the active file (`open_editor_menu`, selections untouched);
     /// on an explorer file, that file's history; on an explorer folder, "Find in Folder…" (the
     /// row selected first).
-    fn right_click(&mut self, hit: Hit, at: (u16, u16)) {
+    pub(super) fn right_click(&mut self, hit: Hit, at: (u16, u16)) {
         match hit {
             Hit::Tab(g, i) | Hit::TabClose(g, i) => {
                 self.open_tab_menu(g, i, at);

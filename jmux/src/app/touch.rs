@@ -89,7 +89,7 @@ impl App {
         else {
             return;
         };
-        let Gesture::Swipe { dx } = gesture.moved((column, row)) else {
+        let Gesture::Swipe { dx, .. } = gesture.moved((column, row)) else {
             return;
         };
         // The tabs follow the finger: moving left brings later tabs in.

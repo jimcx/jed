@@ -705,6 +705,20 @@ mod tests {
                 })
             }
             TabTip => app.tab_tip.test_arm(at),
+            TouchHold => {
+                app.drag = Some(super::super::mouse::Drag::Press {
+                    hit: crate::layout::Hit::TabBar(0),
+                    gesture: jtui::touch::Press::new((0, 0)),
+                    carry: 0,
+                    deadline: at,
+                    event: crossterm::event::MouseEvent {
+                        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                        column: 0,
+                        row: 0,
+                        modifiers: crossterm::event::KeyModifiers::NONE,
+                    },
+                })
+            }
             Completion => {
                 app.completion.quick = Some(crate::completion::Quick {
                     deadline: at,
@@ -745,7 +759,7 @@ mod tests {
         }
     }
 
-    /// Each of the 19 deadlines, armed alone, wakes `next_timer` with its own tag; with two
+    /// Each of the 20 deadlines, armed alone, wakes `next_timer` with its own tag; with two
     /// armed from different modules the earlier one wins.
     #[tokio::test(flavor = "multi_thread")]
     async fn next_timer_wakes_for_every_deadline_with_its_own_tag() {
@@ -754,11 +768,12 @@ mod tests {
         use super::super::Timer::*;
 
         // `arm`'s match is exhaustive, so a new variant has to be added there; add it here too.
-        const ALL: [super::super::Timer; 19] = [
+        const ALL: [super::super::Timer; 20] = [
             FsChanges,
             SearchDebounce,
             Hover,
             TabTip,
+            TouchHold,
             Completion,
             Bulb,
             Semantic,
