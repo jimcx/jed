@@ -70,6 +70,7 @@ mod tasks;
 mod term_link;
 mod term_search;
 mod tools;
+mod touch;
 mod workspace_search;
 
 pub use mode::Mode;
@@ -250,6 +251,8 @@ enum AppEvent {
     Ipc(ipc::IpcEvent),
     /// Task runs, shell tabs, shell integration, terminal links and recent-workspace launches.
     Terminal(shell::TerminalEvent),
+    /// The hold timer of the touch press with this serial fired (`app/touch.rs`).
+    Hold(u64),
     /// Tool logs: new lines and the newest log file.
     Logs(tools::LogEvent),
     /// A buffer's gutter markers, inline blame and a stage from the gutter.
@@ -275,6 +278,8 @@ pub struct App {
     pub mode: Mode,
     /// Editor mode on a git message file (`main`): the status bar text in place of " Single file ".
     pub editor_hint: Option<&'static str>,
+    /// `--touch` was given: the touch layout whatever `touch_layout` says (`App::touch`).
+    pub touch_flag: bool,
     pub workspace: Workspace,
     pub trust: Trust,
     trust_store: TrustStore,
@@ -359,6 +364,8 @@ pub struct App {
     should_quit: bool,
     /// Also set by drawing itself (the horizontal bar's row appeared or went: draw again).
     pub(crate) needs_redraw: bool,
+    /// Serial of the newest touch press (`app/touch.rs`): a stale hold timer carries an older one.
+    hold_serial: u64,
     tx: mpsc::UnboundedSender<AppEvent>,
     rx: mpsc::UnboundedReceiver<AppEvent>,
     /// Whether `start` creates the file watcher. Always on in production; in test builds it is
@@ -560,6 +567,7 @@ impl App {
         let mut app = Self {
             mode,
             editor_hint: None,
+            touch_flag: false,
             trust: trust_store.evaluate(&root, &workspace.config),
             trust_store,
             cursor_shape: crate::terminal::cursor_shape(&settings),
@@ -629,6 +637,7 @@ impl App {
             needs_redraw: true,
             tx,
             rx,
+            hold_serial: 0,
             watch_files: !cfg!(test),
             startup_terminal: false,
             watcher: None,
@@ -1822,6 +1831,7 @@ impl App {
             AppEvent::Disk(ev) => self.handle_disk_event(ev),
             AppEvent::Ipc(ev) => self.handle_ipc_event(ev),
             AppEvent::Terminal(ev) => self.handle_terminal_event(ev),
+            AppEvent::Hold(serial) => self.hold(serial),
             AppEvent::Logs(ev) => self.handle_log_event(ev),
             AppEvent::Gutter(ev) => self.handle_gutter_event(ev),
             AppEvent::Diff(ev) => self.handle_diff_event(ev),

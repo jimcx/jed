@@ -334,7 +334,7 @@ async fn drag_tabs_press_on_a_close_marker_starts_no_drag() {
     let (y, tabs) = bar(&app);
 
     // `×` on b.txt closes it; the press must not leave a drag behind.
-    app.mouse(MouseEventKind::Down(MouseButton::Left), tabs[1].close_x, y);
+    app.mouse(MouseEventKind::Down(MouseButton::Left), tabs[1].close_x0, y);
     assert_eq!(layout(&app), [vec!["a.txt", "c.txt"]], "the close marker closed b.txt");
     app.mouse(MouseEventKind::Drag(MouseButton::Left), tabs[0].x0, y);
     app.mouse(MouseEventKind::Up(MouseButton::Left), tabs[0].x0, y);

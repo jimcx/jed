@@ -62,6 +62,8 @@ pub struct Settings {
     pub word_wrap: WordWrap,
     /// Dock each group's tab bar at the bottom of the group instead of the top: `[settings] tabs_at_bottom`.
     pub tabs_at_bottom: bool,
+    /// The touch layout (3-row padded tab bars, …): `[settings] touch_layout`; `--touch` also turns it on (`App::touch`).
+    pub touch_layout: bool,
     /// The terminal cursor's shape (DECSCUSR, sent by `terminal::enter` and again when it
     /// changes) and secondary cursors' look (`ui::editor`): `[settings] cursor_style`.
     pub cursor_style: CursorStyle,
@@ -198,6 +200,7 @@ impl Default for Settings {
             render_whitespace: RenderWhitespace::All,
             word_wrap: WordWrap::Off,
             tabs_at_bottom: false,
+            touch_layout: false,
             cursor_style: CursorStyle::Line,
             cursor_blinking: true,
             hex_bytes_per_line: 32,

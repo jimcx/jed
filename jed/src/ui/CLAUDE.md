@@ -12,7 +12,7 @@ Drawing only — but `render` is not pure: it takes `&mut App` and writes back s
 One line per widget or editor layer; [docs/dev/ui.md](../../../docs/dev/ui.md) has each in full (keys, layout, hits, render-time state) and the full form of the rules above — read the entries for what you touch, and add detail there, not here.
 
 - `activity.rs` — the activity bar's icons (greyed, `activityBar.disabled`, when `Mode::allows_view` says no: single file mode)
-- `tabs.rs` — tab bars: overflow scrolling with `‹` / `›`, revealing the active tab, title styles and a shell title's state glyph, a dragged tab's drop marker, the group's number with two or more groups
+- `tabs.rs` — tab bars: overflow scrolling with `‹` / `›`, revealing the active tab, title styles and a shell title's state glyph, a dragged tab's drop marker, the group's number with two or more groups; the bar's rows / padding come from `TabMetrics` (touch layout: 3 rows, `+`, 3-cell targets, `layout::bar_and_rest` is the one place that splits a group's area)
 - `editor.rs` — the editor (takes an `Overlay { focused, find, whitespace, blame, wrapping }`), layered per grapheme in one pass, each layer walked with one index over sorted on-screen data (syntax spans, brackets, squiggles, whitespace, occurrences, find matches, selections, blame, gutter markers, merge conflicts); with `wrapping` it draws `wrap::Wrap`'s rows of each line
 - `find.rs` — the find / replace widget (top right of the active editor), `draw_field` (re-exported from `jtui::field_draw`)
 - `side.rs` — the side panel: explorer rows with git colours, the Explorer's split with the "Git History" section (divider, header, commit rows)

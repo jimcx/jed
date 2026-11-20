@@ -105,6 +105,15 @@ pub enum Drag {
         word: bool,
         area: Rect,
     },
+    /// The touch layout's finger on a tab bar, not yet a tap, swipe or lift (`app/touch.rs`).
+    Press {
+        group: crate::layout::GroupId,
+        hit: Hit,
+        gesture: jtui::touch::Press,
+        /// Columns swiped but not yet worth a whole tab.
+        carry: i32,
+        serial: u64,
+    },
     /// Selecting text in one of the one-line inputs (`app/find.rs`, `app/workspace_search.rs`,
     /// `app/palette.rs`).
     Field(FieldTarget),
@@ -562,6 +571,11 @@ impl App {
                 if self.inline_rename.is_some() {
                     self.commit_inline_rename();
                 }
+                if self.touch() && Self::is_bar_hit(hit) {
+                    // A finger on a tab bar: a swipe, a tap or a hold, decided as it goes.
+                    self.touch_press(hit, m.column, m.row);
+                    return;
+                }
                 let count = self.clicks.click(Instant::now(), m.column, m.row);
                 self.left_click(hit, m, count);
             }
@@ -638,6 +652,7 @@ impl App {
                 }
                 Some(Drag::ScrollBar { target, grab }) => self.scrollbar_drag(target, m.column, m.row, grab),
                 Some(Drag::Tab(_)) => self.tab_drag_to(m.column, m.row),
+                Some(Drag::Press { .. }) => self.press_moved(m.column, m.row),
                 Some(Drag::Explorer(_)) => self.explorer_drag_to(m.column, m.row),
                 // Taken by `hex_mouse`.
                 Some(Drag::Hex(_) | Drag::Diff(_) | Drag::Markdown(_)) => {}
@@ -652,6 +667,9 @@ impl App {
                 None => {}
             },
             MouseEventKind::Up(MouseButton::Left) => {
+                if matches!(self.drag, Some(Drag::Press { .. })) {
+                    self.press_released(m.column, m.row);
+                }
                 if matches!(self.drag, Some(Drag::Tab(_))) {
                     self.finish_tab_drag(m.column, m.row);
                 }
@@ -768,6 +786,7 @@ impl App {
             }
             Hit::TabClose(g, i) => self.close_tab(g, i),
             Hit::TabBar(g) => self.focus_group(g),
+            Hit::NewTab(g) => self.new_tab_in(g),
             Hit::TabArrow(g, forward) => {
                 self.focus_group(g);
                 if let Some(group) = self.any_group_mut(g) {

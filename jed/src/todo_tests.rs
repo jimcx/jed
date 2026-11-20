@@ -10549,12 +10549,12 @@ mod file_info_tab_menu {
         draw(&mut app);
         let g = app.hits.groups[0].clone();
         let t = g.tabs.iter().find(|t| t.index == 0).unwrap();
-        app.mouse(MouseEventKind::Down(MouseButton::Right), t.close_x, g.tab_bar.y);
+        app.mouse(MouseEventKind::Down(MouseButton::Right), t.close_x0, g.tab_bar.y);
         assert_eq!(app.group().tabs.len(), 2);
         assert_eq!(app.group().active, 0);
         assert_eq!(
             app.context_menu.as_ref().expect("menu").anchor,
-            (t.close_x, g.tab_bar.y + 1)
+            (t.close_x0, g.tab_bar.y + 1)
         );
         click_row(&mut app, 0);
         assert_eq!(app.clipboard.read().unwrap(), "src/a.rs");

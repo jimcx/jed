@@ -184,6 +184,11 @@ const SETTINGS_KEYS: &[KeySchema] = &[
         ValueKind::Bool,
         "Dock each group's tab bar at the bottom of the group",
     ),
+    key(
+        "touch_layout",
+        ValueKind::Bool,
+        "The touch layout: padded 3-row tab bars for a touch screen",
+    ),
     key("cursor_style", ValueKind::Enum(CURSOR_STYLES), "The cursor's shape"),
     key("cursor_blinking", ValueKind::Bool, "The cursor blinks"),
     key(

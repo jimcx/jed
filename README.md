@@ -46,7 +46,7 @@ Platforms: macOS first, Linux too. Windows is not supported.
 
 ```sh
 cargo build --release -p jed -p jmux    # target/release/jed and target/release/jmux, one build
-./target/release/jed [<folder> | <file>[:line[:col]]]
+./target/release/jed [--touch] [<folder> | <file>[:line[:col]]]
 scripts/install                         # build, strip and copy both into ~/.local/bin (or $1 / $PREFIX_BIN); --only jed|jmux
 ```
 
@@ -55,6 +55,7 @@ The toolchain is pinned in `rust-toolchain.toml`; rustup picks it up.
 - `jed <folder>` opens the folder as the workspace
 - `jed <file>` walks up to the nearest `.workspace` file, else uses the file's folder
 - `jed` alone opens the current directory
+- `jed --touch` starts the touch layout (padded three-row tab bars with bigger targets; swipe, tap and hold work on them); `touch_layout = true` in `settings.toml` does it for every run
 
 ## Terminal setup
 

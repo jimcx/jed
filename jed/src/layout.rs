@@ -450,6 +450,8 @@ pub struct GroupHit {
     pub tabs: Vec<TabHit>,
     /// The tab bar's scroll arrows, while its tabs overflow it.
     pub tab_arrows: Option<TabArrows>,
+    /// The touch layout's `+` (new tab) target at the bar's right end.
+    pub new_tab: Option<std::ops::Range<u16>>,
     /// The changed-on-disk banner above the editor, when shown.
     pub banner: Option<BannerHit>,
     /// The merge conflicts' action-row buttons drawn in the editor.
@@ -568,20 +570,44 @@ pub struct BannerHit {
     pub actions: Vec<(Rect, crate::disk::BannerAction)>,
 }
 
-/// A tab's x range and the x of its close/dirty marker.
+/// A tab's x range and the x range of its close/dirty target (`close_x0..close_x1`: the marker's
+/// cell, three cells wide in the touch layout).
 #[derive(Debug, Clone, Copy)]
 pub struct TabHit {
     pub index: usize,
     pub x0: u16,
     pub x1: u16,
-    pub close_x: u16,
+    pub close_x0: u16,
+    pub close_x1: u16,
 }
 
-/// The x of a tab bar's `‹` (scrolls towards the first tab) and `›` (towards the last).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The x ranges of a tab bar's `‹` (scrolls towards the first tab) and `›` (towards the last).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TabArrows {
-    pub back: u16,
-    pub forward: u16,
+    pub back: std::ops::Range<u16>,
+    pub forward: std::ops::Range<u16>,
+}
+
+/// A group's area split into its tab bar and the rest: the bar is `metrics.rows` tall (less in a
+/// tiny area), at the top or the bottom. The one place the bar's height is decided: the frame and
+/// everything that sizes an editor or a shell before one is drawn use it.
+pub fn bar_and_rest(rect: Rect, metrics: jtui::tabs::TabMetrics, at_bottom: bool) -> (Rect, Rect) {
+    let bar_h = rect.height.min(metrics.rows);
+    let bar = Rect {
+        y: if at_bottom {
+            rect.y + rect.height - bar_h
+        } else {
+            rect.y
+        },
+        height: bar_h,
+        ..rect
+    };
+    let rest = Rect {
+        y: if at_bottom { rect.y } else { rect.y + bar_h },
+        height: rect.height - bar_h,
+        ..rect
+    };
+    (bar, rest)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -607,6 +633,8 @@ pub enum Hit {
     TabBar(GroupId),
     /// A tab bar's scroll arrow: `‹` (false) or `›` (true).
     TabArrow(GroupId, bool),
+    /// The touch layout's `+` at a tab bar's right end.
+    NewTab(GroupId),
     /// The changed-on-disk banner over a group's editor, on a button or not.
     Banner(GroupId, Option<crate::disk::BannerAction>),
     Editor(GroupId),
@@ -750,13 +778,16 @@ impl HitMap {
         }
         for g in &self.groups {
             if g.tab_bar.contains(p) {
-                if let Some(a) = g.tab_arrows
-                    && (x == a.back || x == a.forward)
+                if g.new_tab.as_ref().is_some_and(|r| r.contains(&x)) {
+                    return Hit::NewTab(g.id);
+                }
+                if let Some(a) = &g.tab_arrows
+                    && (a.back.contains(&x) || a.forward.contains(&x))
                 {
-                    return Hit::TabArrow(g.id, x == a.forward);
+                    return Hit::TabArrow(g.id, a.forward.contains(&x));
                 }
                 return match g.tabs.iter().find(|t| x >= t.x0 && x < t.x1) {
-                    Some(t) if x == t.close_x => Hit::TabClose(g.id, t.index),
+                    Some(t) if x >= t.close_x0 && x < t.close_x1 => Hit::TabClose(g.id, t.index),
                     Some(t) => Hit::Tab(g.id, t.index),
                     None => Hit::TabBar(g.id),
                 };
@@ -885,14 +916,16 @@ mod tests {
                 text: Rect::default(),
                 hex: None,
                 tab_arrows: (*id == 8).then_some(TabArrows {
-                    back: r.x,
-                    forward: r.x + r.width - 1,
+                    back: r.x..r.x + 1,
+                    forward: r.x + r.width - 1..r.x + r.width,
                 }),
+                new_tab: None,
                 tabs: vec![TabHit {
                     index: 0,
                     x0: r.x,
                     x1: r.x + 10,
-                    close_x: r.x + 8,
+                    close_x0: r.x + 8,
+                    close_x1: r.x + 9,
                 }],
                 // A banner over the right group's editor, a button at its start.
                 banner: (*id == 8).then(|| BannerHit {
@@ -1015,9 +1048,16 @@ mod tests {
         assert!(map.scrollbar(ScrollTarget::Group(7)).is_some());
         assert_eq!(map.hit(30, 0), Hit::Tab(7, 0));
         assert_eq!(map.hit(36, 0), Hit::TabClose(7, 0));
-        let arrows = map.groups.iter().find(|g| g.id == 8).unwrap().tab_arrows.unwrap();
-        assert_eq!(map.hit(arrows.back, 0), Hit::TabArrow(8, false));
-        assert_eq!(map.hit(arrows.forward, 0), Hit::TabArrow(8, true));
+        let arrows = map
+            .groups
+            .iter()
+            .find(|g| g.id == 8)
+            .unwrap()
+            .tab_arrows
+            .clone()
+            .unwrap();
+        assert_eq!(map.hit(arrows.back.start, 0), Hit::TabArrow(8, false));
+        assert_eq!(map.hit(arrows.forward.start, 0), Hit::TabArrow(8, true));
         assert_eq!(map.hit(50, 0), Hit::TabBar(7));
         assert_eq!(map.hit(50, 10), Hit::Editor(7));
         assert_eq!(

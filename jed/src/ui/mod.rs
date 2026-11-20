@@ -28,7 +28,7 @@ mod side;
 mod splash;
 mod status;
 mod tab_tip;
-mod tabs;
+pub(crate) mod tabs;
 mod task;
 mod title;
 mod tools;
@@ -171,22 +171,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let bulb = app.bulb_line();
     app.code_actions.bulb_hit = None;
     for (id, rect) in cells {
-        let bar_h = rect.height.min(1);
-        let at_bottom = app.settings.tabs_at_bottom;
-        let tab_bar = Rect {
-            y: if at_bottom {
-                rect.y + rect.height - bar_h
-            } else {
-                rect.y
-            },
-            height: bar_h,
-            ..rect
-        };
-        let mut editor_area = Rect {
-            y: if at_bottom { rect.y } else { rect.y + bar_h },
-            height: rect.height - bar_h,
-            ..rect
-        };
+        let (tab_bar, mut editor_area) =
+            crate::layout::bar_and_rest(rect, app.tab_metrics(), app.settings.tabs_at_bottom);
         let terminal = crate::group::is_terminal_group(id);
         let is_active = id
             == if terminal {
@@ -197,6 +183,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
         let look = scrollbar::look(app, ScrollTarget::Group(id));
         let editor_bg = app.theme.get("editor");
         let drop = app.tab_drop_in(id);
+        let lifted = app.tab_lifted_in(id);
+        let metrics = app.tab_metrics();
         let number = (if terminal { &terminal_ids } else { &group_ids })
             .as_ref()
             .and_then(|ids| ids.iter().position(|&g| g == id))
@@ -222,7 +210,18 @@ pub fn render(f: &mut Frame, app: &mut App) {
         }) else {
             continue;
         };
-        let tabs = tabs::render(f, tab_bar, group, &app.buffers, &app.theme, is_active, drop, number);
+        let tabs = tabs::render(
+            f,
+            tab_bar,
+            group,
+            &app.buffers,
+            &app.theme,
+            is_active,
+            drop,
+            number,
+            &metrics,
+            lifted,
+        );
 
         // The changed-on-disk banner takes the editor's first row (leaving it at least one); a
         // diff tab of the file shows it too.
@@ -594,6 +593,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             text,
             tabs: tabs.tabs,
             tab_arrows: tabs.arrows,
+            new_tab: tabs.new_tab,
             banner,
             merge_buttons,
             blame_hash,

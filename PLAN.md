@@ -335,6 +335,7 @@ The VS Code behaviour, especially Cmd+D and Cmd+Shift+L, is a must-have.
   - Minimum group size 12 cols × 4 rows
 - Drag tabs with the mouse: along the bar to reorder, onto another group's bar or editor to move it there (an empty group closes), onto an editor within a quarter of its width or height of an edge to split that group on that side and move it into the new split
   - The drop target is shaded while dragging (a theme key); a press that never leaves its tab is a click; Esc or a release outside any target cancels
+- Touch layout (`--touch` on the command line, or `touch_layout = true` in `settings.toml`, applied on Reload Settings): every group's tab bar, the terminal area's too, is 3 rows tall with 2 cells of padding, a 3-cell close target, 3-cell `‹` / `›` and a `+` that opens a tab in its group; a swipe on a bar scrolls its tabs, a tap acts on release, a hold lifts a tab to drag to another group or onto a split edge — [tasks/jed_touch.md](tasks/jed_touch.md)
 - Same buffer open in several views
   - Edits (incl. undo/redo) map every other view's selections and viewport through the changes
   - Cursors at an insertion point in other views stay before the inserted text

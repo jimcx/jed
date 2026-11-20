@@ -6,6 +6,7 @@
 //! | `tab_width`        | int  | 4         | Columns per tab stop (0 is ignored)                            |
 //! | `insert_spaces`    | bool | true      | Tab inserts spaces                                             |
 //! | `tabs_at_bottom`  | bool | false     | Dock each group's tab bar at the bottom of the group           |
+//! | `touch_layout`    | bool | false     | The touch layout: padded 3-row tab bars (`--touch` also sets it) |
 //! | `detect_indentation` | bool | true    | A file's own indentation (spaces / tabs, size) overrides the two above |
 //! | `syntax_max_bytes` | int  | 8388608   | No parse tree (no highlighting) past this size; 0: never parse |
 //! | `auto_close_pairs` | bool | true      | Brackets/quotes auto-close, type over, delete in pairs, wrap   |
@@ -87,6 +88,8 @@ pub struct SettingsOverrides {
     pub word_wrap: Option<WordWrap>,
     /// Dock each group's tab bar at the bottom of the group.
     pub tabs_at_bottom: Option<bool>,
+    /// The touch layout (`--touch` wins); no per-language override.
+    pub touch_layout: Option<bool>,
     /// The cursor's shape (VS Code's `editor.cursorStyle`; `line` is its default bar).
     pub cursor_style: Option<CursorStyle>,
     /// The cursor blinks (VS Code's `editor.cursorBlinking`, here only on or off).
@@ -196,6 +199,9 @@ impl SettingsOverrides {
         }
         if let Some(on) = self.tabs_at_bottom {
             s.tabs_at_bottom = on;
+        }
+        if let Some(on) = self.touch_layout {
+            s.touch_layout = on;
         }
         if let Some(mode) = self.word_wrap {
             s.word_wrap = mode;
@@ -425,6 +431,7 @@ pub const TEMPLATE: &str = "\
 # render_whitespace = \"all\"  # none, boundary, selection, trailing or all
 # word_wrap = \"off\"  # off or on
 # tabs_at_bottom = false  # dock each group's tab bar at the bottom
+# touch_layout = false  # padded 3-row tab bars for a touch screen (jed --touch sets it too)
 # cursor_style = \"line\"  # line, block or underline
 # cursor_blinking = true
 # rulers = []  # columns that get a vertical line, e.g. [80, 120]; unset, git commit messages get 72 (set, even [], replaces it)
@@ -505,7 +512,7 @@ mod tests {
              detect_indentation = false\nauto_indent = false\nmatch_brackets = false\nselection_highlight = false\nsemantic_highlighting = \"off\"\nquick_suggestions = false\nword_based_suggestions = false\n\
              render_whitespace = \"trailing\"\n\
              cursor_style = \"block\"\ncursor_blinking = false\nhex_bytes_per_line = 16\nhex_group_bytes = 4\nhex_byte_order = \"big\"\nrulers = [80, 100]\n\
-             scrollback = 50\nword_wrap = \"on\"\ntabs_at_bottom = true\n\
+             scrollback = 50\nword_wrap = \"on\"\ntabs_at_bottom = true\ntouch_layout = true\n\
              spell_check_scope = \"comments_and_strings\"\nspell_check_min_length = 4\nspell_check_problems = true\n\
              spell_check_language = \"en_AU\"\nspell_check_ignore_words = [\"a\"]\nspell_check_off_languages = [\"log\"]\n",
         );
@@ -535,6 +542,7 @@ mod tests {
                 review_drafts_on_forge: None,
                 word_wrap: Some(WordWrap::On),
                 tabs_at_bottom: Some(true),
+                touch_layout: Some(true),
                 spell_check_scope: Some(SpellScope::CommentsAndStrings),
                 spell_check_min_length: Some(4),
                 spell_check_problems: Some(true),
@@ -818,6 +826,7 @@ mod tests {
             review_drafts_on_forge: Some(true),
             word_wrap: Some(WordWrap::Off),
             tabs_at_bottom: Some(false),
+            touch_layout: Some(false),
             spell_check_scope: Some(SpellScope::All),
             spell_check_min_length: Some(3),
             spell_check_problems: Some(false),
@@ -874,6 +883,7 @@ mod tests {
         assert_eq!(s.hex_byte_order, d.hex_byte_order);
         assert_eq!(s.hex_group_bytes, d.hex_group_bytes);
         assert_eq!(s.tabs_at_bottom, d.tabs_at_bottom);
+        assert_eq!(s.touch_layout, d.touch_layout);
         assert_eq!(
             (
                 s.spell_check_scope,

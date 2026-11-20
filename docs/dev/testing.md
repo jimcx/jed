@@ -122,3 +122,5 @@ A test of a *program* (a full-screen one, `stty raw`, `dd`, `vi`, signals) runs 
 **Reveal in Finder:** tests never launch the desktop file manager (`App::reveal_in_finder` returns early under `cfg!(test)`, so sweeps over `Command::all()` are safe). The one real launch, `todo_tests::explorer_path_commands::reveal_opens_the_file_manager`: `JED_TEST_REVEAL=1 cargo test reveal_opens_the_file_manager -- --nocapture` (without the variable it returns at once).
 
 **Mouse-move redraws** (`review_followups_tests`): `app.test_take_redraw()` after `app.mouse(Moved, x, y)` says whether the move asked for a frame; draw first so `app.hits` is current. The tests reuse `fixes_tests::{fixes_app, rest, cell, terminal}` and `replace_tests::{open_app, search_for, draw, term, key}` (`pub(crate)`).
+
+**Touch layout** (`jed_touch_tests`, `jed_touch_a_*`): `open_app(dir, names, touch)` sets `app.touch_flag` (`--touch`) before `test_start`; `app.mouse(Down/Drag/Up, x, y)` drives a finger (a tap acts on the `Up`); `app.pending_press_serial()` + `app.test_hold(serial)` deliver the hold event without waiting (one test settles on the real timer: `settle(|a| a.dragging_tab())`).

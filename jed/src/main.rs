@@ -87,6 +87,8 @@ mod indentation;
 #[cfg(test)]
 mod indentation_tests;
 mod ipc;
+#[cfg(test)]
+mod jed_touch_tests;
 mod keys;
 #[cfg(test)]
 mod keys_tests;
@@ -236,8 +238,8 @@ use config::keymap::{self, Keymap, Platform};
 use workspace::Workspace;
 use workspace::trust::TrustStore;
 
-const USAGE: &str = "usage: jed [--log-level <filter>] [--perf] [<folder> | <file>[:<line>[:<col>]]]\n       \
-                     jed [--log-level <filter>] [--perf] -s | --single | --wait <file>[:<line>[:<col>]]   (single file mode)\n       \
+const USAGE: &str = "usage: jed [--log-level <filter>] [--perf] [--touch] [<folder> | <file>[:<line>[:<col>]]]\n       \
+                     jed [--log-level <filter>] [--perf] [--touch] -s | --single | --wait <file>[:<line>[:<col>]]   (single file mode)\n       \
                      jed --new-language <id>   (start a syntax plugin in ~/.config/jed/languages/<id>)\n       \
                      jed --check-language <id> [--sample <file>]   (build, load and check a syntax plugin)\n       \
                      jed claude mcp | hook session-start | hook prompt   (Claude Code integration)";
@@ -262,6 +264,8 @@ struct Args {
     authoring: Option<Authoring>,
     /// `--perf`: log timings around file opens and git reads (target `perf`).
     perf: bool,
+    /// `--touch`: the touch layout for this run (`App::touch`), whatever `touch_layout` says.
+    touch: bool,
     /// `jed claude …`: run instead of the editor.
     claude: Option<claude::Cli>,
 }
@@ -278,6 +282,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
     let mut authoring = None;
     let mut sample = None;
     let mut perf = false;
+    let mut touch = false;
     let mut args = args.into_iter().peekable();
     if args.peek().map(String::as_str) == Some("claude") {
         let rest: Vec<String> = args.skip(1).collect();
@@ -288,6 +293,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             wait: false,
             authoring: None,
             perf: false,
+            touch: false,
             claude: Some(claude::parse_cli(&rest)?),
         });
     }
@@ -299,6 +305,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             "-s" | "--single" => single = true,
             "--wait" => wait = true,
             "--perf" => perf = true,
+            "--touch" => touch = true,
             "--new-language" => authoring = Some(Authoring::New(args.next().ok_or("--new-language needs an id")?)),
             "--check-language" => {
                 let id = args.next().ok_or("--check-language needs an id")?;
@@ -331,6 +338,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
         wait,
         authoring,
         perf,
+        touch,
         claude: None,
     })
 }
@@ -591,6 +599,7 @@ fn main() -> ExitCode {
             runtime.block_on(async {
                 let mut app = app::App::new_in(mode, workspace, trust_store, initial, identity, kitty);
                 app.editor_hint = hint;
+                app.touch_flag = args.touch;
                 app.startup_terminal = true;
                 if let Some((path, doc)) = initial_hex {
                     app.open_initial_hex(path, doc);
@@ -655,6 +664,14 @@ mod tests {
         assert!(parse(&["--perf", "a.rs"]).unwrap().perf);
         assert!(parse(&["--perf"]).unwrap().perf);
         assert!(!parse(&["a.rs"]).unwrap().perf);
+    }
+
+    #[test]
+    fn touch_flag() {
+        assert!(parse(&["--touch", "a.rs"]).unwrap().touch);
+        assert!(parse(&["--touch"]).unwrap().touch);
+        assert!(!parse(&["a.rs"]).unwrap().touch);
+        assert!(parse(&["--touch", "-s"]).is_err(), "still needs a file");
     }
 
     #[test]

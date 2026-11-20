@@ -105,6 +105,8 @@ fn own_entries(truecolor: bool) -> Vec<(&'static str, Style)> {
     let c = |hex: u32| rgb(hex, truecolor);
     let fg_bg = |fg: u32, bg: u32| Style::new().fg(c(fg)).bg(c(bg));
     vec![
+        // A tab a finger has held down and picked up (touch layout).
+        ("tab.lifted", fg_bg(0xFFFFFF, 0x0E639C)),
         ("editor", fg_bg(0xD4D4D4, 0x1E1E1E)),
         ("editor.lineHighlight", Style::new().bg(c(0x2A2D2E))),
         ("editor.selection", Style::new().bg(c(0x264F78))),

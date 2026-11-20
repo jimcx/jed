@@ -6,7 +6,13 @@
 //! more groups, each bar's top-right corner shows the group's number (`tab.groupNumber`), which
 //! takes the bar's last cells: the `›` arrow then sits one cell left of it. A shell tab's last
 //! glyph (`●` running / `○` idle) is drawn in its state colour.
+//!
+//! `TabMetrics` (`App::tab_metrics`) sets the bar's rows and padding: the touch layout is three
+//! rows with `  name  ×  `, the label, `×`, arrows and group number on the middle row (the other
+//! rows filled with the tab's background), three-cell close and arrow targets, a `+` (new tab) at
+//! the bar's right end, the drop marker across all rows and a lifted tab in `tab.lifted`.
 
+use jtui::tabs::TabMetrics;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use unicode_width::UnicodeWidthStr;
@@ -21,6 +27,28 @@ use crate::theme::Theme;
 pub struct TabBarHit {
     pub tabs: Vec<TabHit>,
     pub arrows: Option<TabArrows>,
+    /// The `+` target's x range (touch layout).
+    pub new_tab: Option<std::ops::Range<u16>>,
+}
+
+/// The furthest a bar `width` cells wide (without its `+`) scrolls, given its tabs' `widths`: the
+/// last tabs fill it (the last one whole). Shared by `render` and the touch swipe.
+pub fn max_scroll(widths: &[u32], width: u16, metrics: TabMetrics) -> usize {
+    let total: u32 = widths.iter().sum();
+    let overflow = total > u32::from(width) && width > 2 * metrics.arrow;
+    let inner = u32::from(width) - if overflow { 2 * u32::from(metrics.arrow) } else { 0 };
+    let mut max = widths.len().saturating_sub(1);
+    let mut used = widths.get(max).copied().unwrap_or(0);
+    while max > 0 && used + widths[max - 1] <= inner {
+        used += widths[max - 1];
+        max -= 1;
+    }
+    max
+}
+
+/// A tab's width in a bar for `metrics`.
+pub fn tab_width(name: &str, metrics: &TabMetrics) -> u16 {
+    metrics.tab_width(name.width() as u16)
 }
 
 /// One tab's label: its text, and how it is marked.
@@ -32,55 +60,9 @@ struct Label {
     mark: Option<&'static str>,
 }
 
-/// The keys that focus the terminal area's first three groups (`Command::FocusTerminal`), shown in their bars.
-pub const TERMINAL_KEYS: [char; 3] = ['t', 'y', 'u'];
-
-/// `active_group`: the focused group's active tab is bright; other groups' active tabs are dimmer.
-/// `drop`: the gap a dragged tab would land in, drawn as one marker cell.
-/// `number`: the group's 1-based place in reading order (a terminal area's group: the letter of its
-/// Cmd key, `TERMINAL_KEYS`), or `None` with a single group.
-#[allow(clippy::too_many_arguments)]
-pub fn render(
-    f: &mut Frame,
-    area: Rect,
-    group: &mut Group,
-    buffers: &Buffers,
-    theme: &Theme,
-    active_group: bool,
-    drop: Option<usize>,
-    number: Option<String>,
-) -> TabBarHit {
-    // A group squeezed out of a tiny window can lie outside the frame.
-    let area = area.intersection(f.area());
-    let out = f.buffer_mut();
-    out.set_style(area, theme.get("tabBar"));
-    if area.width == 0 || area.height == 0 {
-        return TabBarHit::default();
-    }
-
-    // The number takes the bar's last cells; the tabs, arrows and drop marker stay in `bar`,
-    // left of it. Clicking those cells is a click on the bar (`Hit::TabBar`), which focuses it.
-    let label = number;
-    let label_w = label.as_ref().map_or(0, |l| l.width() as u16).min(area.width);
-    let bar = Rect {
-        width: area.width - label_w,
-        ..area
-    };
-    if let Some(label) = &label {
-        out.set_stringn(
-            area.x + bar.width,
-            area.y,
-            label,
-            label_w as usize,
-            theme.get("tab.groupNumber"),
-        );
-    }
-    if bar.width == 0 {
-        return TabBarHit::default();
-    }
-
-    // Label and width for every tab: " name ● " / " name × ".
-    let labels: Vec<Label> = group
+/// Label of every tab of `group`.
+fn labels(group: &Group, buffers: &Buffers) -> Vec<Label> {
+    group
         .tabs
         .iter()
         .map(|t| match t {
@@ -139,30 +121,101 @@ pub fn render(
                 }
             }
         })
-        .collect();
-    if labels.is_empty() {
+        .collect()
+}
+
+/// Every tab's width in a bar for `metrics` (what `render` lays out and the touch swipe scrolls by).
+pub fn widths(group: &Group, buffers: &Buffers, metrics: &TabMetrics) -> Vec<u32> {
+    labels(group, buffers)
+        .iter()
+        .map(|l| u32::from(tab_width(&l.name, metrics)))
+        .collect()
+}
+
+/// The keys that focus the terminal area's first three groups (`Command::FocusTerminal`), shown in their bars.
+pub const TERMINAL_KEYS: [char; 3] = ['t', 'y', 'u'];
+
+/// `active_group`: the focused group's active tab is bright; other groups' active tabs are dimmer.
+/// `drop`: the gap a dragged tab would land in, drawn as one marker cell.
+/// `number`: the group's 1-based place in reading order (a terminal area's group: the letter of its
+/// Cmd key, `TERMINAL_KEYS`), or `None` with a single group.
+/// `lifted`: the tab a finger has picked up (touch layout).
+#[allow(clippy::too_many_arguments)]
+pub fn render(
+    f: &mut Frame,
+    area: Rect,
+    group: &mut Group,
+    buffers: &Buffers,
+    theme: &Theme,
+    active_group: bool,
+    drop: Option<usize>,
+    number: Option<String>,
+    metrics: &TabMetrics,
+    lifted: Option<usize>,
+) -> TabBarHit {
+    // A group squeezed out of a tiny window can lie outside the frame.
+    let area = area.intersection(f.area());
+    let out = f.buffer_mut();
+    out.set_style(area, theme.get("tabBar"));
+    if area.width == 0 || area.height == 0 {
         return TabBarHit::default();
     }
-    let width = |name: &str| name.width() as u16 + 4;
+
+    // The number takes the bar's last cells; the tabs, arrows and drop marker stay in `bar`,
+    // left of it. Clicking those cells is a click on the bar (`Hit::TabBar`), which focuses it.
+    let label = number;
+    let label_w = label.as_ref().map_or(0, |l| l.width() as u16).min(area.width);
+    let bar = Rect {
+        width: area.width - label_w,
+        ..area
+    };
+    let text_y = area.y + metrics.text_row(area.height);
+    if let Some(label) = &label {
+        out.set_stringn(
+            area.x + bar.width,
+            text_y,
+            label,
+            label_w as usize,
+            theme.get("tab.groupNumber"),
+        );
+    }
+    if bar.width == 0 {
+        return TabBarHit::default();
+    }
+    // The touch layout's `+` takes the bar's right end; the tabs and arrows share what's left.
+    let mut bar = bar;
+    let mut new_tab = None;
+    if metrics.new_tab > 0 && bar.width > metrics.new_tab {
+        bar.width -= metrics.new_tab;
+        let x = bar.x + bar.width;
+        let style = theme.get("tab.scrollArrow");
+        out.set_style(Rect::new(x, bar.y, metrics.new_tab, bar.height), style);
+        out.set_string(x + metrics.new_tab / 2, text_y, "+", style);
+        new_tab = Some(x..x + metrics.new_tab);
+    }
+
+    // Label and width for every tab: " name ● " / " name × ".
+    let labels = labels(group, buffers);
+    if labels.is_empty() {
+        return TabBarHit {
+            new_tab,
+            ..TabBarHit::default()
+        };
+    }
+    let width = |name: &str| tab_width(name, metrics);
     let widths: Vec<u32> = labels.iter().map(|l| width(&l.name) as u32).collect();
     let total: u32 = widths.iter().sum();
 
     // Tabs wider than the bar: `‹` / `›` at its ends scroll it, the tabs between them.
-    let overflow = total > bar.width as u32 && bar.width >= 3;
+    let overflow = total > bar.width as u32 && bar.width > 2 * metrics.arrow;
     let (left, right) = if overflow {
-        (bar.x + 1, bar.x + bar.width - 1)
+        (bar.x + metrics.arrow, bar.x + bar.width - metrics.arrow)
     } else {
         (bar.x, bar.x + bar.width)
     };
     let inner = (right - left) as u32;
     let last = labels.len() - 1;
-    // The furthest the bar scrolls: the last tabs fill it (the last one whole).
-    let mut max_scroll = last;
-    let mut used = widths[last];
-    while max_scroll > 0 && used + widths[max_scroll - 1] <= inner {
-        used += widths[max_scroll - 1];
-        max_scroll -= 1;
-    }
+    let max_scroll = max_scroll(&widths, bar.width, *metrics);
 
     // Scroll so the active tab is fully visible, when it or the bar's width changed since the
     // last reveal; otherwise the bar stays where the wheel or an arrow left it.
@@ -187,12 +240,18 @@ pub fn render(
                 "tab.scrollArrow.disabled"
             })
         };
-        out.set_string(bar.x, area.y, "‹", arrow(group.scroll > 0));
-        out.set_string(right, area.y, "›", arrow(group.scroll < max_scroll));
-        arrows = Some(TabArrows {
-            back: bar.x,
-            forward: right,
-        });
+        let (back_style, forward_style) = (arrow(group.scroll > 0), arrow(group.scroll < max_scroll));
+        let (back, forward) = (bar.x..left, right..bar.x + bar.width);
+        if metrics.arrow > 1 {
+            out.set_style(Rect::new(back.start, bar.y, metrics.arrow, bar.height), back_style);
+            out.set_style(
+                Rect::new(forward.start, bar.y, metrics.arrow, bar.height),
+                forward_style,
+            );
+        }
+        out.set_string(back.start + metrics.arrow_reach(), text_y, "‹", back_style);
+        out.set_string(forward.start + metrics.arrow_reach(), text_y, "›", forward_style);
+        arrows = Some(TabArrows { back, forward });
     }
 
     let mut hits = Vec::new();
@@ -209,6 +268,7 @@ pub fn render(
         } = label;
         let w = width(name).min(right - x);
         let style = match (i == group.active, active_group) {
+            _ if lifted == Some(i) => theme.get("tab.lifted"),
             (true, true) => theme.get("tab.active"),
             (true, false) => theme.get("tab.unfocusedActive"),
             _ => theme.get("tab.inactive"),
@@ -218,7 +278,7 @@ pub fn render(
                 x,
                 y: area.y,
                 width: w,
-                height: 1,
+                height: area.height,
             },
             style,
         );
@@ -227,25 +287,32 @@ pub fn render(
         } else {
             style
         };
-        out.set_stringn(x + 1, area.y, name, w.saturating_sub(1) as usize, name_style);
+        out.set_stringn(
+            x + metrics.pad,
+            text_y,
+            name,
+            w.saturating_sub(metrics.pad) as usize,
+            name_style,
+        );
         if let Some(key) = mark
             && let Some(glyph) = name.chars().last()
         {
             // The state glyph is the label's last cell, in its own colour (the tab's otherwise).
-            let glyph_x = x + name.width() as u16;
+            let glyph_x = x + metrics.pad - 1 + name.width() as u16;
             if glyph_x < x + w && glyph_x < right {
-                out.set_stringn(glyph_x, area.y, glyph.to_string(), 1, style.patch(theme.get(key)));
+                out.set_stringn(glyph_x, text_y, glyph.to_string(), 1, style.patch(theme.get(key)));
             }
         }
-        let close_x = x + w.saturating_sub(2);
-        if close_x > x + 1 && close_x < right {
-            out.set_stringn(close_x, area.y, if *dirty { "●" } else { "×" }, 1, style);
+        let close_x = x + w.saturating_sub(metrics.pad + 1);
+        if close_x > x + metrics.pad && close_x < right {
+            out.set_stringn(close_x, text_y, if *dirty { "●" } else { "×" }, 1, style);
         }
         hits.push(TabHit {
             index: i,
             x0: x,
             x1: x + w,
-            close_x,
+            close_x0: close_x.saturating_sub(metrics.close_reach()).max(x),
+            close_x1: (close_x + metrics.close_reach() + 1).min(x + w).max(close_x + 1),
         });
         x += w;
     }
@@ -266,10 +333,14 @@ pub fn render(
                 x,
                 y: area.y,
                 width: 1,
-                height: 1,
+                height: area.height,
             },
             theme.get("tab.dropMarker"),
         );
     }
-    TabBarHit { tabs: hits, arrows }
+    TabBarHit {
+        tabs: hits,
+        arrows,
+        new_tab,
+    }
 }

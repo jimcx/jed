@@ -255,8 +255,12 @@ impl App {
                     Some(self.ui.terminal_height),
                 )
                 .terminal?;
-                // Border and tab bar above the terminal, the scroll bar's column beside it.
-                Some((t.height.saturating_sub(2), t.width.saturating_sub(1)))
+                // Border above the terminal, then the tab bar (`bar_and_rest`: 3 rows in the touch
+                // layout), the scroll bar's column beside it.
+                let below_border = ratatui::layout::Rect::new(t.x, t.y + 1, t.width, t.height.saturating_sub(1));
+                let (_, rest) =
+                    crate::layout::bar_and_rest(below_border, self.tab_metrics(), self.settings.tabs_at_bottom);
+                Some((rest.height, t.width.saturating_sub(1)))
             })
             .flatten()
             .filter(|&(rows, cols)| rows > 0 && cols > 0);

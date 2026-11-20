@@ -65,6 +65,7 @@ Summary only: [docs/dev/app.md](../../../docs/dev/app.md) has each submodule in 
 - `review_forge.rs` — drafts in the forge's pending review (`review_drafts_on_forge`): the queue of add / edit / delete jobs (never for Claude's drafts), reconcile of the forge's pending review into the drafts, Discard Review
 - `scrollbar.rs` — scroll bars: `with_scrollable(target, f)`, clicks, drags, hover
 - `tab_drag.rs` — dragging a tab (`Drag::Tab`): reordering, moving between groups, edge drops that split, the shaded zone (`tab_drop_shade`), terminal-area groups and docking (`can_dock`)
+- `touch.rs` — the touch layout (`--touch` / `touch_layout`): `App::touch()` / `tab_metrics()` (every tab bar's rows and padding), a finger on a tab bar (`Drag::Press`: swipe scrolls, tap acts on release, hold lifts a tab into `Drag::Tab`), the `+` (`new_tab_in`)
 - `mouse.rs` — clicks, drags and the wheel via the last frame's `HitMap`; a `Moved` event redraws only when its handler sets `needs_redraw`; a terminal program that asked for the mouse gets it (`terminal_mouse`), else a drag selects (`terminal_select`); word-wise drags after a double-click (`round_word_drag`, `round_run_drag`); `ClickTracker` (from `jtui::clicks`), `Drag`
 - `mode.rs` — `Mode::{Workspace, SingleFile}` (`app.mode`, `jed -s`): `allows(cmd)` / `allows_view(panel)`, the one availability check (`execute`, palette, activity bar, icon clicks)
 

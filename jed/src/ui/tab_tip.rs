@@ -18,7 +18,14 @@ pub fn render(f: &mut Frame, app: &App, groups: &[GroupHit]) {
         return;
     };
     let screen = f.area();
-    let y = g.tab_bar.y + 1;
+    // Under the bar (above it in the touch layout's bottom bars, which would otherwise cover the
+    // status bar's neighbour).
+    let y = if app.touch() && app.settings.tabs_at_bottom {
+        let Some(y) = g.tab_bar.y.checked_sub(1) else { return };
+        y
+    } else {
+        g.tab_bar.y + g.tab_bar.height.max(1)
+    };
     if y >= screen.bottom() || screen.width < 3 {
         return;
     }

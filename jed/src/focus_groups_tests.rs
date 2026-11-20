@@ -188,16 +188,16 @@ async fn focus_groups_an_overflowing_bar_keeps_its_number_and_the_arrow_moves_le
         .groups
         .iter()
         .find(|g| g.id == ids[0])
-        .and_then(|g| g.tab_arrows)
+        .and_then(|g| g.tab_arrows.clone())
         .expect("the left group's tabs overflow its bar");
     assert_eq!(corner(&app, &term, ids[0]), '1');
     assert_eq!(
-        arrows.forward,
+        arrows.forward.start,
         bar.x + bar.width - 2,
         "the arrow moved left of the number"
     );
     let row = &lines(&term)[bar.y as usize];
-    assert_eq!(row.chars().nth(arrows.forward as usize), Some('›'));
+    assert_eq!(row.chars().nth(arrows.forward.start as usize), Some('›'));
 
     // Clicking the number still focuses the group (the arrow did not take its cell).
     assert_eq!(app.groups.active, ids[1]);

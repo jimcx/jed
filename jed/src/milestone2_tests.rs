@@ -80,15 +80,18 @@ async fn milestone_2_tab_bar_scrolls() {
         app.hits.groups[0].tabs.iter().any(|t| t.index == 7),
         "the active tab is drawn"
     );
-    let bars = app.hits.groups[0].tab_arrows.expect("tabs wider than the bar: arrows");
+    let bars = app.hits.groups[0]
+        .tab_arrows
+        .clone()
+        .expect("tabs wider than the bar: arrows");
     let y = app.hits.groups[0].tab_bar.y;
     let screen = term.backend().buffer();
-    assert_eq!(screen[(bars.back, y)].symbol(), "‹");
-    assert_eq!(screen[(bars.forward, y)].symbol(), "›");
+    assert_eq!(screen[(bars.back.start, y)].symbol(), "‹");
+    assert_eq!(screen[(bars.forward.start, y)].symbol(), "›");
     let arrow = app.theme.get("tab.scrollArrow").fg.unwrap();
     let disabled = app.theme.get("tab.scrollArrow.disabled").fg.unwrap();
-    assert_eq!(screen[(bars.back, y)].fg, arrow, "tabs to the left");
-    assert_eq!(screen[(bars.forward, y)].fg, disabled, "the last tab is shown");
+    assert_eq!(screen[(bars.back.start, y)].fg, arrow, "tabs to the left");
+    assert_eq!(screen[(bars.forward.start, y)].fg, disabled, "the last tab is shown");
 
     // The wheel over the bar moves it a tab at a time, without focusing the group.
     let focus = app.ui.focus;
@@ -101,13 +104,13 @@ async fn milestone_2_tab_bar_scrolls() {
     app.mouse(MouseEventKind::ScrollDown, x, y);
 
     // The arrows move it too; the end one stops at the furthest the tabs fit.
-    app.mouse(MouseEventKind::Down(MouseButton::Left), bars.back, y);
+    app.mouse(MouseEventKind::Down(MouseButton::Left), bars.back.start, y);
     assert_eq!(app.group().scroll, first - 1);
-    app.mouse(MouseEventKind::Down(MouseButton::Left), bars.forward, y);
+    app.mouse(MouseEventKind::Down(MouseButton::Left), bars.forward.start, y);
     draw(&mut app, &mut term);
     assert_eq!(app.group().scroll, first);
     for _ in 0..3 {
-        app.mouse(MouseEventKind::Down(MouseButton::Left), bars.forward, y);
+        app.mouse(MouseEventKind::Down(MouseButton::Left), bars.forward.start, y);
         draw(&mut app, &mut term);
     }
     assert_eq!(app.group().scroll, first, "no further than the last tabs fit");
