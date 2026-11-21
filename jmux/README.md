@@ -106,7 +106,7 @@ editing in the search bar and the side bar's filter (`search.field.*`) have name
 |---|---|---|---|
 | `shell` | string | `$SHELL`, else `/bin/sh` | The program a new terminal runs |
 | `scrollback` | whole number, 0-10000000 | 5000 | Lines kept above a terminal's screen |
-| `scrollback_compression` | true / false | false | Keep old scrollback lines zstd-compressed (less memory, some CPU) |
+| `scrollback_compression` | true / false | true | Keep old scrollback lines zstd-compressed (less memory, some CPU) |
 | `command_history` | whole number, 0-100000 | 500 | The most commands the side bar keeps |
 | `side_bar_width` | whole number, 1-500 | 32 | The side bar's width in columns |
 | `cursor_style` | `"block"`, `"line"`, `"underline"` | `"block"` | The host terminal's cursor while attached |

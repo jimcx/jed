@@ -214,7 +214,7 @@ impl Default for Settings {
             spell_check_language: crate::spellcheck::DEFAULT_LANGUAGE.to_string(),
             spell_check_ignore_words: Vec::new(),
             spell_check_off_languages: Vec::new(),
-            scrollback_compression: false,
+            scrollback_compression: true,
             review_drafts_on_forge: true,
         }
     }

@@ -36,7 +36,7 @@ impl Default for Settings {
         Settings {
             shell: None,
             scrollback: jterm::run::SCROLLBACK,
-            scrollback_compression: false,
+            scrollback_compression: true,
             command_history: COMMAND_HISTORY,
             side_bar_width: crate::side::DEFAULT_WIDTH,
             cursor_style: CursorStyle::Block,
@@ -178,7 +178,7 @@ mod tests {
                     cursor_style = \"star\"\ntabs_at_bottom = 1\nshell = \"/bin/dash\"\n";
         let (s, errors) = parse(text);
         assert_eq!((s.scrollback, s.shell), (10, Some("/bin/dash".into())));
-        assert!(!s.scrollback_compression && s.command_history == 500 && s.cursor_style == CursorStyle::Block);
+        assert!(s.scrollback_compression && s.command_history == 500 && s.cursor_style == CursorStyle::Block);
         assert!(!s.tabs_at_bottom);
         assert_eq!(errors.len(), 5, "{errors:?}");
         for (error, line) in errors.iter().zip([2, 3, 4, 5, 6]) {

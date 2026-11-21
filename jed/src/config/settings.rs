@@ -31,7 +31,7 @@
 //! | `spell_check_language` | str | `"en_AU"` | The dictionary (Hunspell name; docs/spell-check.md)      |
 //! | `spell_check_ignore_words` | str list | `[]` | Extra words accepted everywhere (case-insensitive)   |
 //! | `spell_check_off_languages` | str list | `[]` | Language ids not spell-checked, e.g. `["log"]`       |
-//! | `scrollback_compression` | bool | false | Keep old scrollback lines zstd-compressed (less memory)     |
+//! | `scrollback_compression` | bool | true  | Keep old scrollback lines zstd-compressed (less memory)     |
 //! | `review_drafts_on_forge` | bool | true | A saved review comment goes to the forge's pending review     |
 //!
 //! Precedence, per key: defaults ← `settings.toml` ← `.workspace` (`layer`). `[window]` (`title`, `status_bar`) layers the same way (`WindowConfig::layered`).
@@ -445,7 +445,7 @@ pub const TEMPLATE: &str = "\
 # spell_check_language = \"en_AU\"  # the dictionary: en_AU ships, others via scripts/fetch-dictionary
 # spell_check_ignore_words = []  # extra accepted words, e.g. [\"tokio\"]; more in dictionary.txt
 # spell_check_off_languages = []  # language ids not checked, e.g. [\"log\"]
-# scrollback_compression = false  # keep old scrollback lines compressed: less memory, a little CPU
+# scrollback_compression = true  # keep old scrollback lines compressed: less memory, a little CPU
 # review_drafts_on_forge = true  # a saved review comment goes to the forge's pending review
 
 # The language server for a language id (a built-in one's, such as python, or a syntax plugin's),
@@ -614,17 +614,17 @@ mod tests {
     }
 
     #[test]
-    fn scrollback_compression_is_off_unless_asked_and_the_workspace_wins() {
-        assert!(!Settings::default().scrollback_compression);
-        let user = set("[settings]\nscrollback_compression = true\n");
-        assert!(layer(&user, &SettingsOverrides::default()).scrollback_compression);
-        let ws = set("[settings]\nscrollback_compression = false\n");
+    fn scrollback_compression_is_on_unless_turned_off_and_the_workspace_wins() {
+        assert!(Settings::default().scrollback_compression);
+        let user = set("[settings]\nscrollback_compression = false\n");
+        assert!(!layer(&user, &SettingsOverrides::default()).scrollback_compression);
+        let ws = set("[settings]\nscrollback_compression = true\n");
         assert!(
-            !layer(&user, &ws).scrollback_compression,
+            layer(&user, &ws).scrollback_compression,
             "the workspace overrides the user"
         );
-        let ws_on = set("[settings]\nscrollback_compression = true\n");
-        assert!(layer(&SettingsOverrides::default(), &ws_on).scrollback_compression);
+        let ws_off = set("[settings]\nscrollback_compression = false\n");
+        assert!(!layer(&SettingsOverrides::default(), &ws_off).scrollback_compression);
     }
 
     #[test]

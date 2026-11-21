@@ -35,7 +35,7 @@ Rules for one area or feature, moved out of the root `CLAUDE.md` (which keeps th
 
 ## Terminal scrollback compression
 
-- **`scrollback_compression`** (setting, off by default; user file, `.workspace` overrides) is read when a shell or task run is created (`Settings::scrollback_options()` → `tasks::run::Scrollback`, which a bare line count converts into). It calls the vt100 fork's `Screen::set_scrollback_compression`: rows well behind the viewport sit in zstd blocks (`vt100`'s `cold.rs`) and `set_scrollback` thaws what the viewport needs, so `tasks::search` and `select` read scrollback exactly as before (a search past the cold rows decompresses them, and they are recompressed once the view returns near the bottom). Don't read scrollback rows any other way than through `set_scrollback` + `cell`.
+- **`scrollback_compression`** (setting, on by default; user file, `.workspace` overrides) is read when a shell or task run is created (`Settings::scrollback_options()` → `tasks::run::Scrollback`, which a bare line count converts into). It calls the vt100 fork's `Screen::set_scrollback_compression`: rows well behind the viewport sit in zstd blocks (`vt100`'s `cold.rs`) and `set_scrollback` thaws what the viewport needs, so `tasks::search` and `select` read scrollback exactly as before (a search past the cold rows decompresses them, and they are recompressed once the view returns near the bottom). Don't read scrollback rows any other way than through `set_scrollback` + `cell`.
 
 ## Terminal command capture
 
