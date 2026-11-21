@@ -2,6 +2,7 @@
 //! above the status bar, and writes its `HitMap` part.
 
 use ratatui::Frame;
+use ratatui::widgets::Clear;
 
 use crate::app::App;
 use crate::hit::MenuHit;
@@ -29,6 +30,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     let theme = &app.theme;
     let base = theme.get("menu");
+    // Blank what was drawn under the menu (the shells' text), not just restyle it.
+    f.render_widget(Clear, area);
     let out = f.buffer_mut();
     out.set_style(area, base);
     let shown = &content[scroll..scroll + usize::from(area.height)];

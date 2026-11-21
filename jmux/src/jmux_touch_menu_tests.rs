@@ -5,7 +5,8 @@
 //! Covered by `jmux_touch_menu_*`: with `--touch` no group draws a bar, each shell is the bar's
 //! rows taller and told so, the status bar starts with `☰`, and a plain client keeps its bars with
 //! no `☰` (`..._the_layout_...`); the menu drawn above the status bar at a phone's width and a wide
-//! one, active tab highlighted, an empty row between items (`..._drawn_...`); a hit on each row of
+//! one, active tab highlighted, an empty row between items (`..._drawn_...`), the shell's text
+//! blanked under it (`..._hides_...`); a hit on each row of
 //! each item (`..._every_row_...`); picking a tab, New Tab, and an action added in one line
 //! (`..._picking_a_tab_...`, `..._new_tab_...`, `..._an_added_action_...`); an outside tap and a
 //! tap on `☰` close without acting, a tap acts at the release (`..._outside_...`, `..._acts_on_...`);
@@ -128,6 +129,23 @@ async fn jmux_touch_menu_is_drawn_above_the_status_bar_with_padded_items() {
         }
         // The menu button is highlighted while it is open.
         assert_ne!(h.bg_at(1, 29), h.bg_at(10, 29));
+    }
+}
+
+/// The menu blanks the shell text under it: no character drawn behind it shows through.
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_touch_menu_hides_the_text_behind_it() {
+    let mut h = Harness::new(16, 40, "", true).await;
+    h.settle("a prompt", |h| h.text().contains("$")).await;
+    let lines: String = (1..=20).map(|i| format!("{}{i}\\n", "X".repeat(36))).collect();
+    h.app.type_text(&format!("printf '{lines}'\n"));
+    h.settle("the output", |h| h.text().contains("XXX20")).await;
+    open(&mut h).await;
+    let (area, rows) = rows_of(&h);
+    for (r, row) in rows.iter().enumerate() {
+        let y = area.y + r as u16;
+        let line: String = h.row(y).chars().take(usize::from(area.width)).collect();
+        assert!(!line.contains('X'), "row {y} ({row:?}) shows the shell: {line:?}");
     }
 }
 
