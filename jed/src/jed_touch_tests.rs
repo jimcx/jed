@@ -1393,6 +1393,7 @@ async fn jed_touch_c_a_tap_in_the_terminal_area_beside_the_side_panel_hides_it_a
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.touch_flag = true;
+    app.tasks.shell = jterm::testing::fake_shell();
     app.test_execute(Command::NewShell);
     app.ui.side_visible = true;
     draw_sized(&mut app, 100, 30);
@@ -1401,6 +1402,17 @@ async fn jed_touch_c_a_tap_in_the_terminal_area_beside_the_side_panel_hides_it_a
         app.hits.regions.terminal.expect("the terminal area"),
     );
     assert!(app.ui.side_visible);
+    // Wait for the prompt, or it can land after `before` and move the cursor.
+    assert!(
+        app.settle(|a| a.terminals.active_group().active_shell().is_some_and(|s| s
+            .run
+            .screen()
+            .screen()
+            .contents()
+            .starts_with(jterm::testing::FAKE_PROMPT)))
+            .await,
+        "the shell's prompt"
+    );
     let before = app
         .terminals
         .active_group()
