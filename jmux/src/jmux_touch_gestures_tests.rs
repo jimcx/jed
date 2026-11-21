@@ -13,7 +13,8 @@
 //! (`..._a_hold_on_the_close_target_...`); a stale hold timer does nothing (`..._a_stale_hold_...`);
 //! the real timer lifts a tab (`..._the_real_timer_...`); a plain client's press drags at once
 //! (`..._a_plain_client_...`). Also: a swipe stops at the bar's drawn end, one leaving the bar keeps
-//! scrolling, arrow / `+` / `×` act on release (asking for a running command), the wheel scrolls.
+//! scrolling, arrow / `+` / `×` act on release (asking for a running command), the wheel scrolls,
+//! a swipe moves a long tab column by column (`..._column_by_column`).
 
 use crossterm::event::{MouseButton, MouseEventKind};
 
@@ -408,4 +409,53 @@ async fn jmux_touch_gestures_a_plain_clients_press_on_the_arrow_and_close_target
     let t = h.app.hit.groups[0].tabs[0];
     press(&mut h, t.close_x0, 0);
     assert_eq!(h.tab_count(), 4, "the × closes on press");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_touch_gestures_a_swipe_moves_a_long_tab_column_by_column() {
+    // A first tab wider than the bar: the swipe moves through it, not a whole tab at a time.
+    let mut h = Harness::new(14, 40, "", true).await;
+    h.tabs(2).await;
+    let id = h.app.hit.groups[0].id;
+    let g = h.app.groups.get_mut(id).unwrap();
+    g.tabs[0].title = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ ○".into();
+    g.active = 0;
+    h.app.needs_redraw = true;
+    h.frame().await;
+    h.settle("the long title", |h| h.row(1).contains("abcdefgh")).await;
+    let left = h.app.hit.groups[0].arrows.clone().unwrap().back.end;
+    let t = h.app.hit.groups[0].tabs[0];
+    assert_eq!((t.x0, h.app.groups.active_group().scroll), (left, 0));
+
+    swipe(&mut h, (t.x0 + 10, 1), -6);
+    let g = h.app.groups.active_group();
+    assert_eq!((g.scroll, g.shift), (0, 6), "six columns into the first tab");
+    h.app.needs_redraw = true;
+    h.frame().await;
+    h.settle("the title moved", |h| {
+        h.row(1).contains("efghij") && !h.row(1).contains("abcd")
+    })
+    .await;
+    assert_eq!(h.app.hit.groups[0].tabs[0].x0, left, "the cut tab starts at the arrow");
+
+    // Back the same way, then forward and the back arrow, which shows the cut tab whole.
+    swipe(&mut h, (t.x0 + 10, 1), 6);
+    assert_eq!(h.app.groups.active_group().shift, 0);
+    swipe(&mut h, (t.x0 + 10, 1), -4);
+    assert_eq!(h.app.groups.active_group().shift, 4);
+    h.app.needs_redraw = true;
+    h.frame().await;
+    let back = h.app.hit.groups[0].arrows.clone().unwrap().back;
+    tap(&mut h, back.start + 1, 1);
+    let g = h.app.groups.active_group();
+    assert_eq!((g.scroll, g.shift), (0, 0), "the back arrow shows the cut tab");
+
+    // A long swipe stops with the last tab's right edge at the bar's.
+    swipe(&mut h, (30, 1), -60);
+    h.app.needs_redraw = true;
+    h.frame().await;
+    let g = h.app.groups.active_group();
+    assert!(g.scroll == 0 && g.shift > 6, "still in the long tab: {}", g.shift);
+    let forward = h.app.hit.groups[0].arrows.clone().unwrap().forward;
+    assert_eq!(h.app.hit.groups[0].tabs[1].x1, forward.start);
 }

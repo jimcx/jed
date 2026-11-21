@@ -227,13 +227,12 @@ pub enum Drag {
     Divider(Divider),
     Tab(TabDrag),
     /// A touch press on a bar or a terminal, not yet a tap, a swipe or a hold (`touch_press`);
-    /// `carry` is the swipe's motion not yet worth a whole tab, `serial` tells its `HOLD` timer's
-    /// event apart from an older press's, `event` is the press (replayed by a terminal's tap or hold).
+    /// `serial` tells its `HOLD` timer's event apart from an older press's, `event` is the press
+    /// (replayed by a terminal's tap or hold).
     Press {
         group: GroupId,
         hit: Hit,
         gesture: jtui::touch::Press,
-        carry: i32,
         serial: u64,
         event: MouseEvent,
     },

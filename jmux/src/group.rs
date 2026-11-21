@@ -15,6 +15,9 @@ pub struct Group {
     pub active: usize,
     /// The first tab the bar shows when the tabs overflow it.
     pub scroll: usize,
+    /// Columns of tab `scroll` hidden past the bar's left edge: a touch swipe moves the bar by
+    /// columns, so it can stop part way through a tab. The wheel and the arrows clear it.
+    pub shift: u16,
     /// The (active tab, bar width) the bar last scrolled to reveal; the bar keeps its own scroll
     /// (wheel, arrows) until one of them changes.
     pub revealed: Option<(usize, u16)>,
@@ -77,9 +80,31 @@ impl Group {
     }
 
     /// Scrolls the tab bar by `delta` tabs (the bar clamps it to what fits).
-    pub fn scroll_tabs(&mut self, delta: isize) {
+    /// A tab back from part way through one first shows that tab whole.
+    pub fn scroll_tabs(&mut self, mut delta: isize) {
+        if delta < 0 && self.shift > 0 {
+            delta += 1;
+        }
+        self.shift = 0;
         let last = self.tabs.len().saturating_sub(1);
         self.scroll = self.scroll.saturating_add_signed(delta).min(last);
+    }
+
+    /// The bar's scroll in columns, given its tabs' `widths`: those before `scroll`, plus `shift`.
+    pub fn scroll_offset(&self, widths: &[u32]) -> u32 {
+        widths.iter().take(self.scroll).sum::<u32>() + u32::from(self.shift)
+    }
+
+    /// Scrolls the bar to `offset` columns, given its tabs' `widths` (never past the last tab).
+    pub fn set_scroll_offset(&mut self, mut offset: u32, widths: &[u32]) {
+        let mut i = 0;
+        while i + 1 < widths.len() && offset >= widths[i] {
+            offset -= widths[i];
+            i += 1;
+        }
+        let w = widths.get(i).copied().unwrap_or(1);
+        self.scroll = i;
+        self.shift = offset.min(w.saturating_sub(1)) as u16;
     }
 }
 
@@ -313,6 +338,18 @@ mod tests {
         };
         let options = StartOptions { env, command_ring: 5 };
         ShellTab::new(RunId(id), spec, 5, 20, sink, 100, options, 1)
+    }
+
+    #[test]
+    fn the_scroll_offset_counts_whole_tabs_and_the_shift() {
+        let widths = [10, 20, 5];
+        let mut g = Group::default();
+        g.set_scroll_offset(14, &widths);
+        assert_eq!((g.scroll, g.shift, g.scroll_offset(&widths)), (1, 4, 14));
+        g.set_scroll_offset(10, &widths);
+        assert_eq!((g.scroll, g.shift), (1, 0));
+        g.set_scroll_offset(99, &widths);
+        assert_eq!((g.scroll, g.shift), (2, 4), "never past the last tab");
     }
 
     fn ids(g: &Group) -> Vec<u64> {
