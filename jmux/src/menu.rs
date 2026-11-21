@@ -96,9 +96,9 @@ impl Menu {
 
 /// The menu's area in a `rows` × `cols` screen: its bottom edge on the row above the status bar,
 /// all the width of a narrow screen, at most `MAX_WIDTH` otherwise, `content` rows tall or as many
-/// as fit above the status bar.
-pub fn area(rows: u16, cols: u16, content: usize) -> Rect {
-    let free = rows.saturating_sub(crate::ui::STATUS_ROWS);
+/// as fit above the status bar (`status_rows` tall).
+pub fn area(rows: u16, cols: u16, content: usize, status_rows: u16) -> Rect {
+    let free = rows.saturating_sub(status_rows);
     let height = (content.min(usize::from(free))) as u16;
     Rect::new(0, free - height, cols.min(MAX_WIDTH), height)
 }
@@ -129,8 +129,13 @@ mod tests {
 
     #[test]
     fn the_area_sits_on_the_status_bar_and_stays_on_screen() {
-        assert_eq!(area(30, 80, 10), Rect::new(0, 19, 40, 10));
-        assert_eq!(area(30, 30, 100), Rect::new(0, 0, 30, 29));
+        assert_eq!(area(30, 80, 10, 1), Rect::new(0, 19, 40, 10));
+        assert_eq!(area(30, 30, 100, 1), Rect::new(0, 0, 30, 29));
+        assert_eq!(
+            area(30, 80, 10, 2),
+            Rect::new(0, 18, 40, 10),
+            "above a two-row status bar"
+        );
     }
 
     #[test]

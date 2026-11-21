@@ -399,7 +399,7 @@ impl App {
         } else {
             INITIAL_SIZE
         };
-        let body = ui::body(rows, cols, &self.side);
+        let body = ui::body(rows, cols, &self.side, self.touch);
         let (cells, _) = self.groups.layout(body);
         let area = cells.iter().find(|(id, _)| *id == group).map_or(body, |c| c.1);
         let (text, _) = ui::shell_area(ui::term_area(
@@ -462,7 +462,7 @@ impl App {
         } else {
             INITIAL_SIZE
         };
-        self.groups.layout(ui::body(rows, cols, &self.side)).0
+        self.groups.layout(ui::body(rows, cols, &self.side, self.touch)).0
     }
 
     /// Runs a command. Commands never look at keys.

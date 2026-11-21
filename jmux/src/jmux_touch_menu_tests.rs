@@ -68,23 +68,34 @@ async fn jmux_touch_menu_the_layout_has_no_bars_and_a_button() {
         let mut h = Harness::new(14, 60, text, true).await;
         h.settle("the shell fits", |h| h.shells_fit()).await;
         let g = h.app.hit.groups[0].clone();
-        assert_eq!((g.bar.height, g.term.height, g.term.y), (0, 13, 0), "{text:?}");
+        assert_eq!((g.bar.height, g.term.height, g.term.y), (0, 12, 0), "{text:?}");
         assert!(g.tabs.is_empty() && g.arrows.is_none());
         let id = g.id;
-        assert_eq!(h.shell_size(id), (13, 59), "told the full height");
-        assert_eq!(h.shell_size(id).0, plain.shell_size(plain.app.hit.groups[0].id).0 + 1);
+        assert_eq!(h.shell_size(id), (12, 59), "told the group's full height");
+        assert_eq!(
+            h.shell_size(id).0,
+            plain.shell_size(plain.app.hit.groups[0].id).0,
+            "the bar's row goes to the second status row"
+        );
         assert!(!h.row(0).contains("fakesh ○ ×"), "no tab bar drawn: {}", h.row(0));
         assert!(
-            h.row(13).starts_with(" ☰ work"),
-            "the button then the status bar: {:?}",
+            h.row(12).starts_with(" ☰ work") && h.row(12).trim_end().ends_with("1 terminal"),
+            "the button, the session and the counts: {:?}",
+            h.row(12)
+        );
+        assert!(
+            h.row(13).starts_with("    fakesh") && h.row(13).trim_end().ends_with("detach"),
+            "the title and the hint below: {:?}",
             h.row(13)
         );
-        assert_eq!(h.app.hit.at(0, 13), Some(Hit::Menu));
-        assert_eq!(h.app.hit.at(2, 13), Some(Hit::Menu));
+        for (x, y) in [(0, 12), (2, 12), (0, 13), (2, 13)] {
+            assert_eq!(h.app.hit.at(x, y), Some(Hit::Menu), "the button spans both rows");
+        }
+        assert_eq!(h.app.hit.at(3, 12), None);
         assert_eq!(h.app.hit.at(3, 13), None);
         // A new shell starts at the full height too.
         h.app.run(Command::NewTerminal);
-        assert_eq!(h.shell_size(id), (13, 59));
+        assert_eq!(h.shell_size(id), (12, 59));
     }
     assert_eq!(plain.app.hit.groups[0].bar.height, 1);
     assert!(plain.app.hit.menu_button.is_none());
@@ -100,7 +111,7 @@ async fn jmux_touch_menu_is_drawn_above_the_status_bar_with_padded_items() {
         let (area, rows) = rows_of(&h);
         // pad, tab, pad, tab, pad, tab, pad, separator, pad, New Tab, pad
         assert_eq!((area.x, area.width, area.height), (0, width, 11), "{cols}");
-        assert_eq!(area.y + area.height, 29, "the bottom edge is the status bar's top");
+        assert_eq!(area.y + area.height, 28, "the bottom edge is the status bar's top");
         assert_eq!(rows.len(), 11);
         for i in 0..3 {
             let y = text_y(&h, i);
@@ -184,7 +195,7 @@ async fn jmux_touch_menu_every_row_of_an_item_picks_it() {
             h.settle("the menu", |h| h.app.menu.is_some() && h.app.hit.menu.is_some())
                 .await;
             let (area, _) = rows_of(&h);
-            assert_eq!(area.y + area.height, 29);
+            assert_eq!(area.y + area.height, 28);
             tap(&mut h, 4, y);
             assert!(h.app.menu.is_none(), "row {y} of item {i} picks it and closes the menu");
             assert_eq!(h.active(), i, "row {y}");
@@ -271,8 +282,8 @@ async fn jmux_touch_menu_a_tap_acts_on_release_and_tolerates_jitter() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_touch_menu_a_swipe_scrolls_a_long_menu_and_picks_nothing() {
-    // 9 rows above the status bar; 3 tabs and New Tab are 11 rows.
-    let mut h = Harness::new(10, 40, "", true).await;
+    // 9 rows above the two-row status bar; 3 tabs and New Tab are 11 rows.
+    let mut h = Harness::new(11, 40, "", true).await;
     h.tabs(3).await;
     open(&mut h).await;
     let (area, _) = rows_of(&h);

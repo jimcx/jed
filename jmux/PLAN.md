@@ -80,7 +80,7 @@ One cargo workspace at the repository root; jed is the `jed/` package, the root 
 
 ### Sessions
 - `jmux` — attach to the most recently used session, or start one when there are none
-- `jmux new [-s name] [-c dir] [--touch]`, `jmux attach [-t name] [--touch]` (`--touch`: the touch layout, no tab bars: a `☰` button on the status bar opens a menu of the focused group's tabs, New Tab and further actions, for as long as that client stays attached; bare `jmux --touch` too), `jmux ls`, `jmux kill-session -t name`, `jmux rename-session [-t name] new`
+- `jmux new [-s name] [-c dir] [--touch]`, `jmux attach [-t name] [--touch]` (`--touch`: the touch layout, no tab bars, a two-row status bar (session and counts; title and detach hint): a `☰` button spanning both rows opens a menu of the focused group's tabs, New Tab and further actions, for as long as that client stays attached; bare `jmux --touch` too), `jmux ls`, `jmux kill-session -t name`, `jmux rename-session [-t name] new`
 - `jmux ls` shows name, terminal count, running commands, created time, attached or not
 - Starting `jmux` inside a jmux terminal (`$JMUX` set) is refused with a message
 

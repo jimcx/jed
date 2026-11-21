@@ -16,7 +16,12 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let tabs = items.iter().filter(|i| matches!(i.target, Target::Tab(_))).count();
     let content = menu::rows(tabs, items.len());
     let screen = f.area();
-    let area = menu::area(screen.height, screen.width, content.len());
+    let area = menu::area(
+        screen.height,
+        screen.width,
+        content.len(),
+        crate::ui::status_rows(app.touch),
+    );
     if area.width == 0 || area.height == 0 {
         return;
     }

@@ -218,7 +218,11 @@ async fn jmux_touch_a_plain_client_taking_over_gets_the_normal_layout() {
     })
     .await;
     assert!(!h.app.touch);
-    assert_eq!(h.shell_size(id).0 + 1, tall.0, "the shells give the bar's row up");
+    assert_eq!(
+        h.shell_size(id).0,
+        tall.0,
+        "the tab bar takes the row the second status row gave back"
+    );
     assert_eq!(h.row(0).trim_end(), " fakesh ○ ×");
     // And a touch client taking over again.
     h.take_over(3, true).await;
