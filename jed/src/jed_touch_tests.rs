@@ -3,7 +3,8 @@
 //! group number on the middle row and the drop marker across all rows; tapping any row of a tab
 //! focuses it on release, the close range (3 cells) closes it, the arrows and a swipe scroll an
 //! overflowing bar, the `+` opens a tab in its group, a held tab (the hold event, and once the real
-//! timer) is drawn lifted and drags to another group and onto a split edge; the middle click, the
+//! timer) is drawn lifted and drags to another group and onto a split edge (and a swipe moves a
+//! long tab column by column: `..._column_by_column`); the middle click, the
 //! right click and the wheel work on the pad rows; shells and editors are sized to the area left
 //! over; the setting turns the layout on and off with a settings reload; with neither set nothing
 //! changes.
@@ -281,7 +282,7 @@ async fn jed_touch_a_arrows_and_a_swipe_scroll_an_overflowing_bar() {
     assert_eq!(app.groups.get(id).unwrap().scroll, before - 1);
     draw_sized(&mut app, 60, 20);
 
-    // A swipe left scrolls by whole tabs towards the end and focuses nothing.
+    // A swipe left scrolls towards the end and focuses nothing.
     let active = active_name(&app);
     let start = app.groups.get(id).unwrap().scroll;
     let (x, row) = (arrows.back.end + 20, y + 1);
@@ -302,6 +303,60 @@ async fn jed_touch_a_arrows_and_a_swipe_scroll_an_overflowing_bar() {
     app.mouse(UP, x + 30, row);
     assert_eq!(app.groups.get(id).unwrap().scroll, 0);
     assert!(!app.press_pending() && !app.dragging_tab());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jed_touch_a_a_swipe_moves_a_long_tab_column_by_column() {
+    // A first tab wider than the bar: the swipe moves through it, not a whole tab at a time.
+    let dir = tempfile::tempdir().unwrap();
+    let long = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH.txt";
+    let (mut app, _) = open_app(&dir, &[long, "b.txt"], true);
+    let id = app.groups.active;
+    app.groups.get_mut(id).unwrap().active = 0;
+    let term = draw_sized(&mut app, 60, 20);
+    let g = app.hits.group(id).unwrap().clone();
+    let arrows = g.tab_arrows.clone().expect("the long tab overflows 60 cells");
+    let row = g.tab_bar.y + 1;
+    assert!(row_text(&term, row, 0, 60).contains("abcdefgh"));
+    assert_eq!((g.tabs[0].x0, app.groups.get(id).unwrap().scroll), (arrows.back.end, 0));
+    let swipe = |app: &mut App, x: u16, to: u16| {
+        app.mouse(DOWN, x, row);
+        app.mouse(DRAG, (x + to) / 2, row);
+        app.mouse(DRAG, to, row);
+        app.mouse(UP, to, row);
+    };
+
+    swipe(&mut app, 20, 14);
+    let g = app.groups.get(id).unwrap();
+    assert_eq!((g.scroll, g.shift), (0, 6), "six columns into the first tab");
+    let term = draw_sized(&mut app, 60, 20);
+    let text = row_text(&term, row, 0, 60);
+    assert!(text.contains("efghij") && !text.contains("abcd"), "{text}");
+    assert_eq!(
+        bar_of(&app, id).1[0].x0,
+        arrows.back.end,
+        "the cut tab starts at the arrow"
+    );
+    assert_eq!(active_name(&app), long, "a swipe is no tap");
+
+    // Back the same way, then forward and the back arrow, which shows the cut tab whole.
+    swipe(&mut app, 14, 20);
+    assert_eq!(app.groups.get(id).unwrap().shift, 0);
+    swipe(&mut app, 20, 16);
+    assert_eq!(app.groups.get(id).unwrap().shift, 4);
+    draw_sized(&mut app, 60, 20);
+    tap(&mut app, arrows.back.start + 1, row);
+    let g = app.groups.get(id).unwrap();
+    assert_eq!((g.scroll, g.shift), (0, 0), "the back arrow shows the cut tab");
+
+    // A long swipe stops with the last tab's right edge at the bar's.
+    draw_sized(&mut app, 60, 20);
+    swipe(&mut app, 50, 0);
+    draw_sized(&mut app, 60, 20);
+    let g = app.groups.get(id).unwrap();
+    assert!(g.scroll == 0 && g.shift > 6, "still in the long tab: {}", g.shift);
+    let tabs = bar_of(&app, id).1;
+    assert_eq!(tabs.last().unwrap().x1, arrows.forward.start);
 }
 
 #[tokio::test(flavor = "multi_thread")]

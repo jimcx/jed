@@ -161,6 +161,9 @@ pub struct Group {
     pub active: usize,
     /// First tab shown in the tab bar.
     pub scroll: usize,
+    /// Columns of tab `scroll` hidden past the bar's left edge: a touch swipe moves the bar by
+    /// columns, so it can stop part way through a tab. The wheel and the arrows clear it.
+    pub shift: u16,
     /// The active tab index and tab bar width drawing last scrolled into view: the bar reveals
     /// the active tab only when one of them changes, so the wheel and the bar's arrows can
     /// scroll it away from the active tab.
@@ -329,9 +332,31 @@ impl Group {
     }
 
     /// Moves the tab bar by `delta` tabs (its arrows and the wheel). Drawing clamps it to the
-    /// furthest the tabs fit.
-    pub fn scroll_tabs(&mut self, delta: isize) {
+    /// furthest the tabs fit. A tab back from part way through one first shows that tab whole.
+    pub fn scroll_tabs(&mut self, mut delta: isize) {
+        if delta < 0 && self.shift > 0 {
+            delta += 1;
+        }
+        self.shift = 0;
         self.scroll = self.scroll.saturating_add_signed(delta);
+    }
+
+    /// The tab bar's scroll in columns, given its tabs' `widths`: those before `scroll`, plus
+    /// `shift`.
+    pub fn scroll_offset(&self, widths: &[u32]) -> u32 {
+        widths.iter().take(self.scroll).sum::<u32>() + u32::from(self.shift)
+    }
+
+    /// Scrolls the tab bar to `offset` columns, given its tabs' `widths` (never past the last tab).
+    pub fn set_scroll_offset(&mut self, mut offset: u32, widths: &[u32]) {
+        let mut i = 0;
+        while i + 1 < widths.len() && offset >= widths[i] {
+            offset -= widths[i];
+            i += 1;
+        }
+        let w = widths.get(i).copied().unwrap_or(1);
+        self.scroll = i;
+        self.shift = offset.min(w.saturating_sub(1)) as u16;
     }
 }
 
@@ -714,6 +739,18 @@ mod tests {
             }));
         }
         g
+    }
+
+    #[test]
+    fn the_tab_scroll_offset_counts_whole_tabs_and_the_shift() {
+        let widths = [10, 20, 5];
+        let mut g = Group::default();
+        g.set_scroll_offset(14, &widths);
+        assert_eq!((g.scroll, g.shift, g.scroll_offset(&widths)), (1, 4, 14));
+        g.scroll_tabs(-1);
+        assert_eq!((g.scroll, g.shift), (1, 0), "back shows the cut tab whole");
+        g.set_scroll_offset(99, &widths);
+        assert_eq!((g.scroll, g.shift), (2, 4), "never past the last tab");
     }
 
     #[test]

@@ -710,7 +710,6 @@ mod tests {
                 app.drag = Some(super::super::mouse::Drag::Press {
                     hit: crate::layout::Hit::TabBar(0),
                     gesture: jtui::touch::Press::new((0, 0)),
-                    carry: 0,
                     deadline: at,
                     event: crossterm::event::MouseEvent {
                         kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),

@@ -110,8 +110,6 @@ pub enum Drag {
     Press {
         hit: Hit,
         gesture: jtui::touch::Press,
-        /// Columns swiped but not yet worth a whole tab (tab bars only).
-        carry: i32,
         /// When it becomes a hold (`Timer::TouchHold`).
         deadline: Instant,
         /// The press itself, replayed through the ordinary handling by a tap or a hold on a view

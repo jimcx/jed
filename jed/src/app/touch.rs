@@ -1,7 +1,7 @@
 //! The touch layout (`--touch` or `[settings] touch_layout`): `App::touch` and `tab_metrics` say
 //! which layout is on, and a finger on a tab bar goes through `jtui::touch`'s rules (shared with
 //! jmux). A left press on a bar hit records a pending `Drag::Press` with a `HOLD` deadline (`Timer::TouchHold`).
-//! Motion past `SLOP` is a swipe that scrolls the bar by whole tabs, following the finger; a
+//! Motion past `SLOP` is a swipe that scrolls the bar by columns, following the finger; a
 //! release within `SLOP` is a tap, acted on then (focus a tab, close it, scroll an arrow's tab,
 //! the `+`, focus the group); the timer lifts a tab, after which it is an
 //! ordinary `Drag::Tab` (`tab_drag.rs`).
@@ -128,7 +128,6 @@ impl App {
         self.drag = Some(Drag::Press {
             hit,
             gesture: Press::new((m.column, m.row)),
-            carry: 0,
             deadline: Instant::now() + HOLD,
             event: m,
         });
@@ -242,10 +241,7 @@ impl App {
 
     /// The finger moved while a press is pending: past `SLOP` it scrolls the bar or the view.
     pub(super) fn press_moved(&mut self, column: u16, row: u16) {
-        let Some(Drag::Press {
-            hit, gesture, carry, ..
-        }) = &mut self.drag
-        else {
+        let Some(Drag::Press { hit, gesture, .. }) = &mut self.drag else {
             return;
         };
         let hit = *hit;
@@ -256,9 +252,8 @@ impl App {
             self.swipe_view(hit, (column, row), dx as isize, dy as isize);
             return;
         }
-        // The tabs follow the finger: moving left brings later tabs in.
-        *carry -= dx;
-        let (group, mut carry) = (Self::bar_group(hit), *carry);
+        // The tabs follow the finger, column for column: moving left brings later tabs in.
+        let group = Self::bar_group(hit);
         let metrics = self.tab_metrics();
         // The width the tabs and arrows share, as drawn; a bar without arrows has nothing to scroll.
         let area = self
@@ -269,32 +264,18 @@ impl App {
             && let Some(g) = self.any_group(group)
         {
             let widths = crate::ui::tabs::widths(g, &self.buffers, &metrics);
-            let max_scroll = crate::ui::tabs::max_scroll(&widths, area, metrics);
-            let mut scroll = g.scroll;
-            let width = |i: usize| widths.get(i).map_or(1, |w| *w as i32);
-            loop {
-                if carry >= width(scroll) && scroll < max_scroll {
-                    carry -= width(scroll);
-                    scroll += 1;
-                } else if scroll > 0 && carry <= -width(scroll - 1) {
-                    scroll -= 1;
-                    carry += width(scroll);
-                } else {
-                    break;
-                }
-            }
-            // At either end the rest is no use: it would have to be undone before the bar moved back.
-            if (scroll == 0 && carry < 0) || (scroll >= max_scroll && carry > 0) {
-                carry = 0;
-            }
+            // Never past what the renderer draws, or a reverse swipe would undo undrawn scroll; a
+            // bar the arrows left beyond that only moves back.
+            let max = crate::ui::tabs::max_offset(&widths, area, metrics);
+            let at = g.scroll_offset(&widths);
+            let to = if dx < 0 {
+                (at + dx.unsigned_abs()).min(max.max(at))
+            } else {
+                at.saturating_sub(dx.unsigned_abs())
+            };
             if let Some(g) = self.any_group_mut(group) {
-                g.scroll = scroll;
+                g.set_scroll_offset(to, &widths);
             }
-        } else {
-            carry = 0;
-        }
-        if let Some(Drag::Press { carry: c, .. }) = &mut self.drag {
-            *c = carry;
         }
     }
 
