@@ -135,6 +135,11 @@ pub struct TitleCallback {
     cwd: Option<PathBuf>,
     /// The program's kitty keyboard flags, a stack per screen.
     kitty: KittyStacks,
+    /// The mouse pointer shapes the program asked for (OSC 22), a stack per screen.
+    pointer: PointerStacks,
+    /// Alternate scroll (`CSI ? 1007 h`, on by default as in most terminals): the wheel on the
+    /// alternate screen, with no mouse reporting, sends cursor keys.
+    alternate_scroll: bool,
     /// Answers to the program's queries, waiting for the reader thread to send them.
     replies: Vec<u8>,
     /// The last chunk fed to the parser ended in `ESC`: an `ESC c` (RIS) may straddle chunks.
@@ -190,6 +195,61 @@ impl KittyStacks {
     fn current(&self, alternate: bool) -> u8 {
         let stack = if alternate { &self.alternate } else { &self.main };
         stack.last().copied().unwrap_or(0)
+    }
+
+    fn clear(&mut self) {
+        self.main.clear();
+        self.alternate.clear();
+    }
+}
+
+/// The most OSC 22 pushes a screen's stack keeps (the oldest is dropped past it).
+const POINTER_STACK_LIMIT: usize = 64;
+
+/// The pointer shapes a program set with OSC 22, kitty's form: `OSC 22 ; name ST` (or `=name`)
+/// replaces the top of the active screen's stack, `>name` pushes, `<` pops, and an empty name
+/// resets it; `name` may be a comma-separated list of fallbacks (the first one jtui knows wins).
+/// Queries (`?name`) aren't answered. An entry of `None` is a name we don't pass on: kept so a
+/// later pop stays balanced, but it asks for nothing. The top of the active screen's stack is the
+/// program's shape; none (empty stack) leaves the app's own.
+#[derive(Default)]
+struct PointerStacks {
+    main: Vec<Option<&'static str>>,
+    alternate: Vec<Option<&'static str>>,
+}
+
+impl PointerStacks {
+    fn osc(&mut self, alternate: bool, payload: &[u8]) {
+        let stack = if alternate { &mut self.alternate } else { &mut self.main };
+        let text = String::from_utf8_lossy(payload);
+        let name = |list: &str| list.split(',').find_map(|n| jtui::terminal::pointer_name(n.trim()));
+        match text.as_bytes().first() {
+            Some(b'?') => {}
+            Some(b'<') => {
+                stack.pop();
+            }
+            Some(b'>') => {
+                if stack.len() == POINTER_STACK_LIMIT {
+                    stack.remove(0);
+                }
+                stack.push(name(&text[1..]));
+            }
+            _ => {
+                let list = text.strip_prefix('=').unwrap_or(&text);
+                if list.is_empty() {
+                    stack.clear();
+                } else if let Some(top) = stack.last_mut() {
+                    *top = name(list);
+                } else {
+                    stack.push(name(list));
+                }
+            }
+        }
+    }
+
+    fn current(&self, alternate: bool) -> Option<&'static str> {
+        let stack = if alternate { &self.alternate } else { &self.main };
+        stack.last().copied().flatten()
     }
 
     fn clear(&mut self) {
@@ -265,6 +325,8 @@ impl TitleCallback {
             next_command: 1,
             cwd: None,
             kitty: KittyStacks::default(),
+            pointer: PointerStacks::default(),
+            alternate_scroll: true,
             replies: Vec::new(),
             esc_pending: false,
         }
@@ -273,6 +335,14 @@ impl TitleCallback {
     /// The kitty keyboard flags in force on the screen `alternate` says (0 = legacy keys).
     fn kitty_flags(&self, alternate: bool) -> u8 {
         self.kitty.current(alternate)
+    }
+
+    /// The modes a reset (`ESC c`) or the end of output drops: kitty keyboard flags, pointer
+    /// shapes, alternate scroll back on.
+    fn reset_modes(&mut self) {
+        self.kitty.clear();
+        self.pointer.clear();
+        self.alternate_scroll = true;
     }
 
     /// The answers queued since the last call (no allocation when there are none).
@@ -415,6 +485,8 @@ impl vt100::Callbacks for TitleCallback {
             }
             // OSC 7 `file://host/path`: the shell's directory (a `;` in it split the params).
             [b"7", rest @ ..] => self.cwd = file_url_path(&rest.join(&b';')),
+            // OSC 22: the mouse pointer's shape over the terminal (`PointerStacks`).
+            [b"22", rest @ ..] => self.pointer.osc(screen.alternate_screen(), &rest.join(&b';')),
             // `133;D;<code>`; FinalTerm also allows `133;D` with no code, a success.
             [b"133", b"D", rest @ ..] => {
                 let code = match rest {
@@ -456,6 +528,10 @@ impl vt100::Callbacks for TitleCallback {
                 self.replies.extend_from_slice(format!("\x1b[?{flags}u").as_bytes());
             }
             (None, 'c') if matches!(param(0), None | Some(0)) => self.replies.extend_from_slice(DEVICE_ATTRIBUTES),
+            // DECSET / DECRST 1007, alternate scroll (vt100 hands over each mode it doesn't know).
+            (Some(b'?'), 'h' | 'l') if params.iter().any(|p| p.first() == Some(&1007)) => {
+                self.alternate_scroll = c == 'h';
+            }
             _ => {}
         }
     }
@@ -854,6 +930,26 @@ impl Run {
     pub fn kitty_flags(&self) -> u8 {
         let parser = self.screen();
         parser.callbacks().kitty_flags(parser.screen().alternate_screen())
+    }
+
+    /// The mouse pointer shape the program asked for (OSC 22) on the screen it is on, one of
+    /// `jtui::terminal::POINTER_NAMES`; `None` leaves the app's own.
+    pub fn pointer(&self) -> Option<&'static str> {
+        let parser = self.screen();
+        parser.callbacks().pointer.current(parser.screen().alternate_screen())
+    }
+
+    /// Whether the wheel sends cursor keys (`mouse::alternate_scroll`): the program is on the
+    /// alternate screen without mouse reporting, and hasn't turned alternate scroll off (1007).
+    /// Returns the screen's application-cursor mode for the keys' encoding.
+    pub fn alternate_scroll(&self) -> Option<bool> {
+        let parser = self.screen();
+        let s = parser.screen();
+        (parser.callbacks().alternate_scroll
+            && s.alternate_screen()
+            && s.mouse_protocol_mode() == vt100::MouseProtocolMode::None
+            && s.scrollback() == 0)
+            .then(|| s.application_cursor())
     }
 
     pub fn status(&self) -> Status {
@@ -1400,7 +1496,7 @@ fn feed(parser: &mut vt100::Parser<TitleCallback>, bytes: &[u8]) {
     let mut pos = 0;
     if parser.callbacks().esc_pending && bytes.first() == Some(&b'c') {
         parser.process(&bytes[..1]);
-        parser.callbacks_mut().kitty.clear();
+        parser.callbacks_mut().reset_modes();
         start = 1;
         pos = 1;
     }
@@ -1408,7 +1504,7 @@ fn feed(parser: &mut vt100::Parser<TitleCallback>, bytes: &[u8]) {
         let at = pos + off;
         if bytes.get(at + 1) == Some(&b'c') {
             parser.process(&bytes[start..at + 2]);
-            parser.callbacks_mut().kitty.clear();
+            parser.callbacks_mut().reset_modes();
             start = at + 2;
             pos = start;
         } else {
@@ -1453,7 +1549,7 @@ fn read_output(shared: Arc<Shared>, mut reader: Box<dyn Read + Send>) {
             Err(_) => break,
         }
     }
-    lock(&shared.parser).callbacks_mut().kitty.clear();
+    lock(&shared.parser).callbacks_mut().reset_modes();
     shared.reader_done.store(true, Ordering::Release);
     shared.notify.notify_one();
 }
@@ -2066,6 +2162,49 @@ mod tests {
         // It changes the top only.
         feed_bytes(&mut parser, b"\x1b[>1u\x1b[=0;1u\x1b[<u");
         assert_eq!(flags(&parser), 9);
+    }
+
+    #[test]
+    fn osc_22_pointer_shapes_set_push_pop_per_screen() {
+        let (mut parser, _) = title_parser("t");
+        let shape = |p: &vt100::Parser<TitleCallback>| p.callbacks().pointer.current(p.screen().alternate_screen());
+        assert_eq!(shape(&parser), None, "none until the program asks");
+        feed_bytes(&mut parser, b"\x1b]22;pointer\x07");
+        assert_eq!(shape(&parser), Some("pointer"));
+        // Set replaces the top; a push and a pop; fallbacks pick the first known name.
+        feed_bytes(&mut parser, b"\x1b]22;=crosshair\x1b\\");
+        feed_bytes(&mut parser, b"\x1b]22;>bogus,hand2\x07");
+        assert_eq!(shape(&parser), Some("pointer"));
+        feed_bytes(&mut parser, b"\x1b]22;<\x07");
+        assert_eq!(shape(&parser), Some("crosshair"));
+        // An unknown name asks for nothing, and a pop of it is balanced.
+        feed_bytes(&mut parser, b"\x1b]22;>\x1b[2J\x07");
+        assert_eq!(shape(&parser), None);
+        feed_bytes(&mut parser, b"\x1b]22;<\x07");
+        assert_eq!(shape(&parser), Some("crosshair"));
+        // The alternate screen has its own stack; a query is never answered.
+        feed_bytes(&mut parser, b"\x1b[?1049h\x1b]22;?text\x07");
+        assert_eq!(shape(&parser), None);
+        assert!(parser.callbacks_mut().take_replies().is_empty());
+        feed_bytes(&mut parser, b"\x1b]22;wait\x07\x1b[?1049l");
+        assert_eq!(shape(&parser), Some("crosshair"));
+        // An empty name resets; RIS clears both.
+        feed_bytes(&mut parser, b"\x1b]22;\x07");
+        assert_eq!(shape(&parser), None);
+        feed_bytes(&mut parser, b"\x1b]22;text\x07\x1bc");
+        assert_eq!(shape(&parser), None);
+    }
+
+    #[test]
+    fn alternate_scroll_is_on_until_1007_is_reset() {
+        let (mut parser, _) = title_parser("t");
+        assert!(parser.callbacks().alternate_scroll);
+        feed_bytes(&mut parser, b"\x1b[?1007l");
+        assert!(!parser.callbacks().alternate_scroll);
+        feed_bytes(&mut parser, b"\x1b[?2004;1007h");
+        assert!(parser.callbacks().alternate_scroll);
+        feed_bytes(&mut parser, b"\x1b[?1007l\x1bc");
+        assert!(parser.callbacks().alternate_scroll, "a reset turns it back on");
     }
 
     #[test]

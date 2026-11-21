@@ -7,7 +7,8 @@
 //! three bytes, press-only in mode `Press` (X10's own, `CSI ? 9 h`) and a release as code 3 in
 //! `PressRelease`. Motion is reported while a button is held (`ButtonMotion`, code 32) and always
 //! in `AnyMotion` (code 35); the wheel is buttons 64–67 (also 66 / 67 sideways); Shift / Alt /
-//! Ctrl add 4 / 8 / 16. Nothing while the program hasn't asked for the mouse.
+//! Ctrl add 4 / 8 / 16. Nothing while the program hasn't asked for the mouse; then, on the
+//! alternate screen, `alternate_scroll` turns the wheel into cursor keys.
 
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use vt100::{MouseProtocolEncoding, MouseProtocolMode};
@@ -39,6 +40,20 @@ pub fn encode(event: &MouseEvent, mode: MouseProtocolMode, encoding: MouseProtoc
             vec![0x1b, b'[', b'M', code + MOTION, x, y]
         }
     })
+}
+
+/// Alternate scroll (xterm's mode 1007, on by default in most terminals): the wheel over a
+/// program on the alternate screen that doesn't report the mouse (less, man) sends `lines` cursor
+/// keys up / down (`SS3 A` in application cursor mode, else `CSI A`), so it scrolls the program's
+/// view. `None` for anything but a vertical wheel turn.
+pub fn alternate_scroll(kind: MouseEventKind, application_cursor: bool, lines: usize) -> Option<Vec<u8>> {
+    let key = match kind {
+        MouseEventKind::ScrollUp => b'A',
+        MouseEventKind::ScrollDown => b'B',
+        _ => return None,
+    };
+    let intro = if application_cursor { b'O' } else { b'[' };
+    Some([0x1b, intro, key].repeat(lines))
 }
 
 /// The button number and whether it's a release, or `None` for an event the mode doesn't report.
@@ -99,6 +114,20 @@ mod tests {
     /// `kind` at screen cell (2, 1) — protocol cell (3, 2) — in `mode` with `encoding`.
     fn bytes(kind: MouseEventKind, mode: MouseProtocolMode, encoding: MouseProtocolEncoding) -> Option<Vec<u8>> {
         encode(&event(kind, 2, 1, KeyModifiers::NONE), mode, encoding)
+    }
+
+    #[test]
+    fn alternate_scroll_sends_cursor_keys() {
+        assert_eq!(
+            alternate_scroll(MouseEventKind::ScrollUp, false, 3).unwrap(),
+            b"\x1b[A\x1b[A\x1b[A"
+        );
+        assert_eq!(
+            alternate_scroll(MouseEventKind::ScrollDown, true, 1).unwrap(),
+            b"\x1bOB"
+        );
+        assert_eq!(alternate_scroll(MouseEventKind::ScrollLeft, false, 3), None);
+        assert_eq!(alternate_scroll(MouseEventKind::Moved, false, 3), None);
     }
 
     #[test]

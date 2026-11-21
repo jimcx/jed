@@ -16,7 +16,9 @@
 //! jmux_layout-d (`jmux_layout_d_*`): dragging in a terminal selects (drawn in the theme's
 //! selection colour) and Copy sends the text as OSC 52; double and triple clicks select a path-like
 //! word and the row; a paste types into the shell, bracketed when it asked; a program with mouse
-//! reporting gets the events but Shift keeps them for the selection; the wheel, Shift+PageUp and the
+//! reporting gets the events but Shift keeps them for the selection, and a drag out of its terminal
+//! with the release; the wheel sends a full-screen program cursor keys; a program's OSC 22 pointer
+//! shape shows over its terminal; the wheel, Shift+PageUp and the
 //! scroll bar (click and drag) scroll the scrollback and a typed key returns to the live screen.
 //!
 //! jmux_layout-e (`jmux_layout_e_*`): the search bar finds, counts ("2 of 3") and steps with wrap,
@@ -1985,4 +1987,83 @@ async fn jmux_layout_e_a_real_vi_gets_its_keys() {
     .await;
     assert!(std::fs::read_to_string(&file).unwrap().contains("FROM_VI"));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A program's OSC 22 pointer shape shows over its terminal (also kitty's push / pop), its reset
+/// gives back jmux's I-beam, and elsewhere (the bar) the default stays jmux's.
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_d_a_programs_pointer_shape_shows_over_its_terminal() {
+    let mut h = Harness::new(12, 60).await;
+    h.settle_text("fakesh ○").await;
+    let term = h.app.hit.groups[0].term;
+    h.app.send_mouse(MouseEventKind::Moved, term.x + 2, term.y + 2);
+    h.settle("the text pointer", |h| h.pointer_shapes() == ["text"]).await;
+    let last = |h: &Harness, want: &str| h.pointer_shapes().last().is_some_and(|s| s == want);
+    h.app.type_text("printf '\\033]22;pointer\\007'\n");
+    h.settle("the program's pointer", |h| last(h, "pointer")).await;
+    // Pushed over it (an X11 alias), then popped back to it.
+    h.app.type_text("printf '\\033]22;>xterm,hand2\\033\\\\'\n");
+    h.settle("the pushed shape", |h| last(h, "text")).await;
+    h.app.type_text("printf '\\033]22;<\\007'\n");
+    h.settle("popped back", |h| last(h, "pointer")).await;
+    // An unknown name asks for nothing: jmux's own shape.
+    h.app.type_text("printf '\\033]22;evil\\007'\n");
+    h.settle("an unknown name falls back", |h| last(h, "text")).await;
+    h.app.type_text("printf '\\033]22;wait\\007'\n");
+    h.settle("the program's wait", |h| last(h, "wait")).await;
+    let bar = h.app.hit.groups[0].bar;
+    h.app.send_mouse(MouseEventKind::Moved, bar.x + 1, bar.y);
+    h.settle("the default over the bar", |h| last(h, "default")).await;
+    h.app.send_mouse(MouseEventKind::Moved, term.x + 2, term.y + 2);
+    h.settle("back over the terminal", |h| last(h, "wait")).await;
+    h.app.type_text("printf '\\033]22;\\007'\n");
+    h.settle("the reset", |h| last(h, "text")).await;
+}
+
+/// A press reported to a program keeps the mouse until the release: a drag out of the terminal
+/// (onto the tab bar) still reaches it, clamped to its edge, and so does the release there.
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_d_a_reported_drag_outside_the_terminal_reaches_the_program() {
+    let (mut h, _prog) = Harness::with_program(
+        12,
+        60,
+        "printf '\\033[?1002h\\033[?1006h'; stty raw -echo; dd bs=1 count=28 2>/dev/null | tr '\\033' E",
+    );
+    h.settle("mouse reporting on", |h| {
+        h.app
+            .groups
+            .active_group()
+            .active_tab()
+            .is_some_and(|t| t.run.screen().screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None)
+    })
+    .await;
+    let bar = h.app.hit.groups[0].bar;
+    h.app.send_mouse(MouseEventKind::Down(MouseButton::Left), 5, 4);
+    h.app.send_mouse(MouseEventKind::Drag(MouseButton::Left), 5, bar.y);
+    h.app.send_mouse(MouseEventKind::Up(MouseButton::Left), 5, bar.y);
+    // Press at terminal cell (5, 3); the drag and release on the bar are its top row.
+    h.settle_text("E[<0;6;4ME[<32;6;1ME[<0;6;1m").await;
+    assert!(h.app.drag.is_none(), "the release ended the capture");
+}
+
+/// The wheel over a full-screen program without mouse reporting (less, man) sends it cursor
+/// keys, in its application cursor mode's form.
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_d_the_wheel_sends_cursor_keys_to_a_full_screen_program() {
+    let (mut h, _prog) = Harness::with_program(
+        12,
+        60,
+        "printf '\\033[?1049h\\033[?1h'; stty raw -echo; dd bs=1 count=12 2>/dev/null | tr '\\033' E",
+    );
+    h.settle("the alternate screen", |h| {
+        h.app
+            .groups
+            .active_group()
+            .active_tab()
+            .is_some_and(|t| t.run.alternate_scroll() == Some(true))
+    })
+    .await;
+    h.app.send_mouse(MouseEventKind::ScrollUp, 5, 4);
+    h.app.send_mouse(MouseEventKind::ScrollDown, 5, 4);
+    h.settle_text("EOAEOAEOAEOB").await;
 }

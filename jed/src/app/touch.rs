@@ -307,6 +307,17 @@ impl App {
                 row: at.1,
                 modifiers: crossterm::event::KeyModifiers::NONE,
             };
+            // A full-screen program without mouse reporting (less): a cursor key per row.
+            if let Some(run) = self.any_group(g).and_then(|g| g.active_shell()).map(|s| &s.run)
+                && run.status().is_running()
+                && let Some(app_cursor) = run.alternate_scroll()
+            {
+                if let Some(bytes) = crate::tasks::mouse::alternate_scroll(kind, app_cursor, rows.unsigned_abs()) {
+                    run.write(&bytes);
+                }
+                self.drag = drag;
+                return;
+            }
             let mut reported = false;
             for _ in 0..rows.abs() {
                 reported = self.terminal_mouse(hit, wheel);

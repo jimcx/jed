@@ -8589,7 +8589,8 @@ mod text_pointer {
         );
     }
 
-    /// A shell tab keeps the terminal's own pointer (its program draws the text).
+    /// A shell tab keeps the terminal's own pointer (its program draws the text) unless its
+    /// program sets one (`terminal_mouse_passthrough`).
     #[tokio::test(flavor = "multi_thread")]
     async fn text_pointer_not_over_a_shell() {
         let dir = tempfile::tempdir().unwrap();
@@ -14283,6 +14284,111 @@ mod terminal_osc52 {
             app.settle(|a| a.clipboard.copied("from a task").is_some()).await,
             "copied: {:?}",
             clipboard(&mut app)
+        );
+    }
+}
+
+/// terminal_mouse_passthrough: a program in a shell tab sets the pointer's shape over its screen
+/// with OSC 22 (the default back when it resets it); a press it was reported keeps the mouse
+/// until the release, also dragged out of the screen; the wheel over a full-screen program
+/// without mouse reporting (less, man) sends cursor keys.
+mod terminal_mouse_passthrough {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    use ratatui::layout::Rect;
+
+    use crate::app::App;
+    use crate::shell_tests::{dirs, draw, run_in_shell, screen_text, shell_app};
+    use crate::terminal::Pointer;
+
+    /// A fake shell in the editor area, drawn; its screen's cells.
+    async fn shell(root: &std::path::Path, state: &std::path::Path) -> (App, Rect) {
+        let mut app = shell_app(root, state);
+        app.tasks.shell = jterm::testing::fake_shell();
+        app.new_shell_in_editor();
+        assert!(
+            app.settle(|a| screen_text(a).contains(jterm::testing::FAKE_PROMPT))
+                .await,
+            "the prompt:\n{}",
+            screen_text(&app)
+        );
+        drop(draw(&mut app, 80, 24));
+        let area = app.hits.group(app.groups.active).unwrap().editor;
+        (app, area)
+    }
+
+    /// Everything `keyecho` printed it read, as one hex string.
+    fn echoed(app: &App) -> String {
+        screen_text(app)
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("hex: "))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn hex(bytes: &str) -> String {
+        bytes.bytes().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_programs_pointer_shape_shows_over_its_screen() {
+        let (_d, root, state) = dirs();
+        let (mut app, area) = shell(&root, &state).await;
+        app.mouse(MouseEventKind::Moved, area.x + 2, area.y + 2);
+        assert_eq!(app.pointer, Pointer::Default, "the terminal's own");
+        // Taken from the output, without the mouse moving.
+        run_in_shell(&mut app, "printf '\\033]22;pointer\\007'");
+        assert!(
+            app.settle(|a| a.pointer == Pointer::Named("pointer")).await,
+            "{:?}",
+            app.pointer
+        );
+        run_in_shell(&mut app, "printf '\\033]22;\\007'");
+        assert!(app.settle(|a| a.pointer == Pointer::Default).await, "{:?}", app.pointer);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reported_drag_out_of_the_screen_still_reaches_the_program() {
+        let (_d, root, state) = dirs();
+        let (mut app, area) = shell(&root, &state).await;
+        run_in_shell(&mut app, "printf '\\033[?1002h\\033[?1006h'; keyecho 0");
+        assert!(
+            app.settle(|a| screen_text(a).contains("flags=0")).await,
+            "{}",
+            screen_text(&app)
+        );
+        let (x, y) = (area.x + 5, area.y + 3);
+        app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+        // Up onto the tab bar above the screen, released there.
+        app.mouse(MouseEventKind::Drag(MouseButton::Left), x, area.y - 1);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), x, area.y - 1);
+        let want = hex("\x1b[<0;6;4M\x1b[<32;6;1M\x1b[<0;6;1m");
+        assert!(
+            app.settle(|a| echoed(a) == want).await,
+            "{:?} != {want:?}",
+            echoed(&app)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_wheel_sends_cursor_keys_to_a_full_screen_program() {
+        let (_d, root, state) = dirs();
+        let (mut app, area) = shell(&root, &state).await;
+        run_in_shell(&mut app, "printf '\\033[?1049h'; keyecho 0");
+        assert!(
+            app.settle(|a| screen_text(a).contains("flags=0")).await,
+            "{}",
+            screen_text(&app)
+        );
+        app.mouse(MouseEventKind::ScrollUp, area.x + 2, area.y + 2);
+        let want = hex("\x1b[A\x1b[A\x1b[A");
+        assert!(
+            app.settle(|a| echoed(a) == want).await,
+            "{:?} != {want:?}",
+            echoed(&app)
+        );
+        assert_eq!(
+            app.group().active_shell().unwrap().run.screen().screen().scrollback(),
+            0
         );
     }
 }

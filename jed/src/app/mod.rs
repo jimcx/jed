@@ -392,6 +392,9 @@ pub struct App {
     pub window_focused: bool,
     /// The mouse pointer's shape wanted (`run` sends it when it changes).
     pub pointer: crate::terminal::Pointer,
+    /// The cell the pointer was last over, so a terminal program's OSC 22 shape change (on its
+    /// output) updates `pointer` without the mouse moving (`terminal_output_pointer`).
+    pointer_cell: Option<(u16, u16)>,
     /// The cursor shape the terminal has (`terminal::enter` sent the settings'; `run` sends a
     /// new one through `sync_cursor_shape` when a `.workspace` reload changes it).
     cursor_shape: crate::terminal::CursorShape,
@@ -653,6 +656,7 @@ impl App {
             drag: None,
             window_focused: true,
             pointer: crate::terminal::Pointer::Default,
+            pointer_cell: None,
             find_options: search::Options::default(),
             find: FindWidget::default(),
             term_search: None,
@@ -1338,10 +1342,14 @@ impl App {
             Event::Mouse(m) if self.prompt.is_none() && self.palette.is_some() => {
                 self.palette_mouse(m);
                 self.pointer = self.pointer_at(m.column, m.row);
+                self.pointer_cell = Some((m.column, m.row));
             }
             Event::Mouse(m) if self.prompt.is_none() => self.handle_mouse(m),
             // A prompt swallows the mouse; only its input has the I-beam.
-            Event::Mouse(m) => self.pointer = self.pointer_at(m.column, m.row),
+            Event::Mouse(m) => {
+                self.pointer = self.pointer_at(m.column, m.row);
+                self.pointer_cell = Some((m.column, m.row));
+            }
             // A release never runs a binding or touches other state; only a shell or task program
             // that asked for releases (kitty flag 2) gets it, when nothing else has the keys.
             Event::Key(key)

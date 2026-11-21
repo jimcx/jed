@@ -185,7 +185,7 @@ impl App {
 
     /// A swipe over `group`'s terminal (pressed at `at`) moved `dy` rows: the text follows the
     /// finger, scrolling the scrollback, or a program that reports the mouse gets one wheel event
-    /// per row (at the press, inside its text).
+    /// per row (at the press, inside its text), and a full-screen one without it a cursor key per row.
     fn swipe_terminal(&mut self, group: GroupId, at: (u16, u16), dy: i32) {
         let rows = -dy;
         if rows == 0 {
@@ -206,7 +206,19 @@ impl App {
                 self.terminal_mouse(group, wheel);
             }
         } else if let Some(shell) = self.groups.get(group).and_then(|g| g.active_tab()) {
-            shell.run.scroll(rows as isize);
+            // A full-screen program without mouse reporting (less): a cursor key per row.
+            if let Some(app_cursor) = shell.run.alternate_scroll() {
+                let kind = if rows < 0 {
+                    MouseEventKind::ScrollUp
+                } else {
+                    MouseEventKind::ScrollDown
+                };
+                if let Some(bytes) = jterm::mouse::alternate_scroll(kind, app_cursor, rows.unsigned_abs() as usize) {
+                    shell.run.write(&bytes);
+                }
+            } else {
+                shell.run.scroll(rows as isize);
+            }
         }
     }
 

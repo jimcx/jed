@@ -116,6 +116,13 @@ pub enum Drag {
         /// or row.
         event: MouseEvent,
     },
+    /// A press reported to a terminal's program (`terminal_mouse`): its moves, other buttons and
+    /// the release go to that program until the release, wherever the pointer goes (clamped into
+    /// `area`, the screen's cells), so the program never misses the release (`report_drag`).
+    Report {
+        run: RunId,
+        area: Rect,
+    },
     /// Selecting text in one of the one-line inputs (`app/find.rs`, `app/workspace_search.rs`,
     /// `app/palette.rs`).
     Field(FieldTarget),
@@ -156,6 +163,19 @@ impl App {
         self.tab_tip_mouse(&m, hit);
         self.mouse_event(m);
         self.pointer = self.pointer_at(m.column, m.row);
+        self.pointer_cell = Some((m.column, m.row));
+    }
+
+    /// A terminal's output arrived: its program may have changed its OSC 22 shape, so the pointer
+    /// is worked out again where it last was (not under the cheat sheet or Keyboard Shortcuts,
+    /// which keep the default).
+    pub(super) fn terminal_output_pointer(&mut self) {
+        if let Some((x, y)) = self.pointer_cell
+            && self.cheat_sheet.is_none()
+            && self.keys.is_none()
+        {
+            self.pointer = self.pointer_at(x, y);
+        }
     }
 
     /// The pointer's shape: a resize arrow over a border that drags (and while dragging one,
@@ -182,6 +202,10 @@ impl App {
             Some(Drag::Text { .. } | Drag::AddedText { .. } | Drag::Column | Drag::Diff(_) | Drag::Field(_)) => {
                 Pointer::Text
             }
+            Some(Drag::Report { run, .. }) => self
+                .terminal_run_by_id(*run)
+                .and_then(|r| r.pointer())
+                .map_or(Pointer::Default, Pointer::Named),
             Some(_) => Pointer::Default,
             None if self.prompt.is_some() => {
                 self.text_pointer_if(self.hits.prompt_input.is_some_and(|r| r.contains(p)))
@@ -190,6 +214,12 @@ impl App {
                 self.text_pointer_if(self.hits.palette.is_some_and(|h| h.input.contains(p)))
             }
             None => match self.hits.hit(x, y) {
+                hit @ (Hit::Editor(_) | Hit::Panel)
+                    if let Some((run, area)) = self.terminal_run(hit)
+                        && area.contains(p) =>
+                {
+                    Self::terminal_pointer(run)
+                }
                 Hit::SideBorder => Pointer::ColResize,
                 Hit::PanelBorder | Hit::TerminalBorder | Hit::HistoryDivider | Hit::FileHistoryDivider => {
                     Pointer::RowResize
@@ -272,6 +302,15 @@ impl App {
         if !run.status().is_running() {
             return false;
         }
+        // A full-screen program without mouse reporting (less, man): the wheel sends cursor keys.
+        if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown)
+            && let Some(app_cursor) = run.alternate_scroll()
+        {
+            if let Some(bytes) = mouse::alternate_scroll(m.kind, app_cursor, WHEEL_LINES as usize) {
+                run.write(&bytes);
+            }
+            return true;
+        }
         let bytes = {
             let screen = run.screen();
             let s = screen.screen();
@@ -290,6 +329,9 @@ impl App {
         if let Some(bytes) = bytes {
             let motion = matches!(m.kind, MouseEventKind::Moved | MouseEventKind::Drag(_));
             run.write_mouse(bytes, motion);
+        }
+        if matches!(m.kind, MouseEventKind::Down(_)) {
+            self.drag = Some(Drag::Report { run: run.id, area });
         }
         if m.kind == MouseEventKind::Down(MouseButton::Left) {
             match hit {
@@ -427,6 +469,50 @@ impl App {
     }
 
     /// The run `id` names, in the task tabs or in any group's shell tab.
+    /// An event while a `Drag::Report` holds the mouse: to its program, the pointer clamped into
+    /// its area; the release ends it. A press outside the area means the release was lost (the
+    /// drag is stale): it ends and the press is handled as usual (false). True when taken.
+    fn report_drag(&mut self, m: MouseEvent) -> bool {
+        let Some(Drag::Report { run, area }) = self.drag.clone() else {
+            return false;
+        };
+        if matches!(m.kind, MouseEventKind::Down(_)) && !area.contains(Position::new(m.column, m.row)) {
+            self.drag = None;
+            return false;
+        }
+        if matches!(m.kind, MouseEventKind::Up(_)) {
+            self.drag = None;
+        }
+        if let Some(run) = self.terminal_run_by_id(run)
+            && run.status().is_running()
+        {
+            let bytes = {
+                let screen = run.screen();
+                let s = screen.screen();
+                let cell = MouseEvent {
+                    column: m.column.saturating_sub(area.x).min(area.width.saturating_sub(1)),
+                    row: m.row.saturating_sub(area.y).min(area.height.saturating_sub(1)),
+                    ..m
+                };
+                mouse::encode(&cell, s.mouse_protocol_mode(), s.mouse_protocol_encoding())
+            };
+            if let Some(bytes) = bytes {
+                run.write_mouse(bytes, matches!(m.kind, MouseEventKind::Moved | MouseEventKind::Drag(_)));
+            }
+        }
+        true
+    }
+
+    /// The pointer over a terminal's screen: the shape its program asked for (OSC 22) while it
+    /// runs and the view is live, else the terminal's own (the default).
+    fn terminal_pointer(run: &Run) -> Pointer {
+        let live = run.screen().screen().scrollback() == 0;
+        match run.pointer() {
+            Some(name) if live && run.status().is_running() => Pointer::Named(name),
+            _ => Pointer::Default,
+        }
+    }
+
     fn terminal_run_by_id(&self, id: RunId) -> Option<&Run> {
         self.tasks
             .get(id)
@@ -460,6 +546,9 @@ impl App {
             _ => {}
         }
         if !replay && self.touch_hold_event(&m) {
+            return;
+        }
+        if self.report_drag(m) {
             return;
         }
         let hit = match self.hits.hit(m.column, m.row) {
@@ -681,6 +770,8 @@ impl App {
                 Some(Drag::Hex(_) | Drag::Diff(_) | Drag::Markdown(_)) => {}
                 // Taken by `terminal_select`.
                 Some(Drag::Terminal { .. }) => {}
+                // Taken by `report_drag` before this.
+                Some(Drag::Report { .. }) => {}
                 Some(Drag::FileHistoryDivider) => self.drag_side_section(0, m.row),
                 Some(Drag::HistoryDivider) if self.ui.side_panel == SidePanel::SourceControl => {
                     self.drag_scm_section(m.row)

@@ -67,7 +67,10 @@ keeps its Ctrl+Shift bindings. Others get the usual xterm bytes.
 | Detach | Ctrl+Shift+D | same |
 
 The mouse works too: click a tab or group to focus it, drag a tab to move it, wheel to scroll, drag to select
-(Shift keeps the selection for jmux when a program uses the mouse). Paste is the host terminal's own.
+(Shift keeps the selection for jmux when a program uses the mouse). A program that uses the mouse gets a drag
+and its release even when the pointer leaves its pane; the wheel over a full-screen program without mouse support
+(`less`, `man`) sends it arrow keys; and a program's pointer shape (OSC 22, e.g. a hand over a link) shows over its
+pane in terminals that support it (kitty, foot, WezTerm, Ghostty). Paste is the host terminal's own.
 
 ### keybindings.toml
 

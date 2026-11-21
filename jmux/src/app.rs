@@ -244,6 +244,13 @@ pub enum Drag {
         word: bool,
         text: Rect,
     },
+    /// A press reported to the terminal's program: its moves, other buttons and the release go to
+    /// that program until the button is released, wherever the pointer goes (clamped into
+    /// `text`, its cells on screen), so it never misses the release.
+    Report {
+        run: RunId,
+        text: Rect,
+    },
     /// A scroll bar's thumb, held by its half cell `grab`.
     ScrollBar {
         group: GroupId,
@@ -933,6 +940,13 @@ impl App {
         if self.confirm.is_some() {
             return;
         }
+        // A press outside a reported press's text means its release was lost: that drag is stale.
+        if let Some(Drag::Report { text, .. }) = &self.drag
+            && matches!(m.kind, MouseEventKind::Down(_))
+            && !text.contains(ratatui::layout::Position::new(m.column, m.row))
+        {
+            self.drag = None;
+        }
         if let Some(drag) = &self.drag {
             match (drag, m.kind) {
                 (Drag::Divider(d), MouseEventKind::Drag(MouseButton::Left)) => {
@@ -943,6 +957,13 @@ impl App {
                 (Drag::Tab(_), MouseEventKind::Drag(MouseButton::Left)) => self.tab_drag_to(m.column, m.row),
                 (Drag::Terminal { .. }, MouseEventKind::Drag(MouseButton::Left)) => self.select_drag(m),
                 (Drag::Terminal { .. }, MouseEventKind::Up(_)) => self.select_release(),
+                (Drag::Report { run, text }, _) => {
+                    let (run, text) = (*run, *text);
+                    if matches!(m.kind, MouseEventKind::Up(_)) {
+                        self.drag = None;
+                    }
+                    self.report_to(run, text, m);
+                }
                 (Drag::ScrollBar { group, grab }, MouseEventKind::Drag(MouseButton::Left)) => {
                     let (group, grab) = (*group, *grab);
                     self.scrollbar_drag(group, m.row, grab);
@@ -1112,13 +1133,51 @@ impl App {
             Some(Some(bytes)) => {
                 let motion = matches!(m.kind, MouseEventKind::Drag(_) | MouseEventKind::Moved);
                 shell.run.write_mouse(bytes, motion);
+                if matches!(m.kind, MouseEventKind::Down(_)) {
+                    self.drag = Some(Drag::Report {
+                        run: shell.run.id,
+                        text,
+                    });
+                }
             }
             Some(None) => {}
             None => match m.kind {
+                // A full-screen program without mouse reporting (less, man): cursor keys.
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                    if let Some(app_cursor) = shell.run.alternate_scroll() =>
+                {
+                    if let Some(bytes) = mouse::alternate_scroll(m.kind, app_cursor, WHEEL_LINES as usize) {
+                        shell.run.write(&bytes);
+                    }
+                }
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => self.wheel(group, m.kind),
                 MouseEventKind::Down(MouseButton::Left) => self.select_press(group, text, m),
                 _ => {}
             },
+        }
+    }
+
+    /// An event of a `Drag::Report`: to run `run`'s program, the pointer clamped into `text` (its
+    /// cells on screen), while it still runs and reports the mouse.
+    fn report_to(&mut self, run: RunId, text: Rect, m: MouseEvent) {
+        let Some(run) = self.run_by_id(run) else {
+            return;
+        };
+        if !run.status().is_running() {
+            return;
+        }
+        let bytes = {
+            let screen = run.screen();
+            let s = screen.screen();
+            let cell = MouseEvent {
+                column: m.column.saturating_sub(text.x).min(text.width.saturating_sub(1)),
+                row: m.row.saturating_sub(text.y).min(text.height.saturating_sub(1)),
+                ..m
+            };
+            mouse::encode(&cell, s.mouse_protocol_mode(), s.mouse_protocol_encoding())
+        };
+        if let Some(bytes) = bytes {
+            run.write_mouse(bytes, matches!(m.kind, MouseEventKind::Drag(_) | MouseEventKind::Moved));
         }
     }
 
@@ -1282,8 +1341,10 @@ impl App {
         run.set_scrollback_from_top(scroll.top_at(len, start));
     }
 
-    /// The pointer's shape: a resize arrow over a divider (and while dragging one), the I-beam over
-    /// a terminal unless its program takes the mouse itself, else the default.
+    /// The pointer's shape: a resize arrow over a divider (and while dragging one); over a terminal
+    /// (and while a press is reported to it) the shape its program asked for with OSC 22, else the
+    /// I-beam unless the program takes the mouse itself; elsewhere the default. A view scrolled back
+    /// is jmux's selection, so the program's shape doesn't show there.
     fn desired_pointer(&self) -> Pointer {
         let resize = |d: &Divider| match d.dir {
             SplitDir::Right => Pointer::ColResize,
@@ -1297,6 +1358,12 @@ impl App {
             }
             // Held for the whole selection, as jed holds the I-beam during a text drag.
             Some(Drag::Terminal { .. }) => return Pointer::Text,
+            Some(Drag::Report { run, .. }) => {
+                return self
+                    .run_by_id(*run)
+                    .and_then(|r| r.pointer())
+                    .map_or(Pointer::Default, Pointer::Named);
+            }
             None => {}
         }
         let Some((x, y)) = self.mouse_at else {
@@ -1306,12 +1373,19 @@ impl App {
             Some(Hit::Divider(i)) => self.hit.dividers.get(i).map_or(Pointer::Default, resize),
             Some(Hit::SideBorder) => Pointer::ColResize,
             Some(Hit::Terminal { group }) => {
-                let reporting = self
-                    .groups
-                    .get(group)
-                    .and_then(|g| g.active_tab())
-                    .is_some_and(|s| s.run.screen().screen().mouse_protocol_mode() != MouseProtocolMode::None);
-                if reporting { Pointer::Default } else { Pointer::Text }
+                let Some(run) = self.groups.get(group).and_then(|g| g.active_tab()).map(|s| &s.run) else {
+                    return Pointer::Default;
+                };
+                let (reporting, live) = {
+                    let screen = run.screen();
+                    let s = screen.screen();
+                    (s.mouse_protocol_mode() != MouseProtocolMode::None, s.scrollback() == 0)
+                };
+                match run.pointer() {
+                    Some(name) if live && run.status().is_running() => Pointer::Named(name),
+                    _ if reporting && live => Pointer::Default,
+                    _ => Pointer::Text,
+                }
             }
             _ => Pointer::Default,
         }

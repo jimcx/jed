@@ -500,8 +500,10 @@ impl App {
                 self.notify(level, note);
             }
             Event::Clipboard { text, .. } => self.terminal_clipboard(text),
-            // Output keeps the mouse selection on its text (`Run`'s reader decides).
-            Event::Output(_) | Event::Started(_) => {}
+            // Output keeps the mouse selection on its text (`Run`'s reader decides); it may
+            // change the program's pointer shape.
+            Event::Output(_) => self.terminal_output_pointer(),
+            Event::Started(_) => {}
         }
     }
 

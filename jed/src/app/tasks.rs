@@ -328,7 +328,7 @@ impl App {
     }
 
     /// `AppEvent::Terminal(TerminalEvent::Task)`: output and starts only need a redraw (`handle_app_event` asks for one);
-    /// a program's OSC 52 copy goes onto the clipboard (`terminal_clipboard`).
+    /// a program's OSC 52 copy goes onto the clipboard (`terminal_clipboard`), output may change the pointer's shape.
     /// The mouse selection follows new output in the run's reader (`tasks::select::follow`). An
     /// ended run gets its end note below its output ("Task 'build' exited with code 2"), also
     /// shown in the status bar.
@@ -336,6 +336,7 @@ impl App {
         let id = match ev {
             Event::Ended(id) => id,
             Event::Clipboard { text, .. } => return self.terminal_clipboard(text),
+            Event::Output(_) => return self.terminal_output_pointer(),
             _ => return,
         };
         let Some(run) = self.tasks.get(id) else { return };

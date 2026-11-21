@@ -194,6 +194,8 @@ pub enum Pointer {
     RowResize,
     /// Over text you can type or select in (the I-beam).
     Text,
+    /// A shape a program in a terminal asked for with its own OSC 22: one of `POINTER_NAMES`.
+    Named(&'static str),
 }
 
 impl Pointer {
@@ -203,8 +205,68 @@ impl Pointer {
             Pointer::ColResize => "ew-resize",
             Pointer::RowResize => "ns-resize",
             Pointer::Text => "text",
+            Pointer::Named(name) => name,
         }
     }
+}
+
+/// The pointer shapes OSC 22 names (CSS's cursor names, which kitty, foot, WezTerm and Ghostty
+/// take). A program's request is only passed on when it is one of these, so a terminal's output
+/// never reaches the outer terminal as raw bytes.
+pub const POINTER_NAMES: &[&str] = &[
+    "default",
+    "none",
+    "context-menu",
+    "help",
+    "pointer",
+    "progress",
+    "wait",
+    "cell",
+    "crosshair",
+    "text",
+    "vertical-text",
+    "alias",
+    "copy",
+    "move",
+    "no-drop",
+    "not-allowed",
+    "grab",
+    "grabbing",
+    "e-resize",
+    "n-resize",
+    "ne-resize",
+    "nw-resize",
+    "s-resize",
+    "se-resize",
+    "sw-resize",
+    "w-resize",
+    "ew-resize",
+    "ns-resize",
+    "nesw-resize",
+    "nwse-resize",
+    "col-resize",
+    "row-resize",
+    "all-scroll",
+    "zoom-in",
+    "zoom-out",
+];
+
+/// `name` as one of `POINTER_NAMES` (also from the X11 names kitty accepts for the common ones:
+/// `xterm` / `ibeam`, `hand2`, `left_ptr`, …), or `None` for one we don't pass on.
+pub fn pointer_name(name: &str) -> Option<&'static str> {
+    let css = match name {
+        "left_ptr" | "arrow" => "default",
+        "xterm" | "ibeam" => "text",
+        "hand" | "hand1" | "hand2" | "pointing_hand" => "pointer",
+        "watch" | "clock" => "wait",
+        "question_arrow" | "whats_this" => "help",
+        "crosshair" | "tcross" | "cross" => "crosshair",
+        "fleur" | "move" | "size_all" => "move",
+        "sb_h_double_arrow" | "h_double_arrow" | "size_hor" => "ew-resize",
+        "sb_v_double_arrow" | "v_double_arrow" | "size_ver" => "ns-resize",
+        other => other,
+    };
+    POINTER_NAMES.iter().copied().find(|n| *n == css)
 }
 
 /// Asks the terminal for `pointer`'s shape.
@@ -404,10 +466,21 @@ mod tests {
         set_pointer(&mut out, Pointer::RowResize).unwrap();
         set_pointer(&mut out, Pointer::Text).unwrap();
         set_pointer(&mut out, Pointer::Default).unwrap();
+        set_pointer(&mut out, Pointer::Named("pointer")).unwrap();
         assert_eq!(
             String::from_utf8(out).unwrap(),
-            "\x1b]22;ew-resize\x1b\\\x1b]22;ns-resize\x1b\\\x1b]22;text\x1b\\\x1b]22;default\x1b\\"
+            "\x1b]22;ew-resize\x1b\\\x1b]22;ns-resize\x1b\\\x1b]22;text\x1b\\\x1b]22;default\x1b\\\x1b]22;pointer\x1b\\"
         );
+    }
+
+    #[test]
+    fn pointer_names_are_css_names_or_x11_aliases() {
+        assert_eq!(pointer_name("pointer"), Some("pointer"));
+        assert_eq!(pointer_name("hand2"), Some("pointer"));
+        assert_eq!(pointer_name("xterm"), Some("text"));
+        assert_eq!(pointer_name("nwse-resize"), Some("nwse-resize"));
+        assert_eq!(pointer_name("evil\x1b[2J"), None);
+        assert_eq!(pointer_name(""), None);
     }
 
     fn identity(root: &str, single: Option<&str>) -> Identity {
