@@ -13,7 +13,7 @@ pub use crate::config::settings::SettingsOverrides;
 pub struct WorkspaceConfig {
     pub settings: SettingsOverrides,
     pub files: FilesConfig,
-    pub lsp: BTreeMap<String, LspServer>,
+    pub lsp: LspConfig,
     pub tasks: BTreeMap<String, Task>,
     /// `[environments.<name>]`: variables substituted for `{{NAME}}` in tasks (see `tasks::templates`).
     pub environments: BTreeMap<String, Environment>,
@@ -239,6 +239,65 @@ pub struct FilesConfig {
     pub associations: BTreeMap<String, String>,
 }
 
+/// `[lsp]`: the `[lsp.<language id>]` servers (it derefs to that map) and `idle_stop_minutes`, a
+/// plain key beside them, so no language id can be named that. The value runs nothing: trust and
+/// `commands_hash` cover the servers only.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct LspConfig {
+    pub servers: BTreeMap<String, LspServer>,
+    /// Minutes without user input before the servers stop (`0` = never); see `Workspace::lsp_idle_stop`.
+    pub idle_stop_minutes: Option<u64>,
+}
+
+impl std::ops::Deref for LspConfig {
+    type Target = BTreeMap<String, LspServer>;
+    fn deref(&self) -> &Self::Target {
+        &self.servers
+    }
+}
+
+impl<'de> Deserialize<'de> for LspConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let mut config = LspConfig::default();
+        for (key, value) in BTreeMap::<String, toml::Value>::deserialize(d)? {
+            if key == IDLE_STOP_KEY {
+                match value {
+                    toml::Value::Integer(n) if n >= 0 => config.idle_stop_minutes = Some(n as u64),
+                    _ => {
+                        return Err(D::Error::custom(
+                            "[lsp] `idle_stop_minutes` must be a whole number of minutes (0 = never)",
+                        ));
+                    }
+                }
+            } else {
+                let server = value.try_into().map_err(|e: toml::de::Error| {
+                    D::Error::custom(format!("[lsp.{key}]: {}", e.message().trim_end()))
+                })?;
+                config.servers.insert(key, server);
+            }
+        }
+        Ok(config)
+    }
+}
+
+impl Serialize for LspConfig {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = s.serialize_map(None)?;
+        if let Some(n) = self.idle_stop_minutes {
+            map.serialize_entry(IDLE_STOP_KEY, &n)?;
+        }
+        for (id, server) in &self.servers {
+            map.serialize_entry(id, server)?;
+        }
+        map.end()
+    }
+}
+
+/// The `[lsp]` key that is a setting, not a language id (also read from `settings.toml`).
+pub const IDLE_STOP_KEY: &str = "idle_stop_minutes";
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LspServer {
@@ -290,7 +349,10 @@ pub const TEMPLATE: &str = "\
 # associations = { \"SConstruct\" = \"python\" }  # glob = language
 
 # The language server for a language id. command: a name on PATH; args and init_options are
-# optional. Commands run only once the workspace is trusted.
+# optional. Commands run only once the workspace is trusted. idle_stop_minutes is not a command, so
+# it needs no trust: the servers stop after that many minutes without input (zero: never; default 60).
+# [lsp]
+# idle_stop_minutes = 60
 # [lsp.python]
 # command = \"pyright-langserver\"
 # args = [\"--stdio\"]
@@ -341,7 +403,7 @@ impl WorkspaceConfig {
     /// One line per command, for the trust dialog.
     pub fn describe_commands(&self) -> Vec<String> {
         let mut out = Vec::new();
-        for (lang, s) in &self.lsp {
+        for (lang, s) in &self.lsp.servers {
             out.push(format!("LSP {lang}: {}", join_command(&s.command, &s.args)));
         }
         for (name, t) in &self.tasks {
@@ -365,7 +427,7 @@ impl WorkspaceConfig {
     /// SHA-256 of the command entries (BTreeMaps, so the encoding is stable).
     pub fn commands_hash(&self) -> String {
         let canonical = toml::to_string(&Commands {
-            lsp: &self.lsp,
+            lsp: &self.lsp.servers,
             tasks: &self.tasks,
             environments: &self.environments,
         })
@@ -435,6 +497,7 @@ env = { CC = "clang" }
             .collect();
         let c = WorkspaceConfig::parse(&live).unwrap();
         assert!(c.tasks.contains_key("build") && c.lsp.contains_key("python") && c.window.title.is_some());
+        assert_eq!(c.lsp.idle_stop_minutes, Some(60), "the template's [lsp] example");
     }
 
     #[test]
@@ -536,5 +599,26 @@ env = { CC = "clang" }
         assert_eq!(a.commands_hash(), b.commands_hash());
         b.tasks.get_mut("build").unwrap().env.insert("X".into(), "1".into());
         assert_ne!(a.commands_hash(), b.commands_hash());
+    }
+
+    #[test]
+    fn idle_stop_minutes_is_not_a_command() {
+        let a = WorkspaceConfig::parse(SAMPLE).unwrap();
+        let text = format!("[lsp]\nidle_stop_minutes = 5\n{SAMPLE}");
+        let b = WorkspaceConfig::parse(&text).unwrap();
+        assert_eq!(b.lsp.idle_stop_minutes, Some(5));
+        assert_eq!(a.lsp.servers, b.lsp.servers, "not read as a server");
+        assert_eq!(a.commands_hash(), b.commands_hash(), "trust ignores it");
+        assert_eq!(a.describe_commands(), b.describe_commands());
+        let only = WorkspaceConfig::parse("[lsp]\nidle_stop_minutes = 0\n").unwrap();
+        assert!(!only.has_commands(), "needs no trust");
+        assert_eq!(only.commands_hash(), WorkspaceConfig::default().commands_hash());
+        for bad in ["\"sixty\"", "-1", "1.5"] {
+            let e = WorkspaceConfig::parse(&format!("[lsp]\nidle_stop_minutes = {bad}\n")).unwrap_err();
+            assert!(e.contains("idle_stop_minutes` must be a whole number"), "{bad}: {e}");
+        }
+        // A bad server entry is still an error, naming it.
+        let e = WorkspaceConfig::parse("[lsp.rust]\nargs = []\n").unwrap_err();
+        assert!(e.contains("[lsp.rust]") && e.contains("command"), "{e}");
     }
 }

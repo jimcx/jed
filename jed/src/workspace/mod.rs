@@ -11,6 +11,9 @@ use crate::edit::Settings;
 
 pub const FILE_NAME: &str = ".workspace";
 
+/// `[lsp] idle_stop_minutes` when neither file sets it.
+pub const DEFAULT_LSP_IDLE_STOP_MINUTES: u64 = 60;
+
 #[derive(Debug)]
 pub struct Workspace {
     pub root: PathBuf,
@@ -22,6 +25,8 @@ pub struct Workspace {
     pub user_settings: SettingsOverrides,
     /// The user's `settings.toml` `[window]`, under `.workspace`'s (same lifecycle as `user_settings`).
     pub user_window: WindowConfig,
+    /// The user's `settings.toml` `[lsp] idle_stop_minutes`, under `.workspace`'s (`lsp_idle_stop`).
+    pub user_lsp_idle_stop_minutes: Option<u64>,
 }
 
 impl Workspace {
@@ -33,6 +38,7 @@ impl Workspace {
             config_error: None,
             user_settings: SettingsOverrides::default(),
             user_window: WindowConfig::default(),
+            user_lsp_idle_stop_minutes: None,
         };
         ws.reload();
         ws
@@ -48,6 +54,26 @@ impl Workspace {
     pub fn with_user_window(mut self, window: WindowConfig) -> Self {
         self.user_window = window;
         self
+    }
+
+    /// Layers `settings.toml`'s `[lsp] idle_stop_minutes` under `.workspace`'s.
+    pub fn with_user_lsp_idle_stop(mut self, minutes: Option<u64>) -> Self {
+        self.user_lsp_idle_stop_minutes = minutes;
+        self
+    }
+
+    /// `[lsp] idle_stop_minutes`: `.workspace`'s, else `settings.toml`'s, else 60; `None` for 0
+    /// (never stop). Read live, so a reload of either file applies.
+    // Read by the idle clock (lsp_idle_stop-b).
+    #[allow(dead_code)]
+    pub fn lsp_idle_stop(&self) -> Option<std::time::Duration> {
+        let minutes = self
+            .config
+            .lsp
+            .idle_stop_minutes
+            .or(self.user_lsp_idle_stop_minutes)
+            .unwrap_or(DEFAULT_LSP_IDLE_STOP_MINUTES);
+        (minutes > 0).then(|| std::time::Duration::from_secs(minutes.saturating_mul(60)))
     }
 
     /// `[window] title`: `.workspace`'s, else `settings.toml`'s.
@@ -143,6 +169,33 @@ mod tests {
         assert_eq!(root_for_file(&deep.join("f.txt")), deep);
         std::fs::write(root.join(FILE_NAME), "").unwrap();
         assert_eq!(root_for_file(&deep.join("f.txt")), root);
+    }
+
+    #[test]
+    fn lsp_idle_stop_layers_workspace_over_user_over_default() {
+        use std::time::Duration;
+        let min = |m: u64| Some(Duration::from_secs(m * 60));
+        let dir = tempfile::tempdir().unwrap();
+        let root = normalize(dir.path());
+        let mut ws = Workspace::load(root.clone());
+        assert_eq!(ws.lsp_idle_stop(), min(60), "default");
+        ws.user_lsp_idle_stop_minutes = Some(10);
+        assert_eq!(ws.lsp_idle_stop(), min(10), "settings.toml");
+        ws.user_lsp_idle_stop_minutes = Some(1);
+        assert_eq!(ws.lsp_idle_stop(), min(1), "1 is a minute, not never");
+        ws.user_lsp_idle_stop_minutes = Some(0);
+        assert_eq!(ws.lsp_idle_stop(), None, "0 = never");
+        std::fs::write(root.join(FILE_NAME), "[lsp]\nidle_stop_minutes = 5\n").unwrap();
+        ws.reload();
+        assert_eq!(ws.lsp_idle_stop(), min(5), ".workspace beats settings.toml");
+        std::fs::write(root.join(FILE_NAME), "[lsp]\nidle_stop_minutes = 0\n").unwrap();
+        ws.reload();
+        ws.user_lsp_idle_stop_minutes = Some(10);
+        assert_eq!(ws.lsp_idle_stop(), None, ".workspace 0 beats a user value");
+        std::fs::write(root.join(FILE_NAME), "[lsp]\nidle_stop_minutes = \"x\"\n").unwrap();
+        ws.reload();
+        assert!(ws.config_error.is_some());
+        assert_eq!(ws.lsp_idle_stop(), None, "the last good config stays");
     }
 
     #[test]

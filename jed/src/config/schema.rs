@@ -277,6 +277,13 @@ const WINDOW_KEYS: &[KeySchema] = &[
     ),
 ];
 
+/// `[lsp]` itself: a plain key beside the `[lsp.<id>]` tables.
+const LSP_TABLE_KEYS: &[KeySchema] = &[key(
+    "idle_stop_minutes",
+    NONNEG,
+    "Minutes without input before the language servers stop (0: never; default 60)",
+)];
+
 const LSP_KEYS: &[KeySchema] = &[
     key("command", ValueKind::Str, "The server's command (a name on PATH)"),
     key("args", ValueKind::StrList, "Arguments for the command"),
@@ -346,6 +353,7 @@ const SETTINGS_TABLES: &[TableSchema] = &[
         array: true,
         keys: BUTTON_KEYS,
     },
+    table("lsp", LSP_TABLE_KEYS),
     table("lsp.*", LSP_KEYS),
 ];
 
@@ -358,6 +366,7 @@ const WORKSPACE_TABLES: &[TableSchema] = &[
         keys: BUTTON_KEYS,
     },
     table("files", FILES_KEYS),
+    table("lsp", LSP_TABLE_KEYS),
     table("lsp.*", LSP_KEYS),
     table("tasks.*", TASK_KEYS),
     // Any NAME = "value": the variables are the user's own.
@@ -572,7 +581,7 @@ mod tests {
         let t = |f, p: &[&str]| table_at(f, p).map(|t| t.pattern);
         assert_eq!(t(ConfigFile::Workspace, &["lsp", "python"]), Some("lsp.*"));
         assert_eq!(t(ConfigFile::Workspace, &["tasks", "build"]), Some("tasks.*"));
-        assert_eq!(t(ConfigFile::Workspace, &["lsp"]), None);
+        assert_eq!(t(ConfigFile::Workspace, &["lsp"]), Some("lsp"));
         assert_eq!(t(ConfigFile::Settings, &["tasks", "build"]), None);
         assert_eq!(t(ConfigFile::Settings, &["files"]), None);
         assert_eq!(t(ConfigFile::Keybindings, &["binding"]), Some("binding"));

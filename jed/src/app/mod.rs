@@ -999,6 +999,7 @@ impl App {
         };
         self.workspace.user_settings = user.overrides;
         self.workspace.user_window = user.window;
+        self.workspace.user_lsp_idle_stop_minutes = user.lsp_idle_stop_minutes;
         self.settings = self.workspace.settings();
         self.sync_touch_layout();
         let title = self.workspace.window_title();

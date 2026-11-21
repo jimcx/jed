@@ -33,6 +33,7 @@
 //! | `spell_check_off_languages` | str list | `[]` | Language ids not spell-checked, e.g. `["log"]`       |
 //! | `scrollback_compression` | bool | true  | Keep old scrollback lines zstd-compressed (less memory)     |
 //! | `review_drafts_on_forge` | bool | true | A saved review comment goes to the forge's pending review     |
+//! | `[lsp] idle_stop_minutes` | int | 60 | Stop the language servers after this long without input, restart them on the next (0: never). Its own key beside `[lsp.<id>]`, not under `[settings]`; `.workspace`'s wins |
 //!
 //! Precedence, per key: defaults ← `settings.toml` ← `.workspace` (`layer`). `[window]` (`title`, `status_bar`) layers the same way (`WindowConfig::layered`).
 //!
@@ -271,6 +272,8 @@ pub struct UserSettings {
     pub lsp: BTreeMap<String, LspServer>,
     /// `[window]`: layered under `.workspace`'s (`Workspace::window_title` / `status_bar`).
     pub window: WindowConfig,
+    /// `[lsp] idle_stop_minutes` (0 = never): layered under `.workspace`'s (`Workspace::lsp_idle_stop`).
+    pub lsp_idle_stop_minutes: Option<u64>,
     pub errors: Vec<String>,
 }
 
@@ -284,6 +287,7 @@ pub fn load(path: &Path) -> UserSettings {
             overrides: SettingsOverrides::default(),
             lsp: BTreeMap::new(),
             window: WindowConfig::default(),
+            lsp_idle_stop_minutes: None,
             errors: vec![format!("{FILE_NAME}: {e}")],
         },
     }
@@ -324,6 +328,7 @@ pub fn parse(text: &str) -> UserSettings {
             overrides: SettingsOverrides::default(),
             lsp: BTreeMap::new(),
             window: WindowConfig::default(),
+            lsp_idle_stop_minutes: None,
             errors: vec![error],
         },
     }
@@ -346,6 +351,7 @@ fn config(table: toml::Table) -> UserSettings {
     let mut settings = toml::Table::new();
     let mut lsp = BTreeMap::new();
     let mut window = WindowConfig::default();
+    let mut lsp_idle_stop_minutes = None;
     for (key, value) in table {
         match (key.as_str(), value) {
             ("settings", toml::Value::Table(t)) => settings = t,
@@ -353,6 +359,15 @@ fn config(table: toml::Table) -> UserSettings {
             // Each server on its own, so one bad entry doesn't lose the others.
             ("lsp", toml::Value::Table(t)) => {
                 for (id, entry) in t {
+                    if id == crate::workspace::config::IDLE_STOP_KEY {
+                        match entry {
+                            toml::Value::Integer(n) if n >= 0 => lsp_idle_stop_minutes = Some(n as u64),
+                            _ => errors.push(format!(
+                                "{FILE_NAME}: [lsp] `{id}` must be a whole number of minutes (0 = never)"
+                            )),
+                        }
+                        continue;
+                    }
                     match entry.try_into::<LspServer>() {
                         Ok(server) => {
                             lsp.insert(id, server);
@@ -405,6 +420,7 @@ fn config(table: toml::Table) -> UserSettings {
         overrides,
         lsp,
         window,
+        lsp_idle_stop_minutes,
         errors,
     }
 }
@@ -463,6 +479,11 @@ pub const TEMPLATE: &str = "\
 # [[window.buttons]]
 # task = \"build\"
 
+# Stop the language servers after this many minutes without input (they restart on the next
+# key or click, documents reopened); 0 = never. A .workspace [lsp] idle_stop_minutes wins.
+# [lsp]
+# idle_stop_minutes = 60
+
 # [lsp.lua]
 # command = \"lua-language-server\"
 # args = []
@@ -499,10 +520,51 @@ mod tests {
         assert!(parse("lsp = 1").errors[0].contains("`lsp` must be a table"));
         // The template's example parses once uncommented.
         assert!(
-            parse(&TEMPLATE.replace("# [lsp", "[lsp").replace("# command", "command"))
+            parse(&TEMPLATE.replace("# [lsp.", "[lsp.").replace("# command", "command"),)
                 .lsp
                 .contains_key("lua")
         );
+        let t = parse(
+            &TEMPLATE
+                .replace("# [lsp]", "[lsp]")
+                .replace("# idle_stop_minutes", "idle_stop_minutes"),
+        );
+        assert_eq!(
+            (t.lsp_idle_stop_minutes, t.errors.len()),
+            (Some(60), 0),
+            "{:?}",
+            t.errors
+        );
+    }
+
+    #[test]
+    fn idle_stop_minutes_sits_beside_the_servers() {
+        let u = parse("[lsp]\nidle_stop_minutes = 5\n[lsp.rust]\ncommand = \"ra\"\n");
+        assert_eq!(u.errors, Vec::<String>::new());
+        assert_eq!(u.lsp_idle_stop_minutes, Some(5));
+        assert_eq!(u.lsp.keys().collect::<Vec<_>>(), ["rust"], "not read as a server");
+        assert_eq!(parse("[lsp]\nidle_stop_minutes = 0\n").lsp_idle_stop_minutes, Some(0));
+        assert_eq!(parse("").lsp_idle_stop_minutes, None);
+        for bad in ["\"sixty\"", "-1", "1.5", "true", "{ command = \"x\" }"] {
+            let u = parse(&format!(
+                "[lsp.rust]\ncommand = \"ra\"\n[lsp]\nidle_stop_minutes = {bad}\n"
+            ));
+            assert_eq!(u.lsp_idle_stop_minutes, None, "{bad}");
+            assert_eq!(u.errors.len(), 1, "{bad}: {:?}", u.errors);
+            assert!(
+                u.errors[0].contains("[lsp] `idle_stop_minutes` must be a whole number"),
+                "{bad}"
+            );
+        }
+        // The servers still load next to a bad value.
+        let u = parse("[lsp]\nidle_stop_minutes = \"x\"\n[lsp.rust]\ncommand = \"ra\"\n");
+        assert!(u.lsp.contains_key("rust"));
+        // A reload reads it too.
+        assert_eq!(reload_text("[lsp]\nidle_stop_minutes = 7\n"), Some(7));
+    }
+
+    fn reload_text(text: &str) -> Option<u64> {
+        config(table(text).unwrap()).lsp_idle_stop_minutes
     }
 
     #[test]

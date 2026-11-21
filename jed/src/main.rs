@@ -535,7 +535,8 @@ fn main() -> ExitCode {
     let user_tasks = tasks::templates::load(&paths::config_dir().join(tasks::templates::FILE_NAME));
     let workspace = Workspace::load(root)
         .with_user_settings(user_settings.overrides)
-        .with_user_window(user_settings.window);
+        .with_user_window(user_settings.window)
+        .with_user_lsp_idle_stop(user_settings.lsp_idle_stop_minutes);
     // Load before taking over the terminal, so errors print normally. A binary file opens in a
     // hex tab.
     let mut initial_hex = None;
