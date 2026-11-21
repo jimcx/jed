@@ -1,7 +1,8 @@
 //! The touch layout's tab menu (`☰` on the status bar): its state and geometry. It lists the
 //! focused group's tabs, a separator, then the actions of `actions()`, each item a text row with an
-//! empty row of padding above, between and below, so a finger has three rows to hit. `app/menu.rs`
-//! drives it, `ui_menu` draws it.
+//! empty row of padding above, between and below. A padding row shared by two items belongs to the
+//! lower one, so a section's first and last items have three rows to hit and the inner ones two.
+//! `app/menu.rs` drives it, `ui_menu` draws it.
 
 use ratatui::layout::Rect;
 
@@ -77,7 +78,7 @@ impl Menu {
         self.scroll = at.clamp(0, i32::from(self.max_scroll)) as u16;
     }
 
-    /// Scrolls just enough that item `i`'s three rows show.
+    /// Scrolls just enough that item `i`'s text row and the padding rows either side of it show.
     pub fn reveal(&mut self, rows: &[Row], i: usize) {
         let Some(text) = rows.iter().position(|r| *r == Row::Text(i)) else {
             return;
