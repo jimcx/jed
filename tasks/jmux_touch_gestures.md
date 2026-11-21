@@ -29,3 +29,4 @@ In the touch layout (`--touch`) a press on a tab starts a drag at once, as with 
   - Also: `jmux_touch_tests.rs`'s `Harness` is `pub(crate)` and reused by `jmux_touch_gestures_tests.rs`; its `press_and_move` now presses, delivers `Hold`, then drags.
   - Deferred: as listed above (a tab menu on hold-and-release, gestures over a terminal, `HOLD` / `SLOP` as settings).
   - Still to check by hand: as listed above (whether a long press reaches jmux as a still press in Termius / Blink, whether a swipe arrives as drags or wheel events, whether 450 ms feels right).
+  - Superseded in part by [jmux_touch_menu](jmux_touch_menu.md): the touch layout has no tab bars any more, so the bar's swipe, tap and hold-to-lift are gone. The terminal gestures remain.

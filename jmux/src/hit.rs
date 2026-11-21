@@ -23,14 +23,11 @@ pub struct TabArrows {
     pub forward: Range<u16>,
 }
 
-/// Where `tabbar::render` put a bar's tabs, its arrows (when it overflows) and its `+` (the
-/// touch layout's).
+/// Where `tabbar::render` put a bar's tabs and its arrows (when it overflows).
 #[derive(Debug, Clone, Default)]
 pub struct BarHit {
     pub tabs: Vec<TabHit>,
     pub arrows: Option<TabArrows>,
-    /// The `+`'s x range (half-open).
-    pub new_tab: Option<Range<u16>>,
 }
 
 /// One group's bar and terminal area.
@@ -46,8 +43,14 @@ pub struct GroupHit {
     pub scroll: ScrollBarHit,
     pub tabs: Vec<TabHit>,
     pub arrows: Option<TabArrows>,
-    /// The `+` that opens a tab in this group (touch layout only).
-    pub new_tab: Option<Range<u16>>,
+}
+
+/// The tab menu as drawn (touch layout, or opened by `menu.toggle`).
+#[derive(Debug, Clone, Default)]
+pub struct MenuHit {
+    pub area: Rect,
+    /// What each drawn row (top to bottom, from `area.y`) is, as `menu::rows` gave it.
+    pub rows: Vec<crate::menu::Row>,
 }
 
 /// The side bar as drawn.
@@ -72,6 +75,10 @@ pub struct SideHit {
 pub struct HitMap {
     pub side: Option<SideHit>,
     pub groups: Vec<GroupHit>,
+    /// The status bar's `☰` button (touch layout).
+    pub menu_button: Option<Rect>,
+    /// The open tab menu.
+    pub menu: Option<MenuHit>,
     /// The dividers between groups, as `Groups::layout` gave them.
     pub dividers: Vec<Divider>,
 }
@@ -91,10 +98,14 @@ pub enum Hit {
         group: GroupId,
         forward: bool,
     },
-    /// The `+` at the end of a group's bar (touch layout).
-    NewTab {
-        group: GroupId,
-    },
+    /// The status bar's `☰` button.
+    Menu,
+    /// An item of the open tab menu: an index into its items.
+    MenuItem(usize),
+    /// A cell of the open menu that is no item (the separator).
+    MenuDead,
+    /// Outside the open menu (made by the app, not `HitMap::at`).
+    MenuOutside,
     /// A group's bar beside its tabs.
     Bar {
         group: GroupId,
@@ -124,6 +135,17 @@ fn contains(r: Rect, x: u16, y: u16) -> bool {
 
 impl HitMap {
     pub fn at(&self, x: u16, y: u16) -> Option<Hit> {
+        if let Some(m) = &self.menu
+            && contains(m.area, x, y)
+        {
+            return Some(match m.rows.get(usize::from(y - m.area.y)) {
+                Some(crate::menu::Row::Pad(i) | crate::menu::Row::Text(i)) => Hit::MenuItem(*i),
+                _ => Hit::MenuDead,
+            });
+        }
+        if self.menu_button.is_some_and(|r| contains(r, x, y)) {
+            return Some(Hit::Menu);
+        }
         if let Some(s) = &self.side {
             if contains(s.border, x, y) {
                 return Some(Hit::SideBorder);
@@ -159,9 +181,6 @@ impl HitMap {
             }
             if !contains(g.bar, x, y) {
                 continue;
-            }
-            if g.new_tab.as_ref().is_some_and(|r| r.contains(&x)) {
-                return Some(Hit::NewTab { group });
             }
             if let Some(a) = &g.arrows {
                 if a.back.contains(&x) {
@@ -221,10 +240,10 @@ mod tests {
                     back: 0..1,
                     forward: 29..30,
                 }),
-                new_tab: None,
             }],
             dividers: Vec::new(),
             side: None,
+            ..HitMap::default()
         };
         assert_eq!(map.at(3, 0), Some(Hit::Tab { group: 7, index: 0 }));
         assert_eq!(map.at(15, 0), Some(Hit::Close { group: 7, index: 1 }));
@@ -267,6 +286,7 @@ mod tests {
             groups,
             dividers,
             side: None,
+            ..HitMap::default()
         };
         assert_eq!(map.at(d.x, 0), Some(Hit::Divider(0)));
         assert_eq!(map.at(d.x, 3), Some(Hit::Divider(0)));

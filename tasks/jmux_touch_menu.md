@@ -2,7 +2,7 @@
 id: jmux_touch_menu
 name: "jmux: touch menu in place of the tab bars"
 summary: "with `--touch` the groups lose their tab bars and the status bar gains a ☰ button opening a tall, padded list of the tabs to pick from, then New Tab and further actions"
-status: open
+status: done
 priority: 0
 dependencies: [jmux_touch, jmux_touch_gestures]
 ---
@@ -26,3 +26,9 @@ On a phone the 3-row tab bar of `jmux_touch` takes rows from every group, and it
   - Docs: `jmux/README.md` (the `--touch` row: the menu instead of tab bars), `jmux/PLAN.md` (the `--touch` line in Sessions and the touch gestures line), [crates](../docs/dev/crates.md) if anything moves into `jtui`.
   - Deferred (unless it turns out cheap): more actions after New Tab (Split Right / Down, Close Tab, Rename, Toggle Commands Side Bar, Detach); a `×` or swipe-to-close on a tab item; listing every group's tabs under a heading each; reordering tabs by hold-and-drag in the menu; the same menu in jed's touch layout (`jed_touch`).
   - Still to check by hand: a phone's SSH app in portrait — whether `☰` renders in its font (fall back to `≡` if not), whether a tap on a 1-row status bar target is reliable, and whether the 3-row items are enough.
+- ✅ Done. With `--touch` the groups draw no tab bars (each shell is the bar's rows taller), the status bar starts with a 3-cell `☰` button, and the button opens a menu above the status bar: the focused group's tabs as padded rows, a separator, then New Tab. Tap, swipe (scroll), hold (nothing), a plain client's click, and `menu.toggle` with Up / Down / Enter / Escape in `Context::Menu` all work.
+  - `App::tab_metrics()` gives a 0-row bar in the touch layout, so `ui::bar_and_term` / `App::term_size` agree. The model is `jmux/src/menu.rs` (`actions()` is the one list after the tabs; `rows()`, `area()`, `Menu`), driven by `jmux/src/app/menu.rs` and drawn by `jmux/src/ui_menu.rs`. Hits are `Hit::{Menu, MenuItem, MenuDead, MenuOutside}`; `App.menu_actions` starts from `actions()`. Theme keys `statusBar.menu(.active)` and `menu.*`. `hello` / `detach` close the menu.
+  - A shared padding row between two items goes to the lower item: the first item owns the row above it and the last of each section the row below, so inner items are 2-row targets.
+  - Removed the touch tab bar that this replaces: `jmux_touch_gestures_tests.rs`, the touch-bar tests in `jmux_touch_tests.rs`, `Hit::NewTab` and the `+`, the bar swipe, tab lift and tap paths in `app/touch.rs`, `tabbar::max_offset`, `Marks.lifted`, `Group::shift` / `scroll_offset` / `set_scroll_offset`, and `tab.lifted`. `jtui::tabs::TabMetrics::TOUCH` stays because jed uses it. `app/touch.rs` now handles terminals and the menu only.
+  - Deferred: as listed above (more actions, close from the menu, every group's tabs, reordering, jed's touch layout).
+  - Still to check by hand: as listed above. Also: `☰` (U+2630) is two cells wide under `unicode-width`, so it covers the button's right pad cell; check that it looks right, or fall back to `≡`.

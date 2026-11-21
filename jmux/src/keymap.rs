@@ -4,7 +4,7 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 use jtui::keymap::{Binding, KeyCombo, Keymap, Platform, Source};
 
-use crate::command::{Command, Context, SearchCommand as Sc, SideCommand as Sd};
+use crate::command::{Command, Context, MenuCommand as Mc, SearchCommand as Sc, SideCommand as Sd};
 use crate::group::Side;
 use jtui::field::{FieldCommand as Fc, FieldMotion as Fm};
 
@@ -147,6 +147,13 @@ pub fn defaults(platform: Platform) -> Vec<Binding<Context, Command>> {
     list.push(term(toggle.0, toggle.1, Command::Side(Sd::Toggle)));
     list.push(term(focus.0, focus.1, Command::Side(Sd::Focus)));
     let side = |code, mods, command| (code, mods, command, Some(Context::Side));
+    let menu = |code, command| (code, none, command, Some(Context::Menu));
+    list.extend([
+        menu(KeyCode::Up, Command::Menu(Mc::Up)),
+        menu(KeyCode::Down, Command::Menu(Mc::Down)),
+        menu(KeyCode::Enter, Command::Menu(Mc::Pick)),
+        menu(KeyCode::Esc, Command::Menu(Mc::Close)),
+    ]);
     list.extend([
         side(KeyCode::Up, none, Command::Side(Sd::Up)),
         side(KeyCode::Down, none, Command::Side(Sd::Down)),
@@ -234,6 +241,10 @@ mod tests {
             }
             let map = Keymap::from_list(list);
             for c in Command::all() {
+                // The tab menu's toggle is opened from the touch layout's `☰`; no default key.
+                if c == Command::Menu(Mc::Toggle) {
+                    continue;
+                }
                 assert!(map.binding_for(c).is_some(), "{platform:?}: {c:?} unbound");
             }
         }

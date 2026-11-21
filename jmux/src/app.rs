@@ -33,7 +33,7 @@ use tokio::sync::mpsc::{Sender, UnboundedSender};
 use tokio::task::JoinHandle;
 use vt100::MouseProtocolMode;
 
-use crate::command::{Command, Context, SideCommand};
+use crate::command::{Command, Context, MenuCommand, SideCommand};
 use crate::group::Groups;
 use crate::history::History;
 use crate::hit::{Hit, HitMap};
@@ -128,8 +128,8 @@ pub enum AppEvent {
     Settings(Option<Settings>, Option<JmuxKeymap>, Vec<String>),
     /// Once a second (`App::start`'s timer): the side bar's durations and ages move on.
     Tick,
-    /// A touch press's `HOLD` timer fired (the press's serial): lift the tab under the finger, or
-    /// start a selection in a terminal.
+    /// A touch press's `HOLD` timer fired (the press's serial): start a selection in a terminal
+    /// (a hold on the menu does nothing).
     Hold(u64),
 }
 
@@ -160,6 +160,7 @@ struct Conn {
 }
 
 mod commands;
+mod menu;
 mod search;
 mod side;
 mod touch;
@@ -187,6 +188,10 @@ pub struct App {
     pub integration_missing: bool,
     /// The commands side bar.
     pub side: SideBar,
+    /// The tab menu while it is open (`☰` in the touch layout, or `menu.toggle`).
+    pub menu: Option<crate::menu::Menu>,
+    /// The actions listed after the tabs (`menu::actions()`; a test may add one).
+    pub(crate) menu_actions: Vec<(&'static str, Command)>,
     /// The divider or tab being dragged: it owns the mouse until the release.
     pub(crate) drag: Option<Drag>,
     /// Where the pointer last was, and the shape the client was last told to show.
@@ -226,11 +231,10 @@ pub struct App {
 pub enum Drag {
     Divider(Divider),
     Tab(TabDrag),
-    /// A touch press on a bar or a terminal, not yet a tap, a swipe or a hold (`touch_press`);
+    /// A touch press in a terminal, on `☰` or on the menu, not yet a tap, a swipe or a hold (`touch_press`);
     /// `serial` tells its `HOLD` timer's event apart from an older press's, `event` is the press
     /// (replayed by a terminal's tap or hold).
     Press {
-        group: GroupId,
         hit: Hit,
         gesture: jtui::touch::Press,
         serial: u64,
@@ -327,6 +331,8 @@ impl App {
             closing: Vec::new(),
             attached: None,
             touch: false,
+            menu: None,
+            menu_actions: crate::menu::actions(),
             hold_serial: 0,
             size: INITIAL_SIZE,
             resync: false,
@@ -373,10 +379,14 @@ impl App {
         format!("{} detach", self.key_label(Command::Detach))
     }
 
-    /// The tab bar's layout for the attached client: touch if it attached with `--touch`.
+    /// The tab bar's layout for the attached client: none (0 rows) if it attached with `--touch`,
+    /// whose tabs are in the menu.
     pub fn tab_metrics(&self) -> TabMetrics {
         if self.touch {
-            TabMetrics::TOUCH
+            TabMetrics {
+                rows: 0,
+                ..TabMetrics::NORMAL
+            }
         } else {
             TabMetrics::NORMAL
         }
@@ -495,6 +505,7 @@ impl App {
             Command::ScrollBottom => self.scroll_active(Scroll::Edge(false)),
             Command::Search(c) => self.search_command(c),
             Command::Side(c) => self.side_command(c),
+            Command::Menu(c) => self.menu_command(c),
             Command::Field(c) if self.side.focused => self.side_edit(c),
             Command::Field(c) => self.search_edit(c),
             Command::Detach => self.detach(),
@@ -691,6 +702,7 @@ impl App {
         self.touch = touch;
         // A drag or pointer position belongs to the client that had them.
         self.drag = None;
+        self.menu = None;
         self.mouse_at = None;
         self.size = (rows.max(1), cols.max(1));
         self.resync = true;
@@ -788,6 +800,7 @@ impl App {
     fn detach(&mut self) {
         if let Some(conn) = self.attached.take() {
             self.touch = false;
+            self.menu = None;
             tracing::info!(conn, "client detached");
             self.bye(conn, ByeReason::Detached);
         }
@@ -821,11 +834,13 @@ impl App {
         }
     }
 
-    /// The context keys are looked up in now: the close question, the focused side bar, the open
+    /// The context keys are looked up in now: the close question, the open tab menu, the focused side bar, the open
     /// search bar, else the terminal.
     pub(crate) fn context(&self) -> Context {
         if self.confirm.is_some() {
             Context::Confirm
+        } else if self.menu.is_some() {
+            Context::Menu
         } else if self.side.focused {
             Context::Side
         } else if self.search_active() {
@@ -837,6 +852,14 @@ impl App {
 
     /// A terminal command (new tab, split, scrolling, ...) takes the keys back from the bar.
     pub(crate) fn take_keys_back(&mut self, context: Context, command: Command) {
+        if context == Context::Menu
+            && !matches!(
+                command,
+                Command::Menu(_) | Command::Detach | Command::InstallShellIntegration | Command::ReloadSettings
+            )
+        {
+            self.menu = None;
+        }
         if context == Context::Side
             && !matches!(
                 command,
@@ -883,6 +906,7 @@ impl App {
                     | Command::PrevTab
                     | Command::Field(_)
                     | Command::Side(SideCommand::Up | SideCommand::Down | SideCommand::PageUp | SideCommand::PageDown)
+                    | Command::Menu(MenuCommand::Up | MenuCommand::Down)
             );
             if key.kind == KeyEventKind::Press || repeats {
                 self.take_keys_back(context, command);
@@ -890,7 +914,7 @@ impl App {
             }
             return;
         }
-        if context == Context::Confirm {
+        if matches!(context, Context::Confirm | Context::Menu) {
             return;
         }
         if context == Context::Side {
@@ -984,6 +1008,11 @@ impl App {
             self.needs_redraw = true;
             return;
         }
+        if self.menu.is_some() {
+            self.menu_pointer(m);
+            self.needs_redraw = true;
+            return;
+        }
         let down = |button| m.kind == MouseEventKind::Down(button);
         let at = self.hit.at(m.column, m.row);
         if let Some(hit) = at
@@ -1002,9 +1031,8 @@ impl App {
             self.side.focused = false;
         }
         match at {
-            Some(
-                hit @ (Hit::Tab { .. } | Hit::Close { .. } | Hit::Arrow { .. } | Hit::NewTab { .. } | Hit::Bar { .. }),
-            ) if self.touch && down(MouseButton::Left) => self.touch_press(hit, m),
+            // The status bar's `☰` button (touch layout): a tap opens the menu.
+            Some(hit @ Hit::Menu) if down(MouseButton::Left) => self.touch_press(hit, m),
             // A finger in a terminal: swipe scrolls, tap clicks, hold then drag selects. A modifier
             // (a hardware keyboard's Ctrl+tap on a link, Shift+tap to extend) acts as a click.
             Some(hit @ Hit::Terminal { .. })
@@ -1036,17 +1064,7 @@ impl App {
                     g.scroll_tabs(if forward { 1 } else { -1 });
                 }
             }
-            Some(Hit::NewTab { group }) if down(MouseButton::Left) => {
-                self.groups.active = group;
-                self.new_terminal(group);
-            }
-            Some(
-                Hit::Tab { group, .. }
-                | Hit::Close { group, .. }
-                | Hit::Arrow { group, .. }
-                | Hit::NewTab { group }
-                | Hit::Bar { group },
-            ) => {
+            Some(Hit::Tab { group, .. } | Hit::Close { group, .. } | Hit::Arrow { group, .. } | Hit::Bar { group }) => {
                 // The wheel over a bar scrolls its tabs; a click elsewhere on it focuses the group.
                 match m.kind {
                     MouseEventKind::ScrollUp | MouseEventKind::ScrollLeft => {

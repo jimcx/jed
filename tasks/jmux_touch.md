@@ -33,3 +33,4 @@ On a touch-screen device (a tablet or phone running an SSH terminal app, or a to
   - Also: `--touch` rides on `client::Terminal.touch`, so `client::attach` keeps its signature; `--touch` as the first argument is accepted only alone (`jmux --touch attach` is an error, `jmux attach --touch` isn't).
   - Deferred: as listed above (a `touch` setting / `$JMUX_TOUCH`, a toggle while attached, taller side bar rows and divider grabs, passing it to jed).
   - Still to check by hand: as listed above (a tablet's and a phone's SSH app: taps as clicks, finger drags as drags, whether 3 rows and 2 cells of padding are enough).
+  - Superseded by [jmux_touch_menu](jmux_touch_menu.md): the touch layout has no tab bars now; a `☰` menu on the status bar lists the tabs instead. The `--touch` handshake remains.

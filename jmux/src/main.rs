@@ -11,6 +11,7 @@ mod hit;
 mod integration;
 mod keymap;
 mod logging;
+mod menu;
 mod protocol;
 mod server;
 mod session;
@@ -20,6 +21,7 @@ mod tab_drag;
 mod tabbar;
 mod theme;
 mod ui;
+mod ui_menu;
 mod ui_side;
 
 #[cfg(test)]
@@ -35,7 +37,7 @@ mod jmux_server_tests;
 #[cfg(test)]
 mod jmux_tabs_at_bottom_tests;
 #[cfg(test)]
-mod jmux_touch_gestures_tests;
+mod jmux_touch_menu_tests;
 #[cfg(test)]
 mod jmux_touch_terminal_tests;
 #[cfg(test)]

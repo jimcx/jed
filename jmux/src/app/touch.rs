@@ -1,39 +1,32 @@
-//! The touch layout's gestures on a tab bar and in a terminal (`--touch`; the rules are
-//! `jtui::touch`'s, shared with jed). A left press on the bar or a terminal records a pending
-//! `Drag::Press` and starts a `HOLD` timer. On the bar, motion past `SLOP` is a swipe that scrolls
-//! it by columns, following the finger; a release within `SLOP` is a tap, acted on then (focus a
-//! tab, close, scroll an arrow's tab, `+`, focus the group); the timer's `AppEvent::Hold` lifts a
-//! tab, after which it is an ordinary `Drag::Tab`. In a terminal a swipe scrolls the scrollback by
-//! the rows moved (or sends a program that reports the mouse one wheel event per row), a tap
-//! replays the click (double / triple tap select a word / line), and a hold replays the press, so a
-//! drag from there selects as a mouse drag does (or is reported to the program).
+//! The touch layout's gestures in a terminal and on the tab menu (`--touch`; the rules are
+//! `jtui::touch`'s, shared with jed). A left press in a terminal, on the `☰` button or on the open
+//! menu records a pending `Drag::Press` and starts a `HOLD` timer. In a terminal a swipe
+//! scrolls the scrollback by the rows moved (or sends a program that reports the mouse one wheel
+//! event per row), a tap replays the click (double / triple tap select a word / line), and a hold
+//! replays the press, so a drag from there selects as a mouse drag does (or is reported to the
+//! program). On the menu a swipe scrolls it and a tap acts (`app/menu.rs`); a hold does nothing, and
+//! neither does the release after it.
 
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use jtui::split::GroupId;
 use jtui::touch::{Gesture, HOLD, Press};
-use unicode_width::UnicodeWidthStr;
 
 use super::{App, AppEvent, Drag};
 use crate::hit::Hit;
-use crate::tab_drag::TabDrag;
 
 impl App {
-    /// A finger lands on the bar or a terminal (`hit`, pressed by `m`): remember the press and
-    /// start its hold timer.
+    /// A finger lands in a terminal, on `☰` or on the menu (`hit`, pressed by `m`): remember the
+    /// press and start its hold timer.
     pub(super) fn touch_press(&mut self, hit: Hit, m: MouseEvent) {
-        let group = match hit {
-            Hit::Tab { group, .. }
-            | Hit::Close { group, .. }
-            | Hit::Arrow { group, .. }
-            | Hit::NewTab { group }
-            | Hit::Bar { group }
-            | Hit::Terminal { group } => group,
-            _ => return,
-        };
+        if !matches!(
+            hit,
+            Hit::Terminal { .. } | Hit::Menu | Hit::MenuItem(_) | Hit::MenuDead | Hit::MenuOutside
+        ) {
+            return;
+        }
         self.hold_serial += 1;
         let serial = self.hold_serial;
         self.drag = Some(Drag::Press {
-            group,
             hit,
             gesture: Press::new((m.column, m.row)),
             serial,
@@ -55,32 +48,15 @@ impl App {
         }
     }
 
-    /// The hold timer of press `serial` fired: lift the tab under the finger, or in a terminal
-    /// replay the press so a drag from here selects. A stale serial (the press ended, or a newer one
-    /// began) or a press on anything else does nothing.
+    /// The hold timer of press `serial` fired: in a terminal replay the press so a drag from here
+    /// selects; on the menu or `☰` a long press is neither a tap nor a swipe, so its release does
+    /// nothing. A stale serial (the press ended, or a newer one began) does nothing.
     pub(super) fn hold(&mut self, serial: u64) {
-        if let Some(Drag::Press {
-            hit: Hit::Terminal { group },
+        let Some(Drag::Press {
+            hit,
             gesture,
             serial: s,
             event,
-            ..
-        }) = &mut self.drag
-        {
-            if *s != serial || gesture.held() != Gesture::Lifted {
-                return;
-            }
-            let (group, event) = (*group, *event);
-            self.drag = None;
-            self.terminal_pointer(group, event);
-            self.needs_redraw = true;
-            return;
-        }
-        let Some(Drag::Press {
-            hit: Hit::Tab { group, index },
-            gesture,
-            serial: s,
-            ..
         }) = &mut self.drag
         else {
             return;
@@ -88,76 +64,44 @@ impl App {
         if *s != serial || gesture.held() != Gesture::Lifted {
             return;
         }
-        let (group, index) = (*group, *index);
-        let Some(run) = self.groups.get(group).and_then(|g| g.tabs.get(index)).map(|t| t.run.id) else {
-            self.drag = None;
+        let Hit::Terminal { group } = *hit else {
             return;
         };
-        self.groups.active = group;
-        if let Some(g) = self.groups.get_mut(group) {
-            g.active = index;
-        }
-        self.drag = Some(Drag::Tab(TabDrag {
-            from: group,
-            index,
-            run,
-            target: None,
-        }));
+        let event = *event;
+        self.drag = None;
+        self.terminal_pointer(group, event);
         self.needs_redraw = true;
     }
 
-    /// The finger moved while a press is pending: past `SLOP` it scrolls the bar.
+    /// The finger moved while a press is pending: past `SLOP` it scrolls a terminal or the menu.
     pub(super) fn press_moved(&mut self, column: u16, row: u16) {
         let Some(Drag::Press {
-            group,
-            hit,
-            gesture,
-            event,
-            ..
+            hit, gesture, event, ..
         }) = &mut self.drag
         else {
             return;
         };
-        let Gesture::Swipe { dx, dy } = gesture.moved((column, row)) else {
+        let Gesture::Swipe { dy, .. } = gesture.moved((column, row)) else {
             return;
         };
-        if let Hit::Terminal { group } = *hit {
-            let at = (event.column, event.row);
-            self.swipe_terminal(group, at, dy);
-            return;
-        }
-        // The tabs follow the finger, column for column: moving left brings later tabs in.
-        let group = *group;
-        let metrics = self.tab_metrics();
-        let bar = self.hit.group(group).map_or(0, |h| h.bar.width);
-        if let Some(g) = self.groups.get_mut(group) {
-            let widths: Vec<u32> = g
-                .tabs
-                .iter()
-                .map(|t| u32::from(metrics.tab_width(t.title.width() as u16)))
-                .collect();
-            let area = if bar > metrics.new_tab {
-                bar - metrics.new_tab
-            } else {
-                bar
-            };
-            // Never past what the renderer draws, or a reverse swipe would undo undrawn scroll; a bar
-            // the arrows left beyond that only moves back.
-            let max = crate::tabbar::max_offset(&widths, area, metrics);
-            let at = g.scroll_offset(&widths);
-            let to = if dx < 0 {
-                (at + dx.unsigned_abs()).min(max.max(at))
-            } else {
-                at.saturating_sub(dx.unsigned_abs())
-            };
-            g.set_scroll_offset(to, &widths);
+        match *hit {
+            Hit::Terminal { group } => {
+                let at = (event.column, event.row);
+                self.swipe_terminal(group, at, dy);
+            }
+            // The items follow the finger: moving up brings later rows in.
+            Hit::MenuItem(_) | Hit::MenuDead => {
+                if let Some(menu) = &mut self.menu {
+                    menu.scroll_by(-dy);
+                }
+            }
+            _ => {}
         }
     }
 
     /// The finger lifted while a press is pending: a tap acts, anything else (a swipe) does nothing.
     pub(super) fn press_released(&mut self, column: u16, row: u16) {
         let Some(Drag::Press {
-            group,
             hit,
             mut gesture,
             event,
@@ -180,7 +124,7 @@ impl App {
             self.pointer_event(up);
             return;
         }
-        self.tap(group, hit);
+        self.menu_tap(hit);
     }
 
     /// A swipe over `group`'s terminal (pressed at `at`) moved `dy` rows: the text follows the
@@ -219,28 +163,6 @@ impl App {
             } else {
                 shell.run.scroll(rows as isize);
             }
-        }
-    }
-
-    fn tap(&mut self, group: GroupId, hit: Hit) {
-        match hit {
-            Hit::Tab { index, .. } => {
-                self.groups.active = group;
-                if let Some(g) = self.groups.get_mut(group) {
-                    g.active = index;
-                }
-            }
-            Hit::Close { index, .. } => self.request_close(group, index),
-            Hit::Arrow { forward, .. } => {
-                if let Some(g) = self.groups.get_mut(group) {
-                    g.scroll_tabs(if forward { 1 } else { -1 });
-                }
-            }
-            Hit::NewTab { .. } => {
-                self.groups.active = group;
-                self.new_terminal(group);
-            }
-            _ => self.groups.active = group,
         }
     }
 }

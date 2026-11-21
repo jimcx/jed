@@ -1,10 +1,8 @@
-//! A group's tab bar: ` title × ` per shell (padded by `TabMetrics`: the touch layout is three rows
-//! tall with `  title  ×  ` and wider targets), the title ending in its state glyph (`○` at the
-//! prompt, `●` while a command runs, in `tab.shellError` after a failure). Tabs wider than the bar
-//! scroll: `‹` / `›` at its ends (dimmed when there's nothing more that way), the wheel and the
-//! arrows move it a tab at a time, a touch swipe by columns (`Group::shift`, the first tab drawn
-//! cut at the left), and it jumps back to the active tab only when that (or the bar's width)
-//! changes. The touch layout ends the bar in a `+` that opens a tab in its group.
+//! A group's tab bar (a plain client's; the touch layout has none, see `menu`): ` title × ` per
+//! shell, the title ending in its state glyph (`○` at the prompt, `●` while a command runs, in
+//! `tab.shellError` after a failure). Tabs wider than the bar scroll: `‹` / `›` at its ends
+//! (dimmed when there's nothing more that way), the wheel and the arrows move it a tab at a time,
+//! and it jumps back to the active tab only when that (or the bar's width) changes.
 
 use jtui::tabs::TabMetrics;
 use jtui::theme::Theme;
@@ -22,12 +20,10 @@ use crate::hit::{BarHit, TabArrows, TabHit};
 pub struct Marks {
     /// The gap a dragged tab would land in, marked with one cell across the bar's rows.
     pub drop: Option<usize>,
-    /// The tab a finger has picked up (touch layout), drawn as `tab.lifted`.
-    pub lifted: Option<usize>,
 }
 
-/// The furthest a bar `width` cells wide (without its `+`) scrolls, given its tabs' `widths`: the
-/// last tabs fill it (the last one whole). Shared by `render` and the touch swipe.
+/// The furthest a bar `width` cells wide scrolls, given its tabs' `widths`: the last tabs fill it
+/// (the last one whole).
 pub fn max_scroll(widths: &[u32], width: u16, metrics: TabMetrics) -> usize {
     let total: u32 = widths.iter().sum();
     let overflow = total > u32::from(width) && width > 2 * metrics.arrow;
@@ -39,16 +35,6 @@ pub fn max_scroll(widths: &[u32], width: u16, metrics: TabMetrics) -> usize {
         max -= 1;
     }
     max
-}
-
-/// The furthest a bar `width` cells wide (without its `+`) scrolls in columns: the last tab's
-/// right edge at the bar's. What a touch swipe stops at.
-pub fn max_offset(widths: &[u32], width: u16, metrics: TabMetrics) -> u32 {
-    let total: u32 = widths.iter().sum();
-    if total <= u32::from(width) || width <= 2 * metrics.arrow {
-        return 0;
-    }
-    total - (u32::from(width) - 2 * u32::from(metrics.arrow))
 }
 
 /// Draws `text` starting at column `x` (left of `lo` when the tab is cut there) on row `y`, only
@@ -68,7 +54,7 @@ fn put_clipped(out: &mut Buffer, x: i32, y: u16, text: &str, lo: u16, hi: u16, s
 }
 
 /// Draws the bar into `area` (`metrics.rows` tall: the title and `×` on its middle row, the other
-/// rows filled with each tab's background); returns where its tabs, arrows and `+` landed.
+/// rows filled with each tab's background); returns where its tabs and arrows landed.
 /// `marks` is what a drag shows on it.
 pub fn render(
     f: &mut Frame,
@@ -80,28 +66,15 @@ pub fn render(
     marks: Marks,
 ) -> BarHit {
     // A group squeezed out of a tiny window can lie outside the frame.
-    let mut area = area.intersection(f.area());
+    let area = area.intersection(f.area());
     let out = f.buffer_mut();
     out.set_style(area, theme.get("tabBar"));
     if area.width == 0 || area.height == 0 {
         return BarHit::default();
     }
     let text_y = area.y + metrics.text_row(area.height);
-    // The `+` takes the bar's right end; the tabs and arrows share what's left.
-    let mut new_tab = None;
-    if metrics.new_tab > 0 && area.width > metrics.new_tab {
-        area.width -= metrics.new_tab;
-        let x = area.x + area.width;
-        let style = theme.get("tab.scrollArrow");
-        out.set_style(Rect::new(x, area.y, metrics.new_tab, area.height), style);
-        out.set_string(x + metrics.new_tab / 2, text_y, "+", style);
-        new_tab = Some(x..x + metrics.new_tab);
-    }
     if group.tabs.is_empty() {
-        return BarHit {
-            new_tab,
-            ..BarHit::default()
-        };
+        return BarHit::default();
     }
     let width = |title: &str| metrics.tab_width(title.width() as u16);
     let widths: Vec<u32> = group.tabs.iter().map(|t| width(&t.title) as u32).collect();
@@ -122,19 +95,17 @@ pub fn render(
     if group.revealed != Some((active, area.width)) {
         group.revealed = Some((active, area.width));
         if group.scroll >= active {
-            (group.scroll, group.shift) = (active, 0);
+            group.scroll = active;
         }
-        let mut used: u32 = widths[group.scroll..=active].iter().sum::<u32>() - u32::from(group.shift);
+        let mut used: u32 = widths[group.scroll..=active].iter().sum::<u32>();
         while group.scroll < active && used > inner {
-            used -= widths[group.scroll] - u32::from(group.shift);
+            used -= widths[group.scroll];
             group.scroll += 1;
-            group.shift = 0;
         }
     }
     if group.scroll >= max_scroll {
-        (group.scroll, group.shift) = (max_scroll, 0);
+        group.scroll = max_scroll;
     }
-    group.shift = group.shift.min(widths[group.scroll].saturating_sub(1) as u16);
 
     let mut arrows = None;
     if overflow {
@@ -146,10 +117,7 @@ pub fn render(
             })
         };
         let (back, forward) = (area.x..left, right..area.x + area.width);
-        let (back_style, forward_style) = (
-            arrow(group.scroll > 0 || group.shift > 0),
-            arrow(group.scroll < max_scroll),
-        );
+        let (back_style, forward_style) = (arrow(group.scroll > 0), arrow(group.scroll < max_scroll));
         out.set_style(Rect::new(back.start, area.y, metrics.arrow, area.height), back_style);
         out.set_style(
             Rect::new(forward.start, area.y, metrics.arrow, area.height),
@@ -161,8 +129,7 @@ pub fn render(
     }
 
     let mut hits = Vec::new();
-    // Where the next tab starts: left of `left` for a first tab cut by a swipe.
-    let mut vx = i32::from(left) - i32::from(group.shift);
+    let mut vx = i32::from(left);
     for (i, tab) in group.tabs.iter().enumerate().skip(group.scroll) {
         if vx >= i32::from(right) {
             break;
@@ -171,7 +138,6 @@ pub fn render(
         let w = i32::from(width(&tab.title)).min(i32::from(right) - vx);
         let (x0, x1) = (vx.max(i32::from(left)) as u16, (vx + w) as u16);
         let style = match (i == group.active, focused) {
-            _ if marks.lifted == Some(i) => theme.get("tab.lifted"),
             (true, true) => theme.get("tab.active"),
             (true, false) => theme.get("tab.unfocusedActive"),
             _ => theme.get("tab.inactive"),
@@ -235,9 +201,5 @@ pub fn render(
         let gap_x = gap_x.clamp(left, right.saturating_sub(1));
         out.set_style(Rect::new(gap_x, area.y, 1, area.height), theme.get("tab.dropMarker"));
     }
-    BarHit {
-        tabs: hits,
-        arrows,
-        new_tab,
-    }
+    BarHit { tabs: hits, arrows }
 }

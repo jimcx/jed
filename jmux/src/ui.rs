@@ -16,6 +16,7 @@ use crate::hit::{GroupHit, HitMap};
 use crate::side::SideBar;
 use crate::tab_drag::{self, TabDrop};
 use crate::tabbar;
+use crate::ui_menu;
 use crate::ui_side;
 
 /// Rows the status bar takes.
@@ -36,7 +37,8 @@ pub fn side_area(rows: u16, cols: u16, side: &SideBar) -> Option<Rect> {
 
 /// A group's tab bar and terminal: the bar (`metrics.rows` tall, fewer in a shorter group) on the
 /// group's first rows, or its last with `tabs_at_bottom`; the terminal is the rest. The height is
-/// the same either way.
+/// the same either way. The touch layout has no bar (`App::tab_metrics` gives 0 rows): the terminal
+/// is the whole group.
 pub fn bar_and_term(group: Rect, tabs_at_bottom: bool, metrics: &TabMetrics) -> (Rect, Rect) {
     let bar = metrics.rows.min(group.height);
     let rest = group.height - bar;
@@ -89,20 +91,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
             Some(TabDrop::TabBar { group, index }) if group == id => Some(index),
             _ => None,
         };
-        // In the touch layout a tab drag only starts from a hold: show the tab picked up.
-        let lifted = match &app.drag {
-            Some(Drag::Tab(t)) if app.touch && t.from == id => Some(t.index),
-            _ => None,
-        };
-        let crate::hit::BarHit { tabs, arrows, new_tab } = tabbar::render(
-            f,
-            bar,
-            group,
-            &app.theme,
-            &metrics,
-            focused,
-            tabbar::Marks { drop, lifted },
-        );
+        let crate::hit::BarHit { tabs, arrows } =
+            tabbar::render(f, bar, group, &app.theme, &metrics, focused, tabbar::Marks { drop });
         let (text, track) = shell_area(term);
         let mut scroll = ScrollBarHit::default();
         if let Some(shell) = group.active_tab() {
@@ -144,7 +134,6 @@ pub fn render(f: &mut Frame, app: &mut App) {
             scroll,
             tabs,
             arrows,
-            new_tab,
         });
     }
     // The dividers' lines, joined where they cross, and the side bar's border.
@@ -161,7 +150,24 @@ pub fn render(f: &mut Frame, app: &mut App) {
     hit.dividers = dividers;
     app.hit = hit;
     if area.height > 0 {
-        let bar = Rect::new(0, area.height - STATUS_ROWS, area.width, STATUS_ROWS);
+        let full = Rect::new(0, area.height - STATUS_ROWS, area.width, STATUS_ROWS);
+        // The touch layout starts the bar with the `☰` button; the rest follows it.
+        let button_width = MENU_BUTTON_WIDTH.min(full.width);
+        let bar = if app.touch && full.width > MENU_BUTTON_WIDTH {
+            let button = Rect::new(full.x, full.y, MENU_BUTTON_WIDTH, full.height);
+            let key = if app.menu.is_some() {
+                "statusBar.menu.active"
+            } else {
+                "statusBar.menu"
+            };
+            let style = app.theme.get(key);
+            f.buffer_mut().set_style(button, style);
+            f.buffer_mut().set_string(button.x + 1, button.y, "☰", style);
+            app.hit.menu_button = Some(button);
+            Rect::new(full.x + button_width, full.y, full.width - button_width, full.height)
+        } else {
+            full
+        };
         if let Some(confirm) = &app.confirm {
             let text = format!(" Close terminal? '{}' is running  [y] close  [n] cancel", confirm.name);
             let style = app.theme.get("statusBar.prompt");
@@ -178,7 +184,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
             status_bar(f, bar, &app.name, app.counts(), title, &app.detach_hint(), &app.theme);
         }
     }
+    ui_menu::render(f, app);
 }
+
+/// Width of the `☰` button: the glyph and a cell each side.
+const MENU_BUTTON_WIDTH: u16 = 3;
 
 /// ` <session>  3 terminals · 1 running  <title>` on the left, the detach hint on the right. What
 /// doesn't fit goes: the title first, then the counts.

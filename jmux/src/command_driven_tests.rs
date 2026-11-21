@@ -15,7 +15,7 @@
 //!   record switch (`App::test_dispatch_log`) on, every binding that applies there pressed (its
 //!   own, its parents' and the global ones, minus what `passes_through` gives away), and the log
 //!   must be exactly the bound commands in order. Nothing runs, so one app covers a context.
-//!   The Side context is re-focused before each press, since a terminal command takes the keys back.
+//!   The Side and Menu contexts are re-entered before each press, since a terminal command takes the keys back.
 //! - The dispatch's special cases, each pressing real keys: a key release does nothing; a held key
 //!   repeats only the tab cycling and the side bar's / fields' moves; a terminal command takes
 //!   the side bar's keys back and the bar's own commands do not; the close question swallows every
@@ -24,8 +24,8 @@
 //! - The guard's own tests live with the guard, in jed's file.
 //!
 //! jmux has no prefix key: every key is either a binding, typed into the focused part, or sent to
-//! the shell, so there is no prefix state to check. All four contexts can be set up headlessly
-//! (`Context::{Terminal, Confirm, Search, Side}`), so nothing is listed as not set up. Deferred:
+//! the shell, so there is no prefix state to check. All five contexts can be set up headlessly
+//! (`Context::{Terminal, Confirm, Search, Side, Menu}`), so nothing is listed as not set up. Deferred:
 //! this suite against the other platform's keymap at the app level, and user `keybindings.toml`
 //! overrides (`jmux_config_b_*` covers one).
 
@@ -39,12 +39,18 @@ use jtui::keymap::{KeyCombo, KeyContext, Platform};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::app::{App, AppEvent, Config, Confirm};
-use crate::command::{Command, Context, SearchCommand, SideCommand};
+use crate::command::{Command, Context, MenuCommand, SearchCommand, SideCommand};
 use crate::keymap::{JmuxKeymap, defaults};
 use crate::protocol::{ClientMsg, PROTOCOL_VERSION};
 
 const PLATFORMS: [Platform; 2] = [Platform::MacOs, Platform::Linux];
-const CONTEXTS: [Context; 4] = [Context::Terminal, Context::Confirm, Context::Search, Context::Side];
+const CONTEXTS: [Context; 5] = [
+    Context::Terminal,
+    Context::Confirm,
+    Context::Search,
+    Context::Side,
+    Context::Menu,
+];
 
 // ---------------------------------------------------------------------------------------------
 // Keymap level
@@ -259,6 +265,7 @@ fn enter(app: &mut App, ctx: Context) {
     match ctx {
         Context::Terminal => {}
         Context::Side => app.run(Command::Side(SideCommand::Focus)),
+        Context::Menu => app.run(Command::Menu(MenuCommand::Toggle)),
         Context::Search => app.run(Command::Search(SearchCommand::Open)),
         Context::Confirm => {
             let tab = app.groups.active_group().active_tab().unwrap();
@@ -319,6 +326,9 @@ fn check_route(app: &mut App, ctx: Context, min: usize) {
         if ctx == Context::Side {
             app.side.focused = true;
         }
+        if ctx == Context::Menu {
+            app.menu = Some(crate::menu::Menu::default());
+        }
         assert_eq!(app.context(), ctx, "before pressing {}", combo.label());
         app.press(combo.code, combo.mods);
     }
@@ -342,7 +352,7 @@ fn command_driven_tests_every_context_is_covered() {
     // Adding a `Context` variant makes this match fail to compile until it has a route test.
     for ctx in CONTEXTS {
         match ctx {
-            Context::Terminal | Context::Confirm | Context::Search | Context::Side => {}
+            Context::Terminal | Context::Confirm | Context::Search | Context::Side | Context::Menu => {}
         }
     }
     let names: HashSet<&str> = <Context as KeyContext>::names().into_iter().collect();
@@ -353,6 +363,13 @@ fn command_driven_tests_every_context_is_covered() {
 async fn command_driven_tests_route_terminal() {
     let mut r = rig().await;
     check_route(&mut r.app, Context::Terminal, 40);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn command_driven_tests_route_menu() {
+    let mut r = rig().await;
+    enter(&mut r.app, Context::Menu);
+    check_route(&mut r.app, Context::Menu, 40);
 }
 
 #[tokio::test(flavor = "multi_thread")]

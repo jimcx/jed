@@ -18,13 +18,15 @@ pub enum Context {
     Search,
     /// The commands side bar: the list's keys, typing edits the filter, no key reaches a shell.
     Side,
+    /// The touch layout's tab menu (its parent is `Terminal`): Up / Down / Enter / Escape, no key reaches a shell.
+    Menu,
 }
 
 impl KeyContext for Context {
     /// The search bar and the side bar fall back to the terminal's keys (new tab, split,
     /// scrollback, ...): only the keys no binding takes are theirs, so none reaches the shell.
     fn parent(self) -> Option<Self> {
-        matches!(self, Context::Search | Context::Side).then_some(Context::Terminal)
+        matches!(self, Context::Search | Context::Side | Context::Menu).then_some(Context::Terminal)
     }
     fn parse(name: &str) -> Option<Self> {
         match name {
@@ -32,11 +34,12 @@ impl KeyContext for Context {
             "confirm" => Some(Context::Confirm),
             "search" => Some(Context::Search),
             "side" => Some(Context::Side),
+            "menu" => Some(Context::Menu),
             _ => None,
         }
     }
     fn names() -> Vec<&'static str> {
-        vec!["terminal", "confirm", "search", "side"]
+        vec!["terminal", "confirm", "search", "side", "menu"]
     }
     /// Plain Ctrl+letter always reaches the shell (history search, delete word, ...).
     fn passes_through(self, combo: &KeyCombo) -> bool {
@@ -131,6 +134,47 @@ impl SideCommand {
     }
 }
 
+/// The touch layout's tab menu (`Toggle` is bound nowhere by default, the rest act while it is open).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MenuCommand {
+    Toggle,
+    Up,
+    Down,
+    /// Picks the highlighted item.
+    Pick,
+    Close,
+}
+
+impl MenuCommand {
+    pub const ALL: [MenuCommand; 5] = [
+        MenuCommand::Toggle,
+        MenuCommand::Up,
+        MenuCommand::Down,
+        MenuCommand::Pick,
+        MenuCommand::Close,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            MenuCommand::Toggle => "menu.toggle",
+            MenuCommand::Up => "menu.up",
+            MenuCommand::Down => "menu.down",
+            MenuCommand::Pick => "menu.pick",
+            MenuCommand::Close => "menu.close",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            MenuCommand::Toggle => "Toggle Tab Menu",
+            MenuCommand::Up => "Tab Menu: Previous",
+            MenuCommand::Down => "Tab Menu: Next",
+            MenuCommand::Pick => "Tab Menu: Pick",
+            MenuCommand::Close => "Tab Menu: Close",
+        }
+    }
+}
+
 /// Every edit of the query field the keymap can bind (the search bar's own editing keys).
 fn field_commands() -> Vec<FieldCommand> {
     let mut all = Vec::new();
@@ -210,6 +254,8 @@ pub enum Command {
     Search(SearchCommand),
     /// The commands side bar.
     Side(SideCommand),
+    /// The touch layout's tab menu.
+    Menu(MenuCommand),
     /// An edit of the search bar's query (or of the side bar's filter while it has the keys).
     Field(FieldCommand),
     Detach,
@@ -252,6 +298,7 @@ impl Command {
         ];
         all.extend(SearchCommand::ALL.map(Command::Search));
         all.extend(SideCommand::ALL.map(Command::Side));
+        all.extend(MenuCommand::ALL.map(Command::Menu));
         all.extend(field_commands().into_iter().map(Command::Field));
         all.extend((1..=9).map(Command::GoToTab));
         all.extend((1..=8).map(Command::FocusGroup));
@@ -294,6 +341,7 @@ impl KeyCommand for Command {
                 SearchCommand::Close => "search.close".into(),
             },
             Command::Side(c) => c.name().into(),
+            Command::Menu(c) => c.name().into(),
             Command::Field(c) => field_name(*c),
             Command::Detach => "session.detach".into(),
             Command::ConfirmYes => "confirm.yes".into(),
@@ -334,6 +382,7 @@ impl KeyCommand for Command {
             }
             .into(),
             Command::Side(c) => c.title().into(),
+            Command::Menu(c) => c.title().into(),
             Command::Field(c) => format!("Find Field: {}", field_name(*c).trim_start_matches("search.field.")),
             Command::Detach => "Detach".into(),
             Command::ConfirmYes => "Confirm".into(),
@@ -368,6 +417,7 @@ mod tests {
         assert_eq!(Context::parse("x"), None);
         assert_eq!(Context::parse("search"), Some(Context::Search));
         assert_eq!(Context::parse("side"), Some(Context::Side));
-        assert_eq!(Context::names().len(), 4);
+        assert_eq!(Context::parse("menu"), Some(Context::Menu));
+        assert_eq!(Context::names().len(), 5);
     }
 }

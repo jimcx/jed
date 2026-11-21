@@ -2,6 +2,10 @@ linux Confirm Enter ConfirmYes
 linux Confirm Esc ConfirmNo
 linux Confirm N ConfirmNo
 linux Confirm Y ConfirmYes
+linux Menu Down Menu(Down)
+linux Menu Enter Menu(Pick)
+linux Menu Esc Menu(Close)
+linux Menu Up Menu(Up)
 linux Search Alt+C Search(ToggleCase)
 linux Search Backspace Field(DeleteLeft)
 linux Search Ctrl+A Field(SelectAll)
@@ -95,6 +99,10 @@ macos Confirm Enter ConfirmYes
 macos Confirm Esc ConfirmNo
 macos Confirm N ConfirmNo
 macos Confirm Y ConfirmYes
+macos Menu Down Menu(Down)
+macos Menu Enter Menu(Pick)
+macos Menu Esc Menu(Close)
+macos Menu Up Menu(Up)
 macos Search Alt+Backspace Field(DeleteWordLeft)
 macos Search Alt+Delete Field(DeleteWordRight)
 macos Search Alt+Left Field(Move { motion: WordLeft, select: false })

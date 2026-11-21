@@ -21,9 +21,15 @@ pub fn dark_plus(truecolor: bool) -> Theme {
         ("statusBar", fg_bg(0xFFFFFF, 0x007ACC)),
         ("statusBar.detail", fg_bg(0xE0E0E0, 0x007ACC)),
         // The zone a dragged tab would take (as jed's `editor.dropBackground`).
-        // A tab a finger has held down and picked up (touch layout).
-        ("tab.lifted", fg_bg(0xFFFFFF, 0x0E639C)),
         ("terminal.dropBackground", fg_bg(0xFFFFFF, 0x0A4A7A)),
+        // The touch layout's `☰` button, shown while the menu is open, and the menu: its fill, the
+        // active tab, the item a key moved to, and the line before the actions.
+        ("statusBar.menu", fg_bg(0xFFFFFF, 0x005A9E)),
+        ("statusBar.menu.active", fg_bg(0x007ACC, 0xFFFFFF)),
+        ("menu", fg_bg(0xCCCCCC, 0x252526)),
+        ("menu.active", fg_bg(0xFFFFFF, 0x04395E)),
+        ("menu.highlight", fg_bg(0xFFFFFF, 0x0E639C)),
+        ("menu.separator", Style::new().fg(c(0x5A5A5A))),
         // The close question that replaces the status bar.
         ("statusBar.prompt", fg_bg(0x000000, 0xD7BA7D)),
         // A one-line message (the shell integration is missing) in place of the title.
@@ -57,7 +63,12 @@ mod tests {
                 "statusBar.prompt",
                 "statusBar.notice",
                 "terminal.dropBackground",
-                "tab.lifted",
+                "statusBar.menu",
+                "statusBar.menu.active",
+                "menu",
+                "menu.active",
+                "menu.highlight",
+                "menu.separator",
                 "sideBar",
                 "sideBar.dim",
                 "sideBar.border",
