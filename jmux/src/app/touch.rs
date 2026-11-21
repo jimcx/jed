@@ -1,9 +1,14 @@
-//! The touch layout's gestures on a tab bar (`--touch`; the rules are `jtui::touch`'s, shared with
-//! jed). A left press on the bar records a pending `Drag::Press` and starts a `HOLD` timer. Motion
-//! past `SLOP` is a swipe that scrolls the bar by whole tabs, following the finger; a release within
-//! `SLOP` is a tap, acted on then (focus a tab, close, scroll an arrow's tab, `+`, focus the group);
-//! the timer's `AppEvent::Hold` lifts a tab, after which it is an ordinary `Drag::Tab`.
+//! The touch layout's gestures on a tab bar and in a terminal (`--touch`; the rules are
+//! `jtui::touch`'s, shared with jed). A left press on the bar or a terminal records a pending
+//! `Drag::Press` and starts a `HOLD` timer. On the bar, motion past `SLOP` is a swipe that scrolls
+//! it by whole tabs, following the finger; a release within `SLOP` is a tap, acted on then (focus a
+//! tab, close, scroll an arrow's tab, `+`, focus the group); the timer's `AppEvent::Hold` lifts a
+//! tab, after which it is an ordinary `Drag::Tab`. In a terminal a swipe scrolls the scrollback by
+//! the rows moved (or sends a program that reports the mouse one wheel event per row), a tap
+//! replays the click (double / triple tap select a word / line), and a hold replays the press, so a
+//! drag from there selects as a mouse drag does (or is reported to the program).
 
+use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use jtui::split::GroupId;
 use jtui::touch::{Gesture, HOLD, Press};
 use unicode_width::UnicodeWidthStr;
@@ -13,14 +18,16 @@ use crate::hit::Hit;
 use crate::tab_drag::TabDrag;
 
 impl App {
-    /// A finger lands on the bar (`hit`): remember the press and start its hold timer.
-    pub(super) fn touch_press(&mut self, hit: Hit, column: u16, row: u16) {
+    /// A finger lands on the bar or a terminal (`hit`, pressed by `m`): remember the press and
+    /// start its hold timer.
+    pub(super) fn touch_press(&mut self, hit: Hit, m: MouseEvent) {
         let group = match hit {
             Hit::Tab { group, .. }
             | Hit::Close { group, .. }
             | Hit::Arrow { group, .. }
             | Hit::NewTab { group }
-            | Hit::Bar { group } => group,
+            | Hit::Bar { group }
+            | Hit::Terminal { group } => group,
             _ => return,
         };
         self.hold_serial += 1;
@@ -28,9 +35,10 @@ impl App {
         self.drag = Some(Drag::Press {
             group,
             hit,
-            gesture: Press::new((column, row)),
+            gesture: Press::new((m.column, m.row)),
             carry: 0,
             serial,
+            event: m,
         });
         let events = self.events.clone();
         tokio::spawn(async move {
@@ -48,9 +56,27 @@ impl App {
         }
     }
 
-    /// The hold timer of press `serial` fired: lift the tab under the finger. A stale serial (the
-    /// press ended, or a newer one began) or a press on anything but a tab does nothing.
+    /// The hold timer of press `serial` fired: lift the tab under the finger, or in a terminal
+    /// replay the press so a drag from here selects. A stale serial (the press ended, or a newer one
+    /// began) or a press on anything else does nothing.
     pub(super) fn hold(&mut self, serial: u64) {
+        if let Some(Drag::Press {
+            hit: Hit::Terminal { group },
+            gesture,
+            serial: s,
+            event,
+            ..
+        }) = &mut self.drag
+        {
+            if *s != serial || gesture.held() != Gesture::Lifted {
+                return;
+            }
+            let (group, event) = (*group, *event);
+            self.drag = None;
+            self.terminal_pointer(group, event);
+            self.needs_redraw = true;
+            return;
+        }
         let Some(Drag::Press {
             hit: Hit::Tab { group, index },
             gesture,
@@ -84,14 +110,24 @@ impl App {
     /// The finger moved while a press is pending: past `SLOP` it scrolls the bar.
     pub(super) fn press_moved(&mut self, column: u16, row: u16) {
         let Some(Drag::Press {
-            group, gesture, carry, ..
+            group,
+            hit,
+            gesture,
+            carry,
+            event,
+            ..
         }) = &mut self.drag
         else {
             return;
         };
-        let Gesture::Swipe { dx, .. } = gesture.moved((column, row)) else {
+        let Gesture::Swipe { dx, dy } = gesture.moved((column, row)) else {
             return;
         };
+        if let Hit::Terminal { group } = *hit {
+            let at = (event.column, event.row);
+            self.swipe_terminal(group, at, dy);
+            return;
+        }
         // The tabs follow the finger: moving left brings later tabs in.
         *carry -= dx;
         let (group, mut carry) = (*group, *carry);
@@ -139,6 +175,7 @@ impl App {
             group,
             hit,
             mut gesture,
+            event,
             ..
         }) = self.drag.take()
         else {
@@ -147,7 +184,45 @@ impl App {
         if gesture.released((column, row)) != Gesture::Tap {
             return;
         }
+        if let Hit::Terminal { group } = hit {
+            // The plain click: a program's click, an empty selection that the release drops, a
+            // double / triple tap's word / line.
+            self.terminal_pointer(group, event);
+            let up = MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                ..event
+            };
+            self.pointer_event(up);
+            return;
+        }
         self.tap(group, hit);
+    }
+
+    /// A swipe over `group`'s terminal (pressed at `at`) moved `dy` rows: the text follows the
+    /// finger, scrolling the scrollback, or a program that reports the mouse gets one wheel event
+    /// per row (at the press, inside its text).
+    fn swipe_terminal(&mut self, group: GroupId, at: (u16, u16), dy: i32) {
+        let rows = -dy;
+        if rows == 0 {
+            return;
+        }
+        if self.reports_mouse(group) {
+            let wheel = MouseEvent {
+                kind: if rows < 0 {
+                    MouseEventKind::ScrollUp
+                } else {
+                    MouseEventKind::ScrollDown
+                },
+                column: at.0,
+                row: at.1,
+                modifiers: KeyModifiers::NONE,
+            };
+            for _ in 0..rows.unsigned_abs() {
+                self.terminal_mouse(group, wheel);
+            }
+        } else if let Some(shell) = self.groups.get(group).and_then(|g| g.active_tab()) {
+            shell.run.scroll(rows as isize);
+        }
     }
 
     fn tap(&mut self, group: GroupId, hit: Hit) {

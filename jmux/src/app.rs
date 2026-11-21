@@ -128,7 +128,8 @@ pub enum AppEvent {
     Settings(Option<Settings>, Option<JmuxKeymap>, Vec<String>),
     /// Once a second (`App::start`'s timer): the side bar's durations and ages move on.
     Tick,
-    /// A touch press's `HOLD` timer fired (the press's serial): lift the tab under the finger.
+    /// A touch press's `HOLD` timer fired (the press's serial): lift the tab under the finger, or
+    /// start a selection in a terminal.
     Hold(u64),
 }
 
@@ -225,15 +226,16 @@ pub struct App {
 pub enum Drag {
     Divider(Divider),
     Tab(TabDrag),
-    /// A touch press on a bar, not yet a tap, a swipe or a lifted tab (`touch_press`); `carry` is
-    /// the swipe's motion not yet worth a whole tab, `serial` tells its `HOLD` timer's event apart
-    /// from an older press's.
+    /// A touch press on a bar or a terminal, not yet a tap, a swipe or a hold (`touch_press`);
+    /// `carry` is the swipe's motion not yet worth a whole tab, `serial` tells its `HOLD` timer's
+    /// event apart from an older press's, `event` is the press (replayed by a terminal's tap or hold).
     Press {
         group: GroupId,
         hit: Hit,
         gesture: jtui::touch::Press,
         carry: i32,
         serial: u64,
+        event: MouseEvent,
     },
     /// Selecting text in a terminal; `anchor` is the pressed range (a word or line for a double /
     /// triple click), `text` the shell's cells on screen.
@@ -982,7 +984,14 @@ impl App {
         match at {
             Some(
                 hit @ (Hit::Tab { .. } | Hit::Close { .. } | Hit::Arrow { .. } | Hit::NewTab { .. } | Hit::Bar { .. }),
-            ) if self.touch && down(MouseButton::Left) => self.touch_press(hit, m.column, m.row),
+            ) if self.touch && down(MouseButton::Left) => self.touch_press(hit, m),
+            // A finger in a terminal: swipe scrolls, tap clicks, hold then drag selects. A modifier
+            // (a hardware keyboard's Ctrl+tap on a link, Shift+tap to extend) acts as a click.
+            Some(hit @ Hit::Terminal { .. })
+                if self.touch && down(MouseButton::Left) && m.modifiers == KeyModifiers::NONE =>
+            {
+                self.touch_press(hit, m)
+            }
             Some(Hit::Tab { group, index }) if down(MouseButton::Left) => {
                 self.groups.active = group;
                 if let Some(g) = self.groups.get_mut(group) {
@@ -1039,15 +1048,7 @@ impl App {
                     self.drag = self.hit.dividers.get(i).cloned().map(Drag::Divider);
                 }
             }
-            Some(Hit::Terminal { group }) => {
-                if matches!(m.kind, MouseEventKind::Down(_)) {
-                    self.groups.active = group;
-                }
-                let text = self.hit.group(group).map(|g| g.text);
-                if !text.is_some_and(|text| self.link_click(group, text, m)) {
-                    self.terminal_mouse(group, m);
-                }
-            }
+            Some(Hit::Terminal { group }) => self.terminal_pointer(group, m),
             Some(Hit::ScrollBar { group }) => match m.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
                     self.groups.active = group;
@@ -1060,6 +1061,27 @@ impl App {
             _ => return,
         }
         self.needs_redraw = true;
+    }
+
+    /// A pointer event on `group`'s terminal (not a drag's): a press focuses the group, Ctrl / Cmd
+    /// on a link opens it, the rest is `terminal_mouse`'s.
+    fn terminal_pointer(&mut self, group: GroupId, m: MouseEvent) {
+        if matches!(m.kind, MouseEventKind::Down(_)) {
+            self.groups.active = group;
+        }
+        let text = self.hit.group(group).map(|g| g.text);
+        if !text.is_some_and(|text| self.link_click(group, text, m)) {
+            self.terminal_mouse(group, m);
+        }
+    }
+
+    /// Whether `group`'s program gets the mouse (it asked, and the view isn't scrolled back).
+    fn reports_mouse(&self, group: GroupId) -> bool {
+        self.groups.get(group).and_then(|g| g.active_tab()).is_some_and(|t| {
+            let screen = t.run.screen();
+            let s = screen.screen();
+            t.run.status().is_running() && s.mouse_protocol_mode() != MouseProtocolMode::None && s.scrollback() == 0
+        })
     }
 
     /// A pointer event over `group`'s terminal: reported to a program that asked for the mouse
