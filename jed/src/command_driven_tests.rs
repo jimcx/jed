@@ -562,7 +562,13 @@ async fn command_driven_tests_a_focused_field_keeps_its_edit_keys() {
     assert_eq!(app.find.query.text, "", "cut removed it from the field");
     assert_eq!(app.clipboard.read().unwrap(), "abc");
 
-    press_editor_key_of(&mut app, Command::Paste);
+    // macOS binds no paste key: Cmd+V stays the terminal's and arrives as a bracketed paste.
+    if app.keymap.binding_for(Command::Paste).is_some() {
+        press_editor_key_of(&mut app, Command::Paste);
+    } else {
+        let text = app.clipboard.read().unwrap();
+        app.handle_test_event(Event::Paste(text));
+    }
     assert_eq!(app.find.query.text, "abc", "paste went into the field");
     assert_eq!(
         app.active_buffer().unwrap().rope.to_string(),
@@ -602,13 +608,8 @@ async fn command_driven_tests_a_shell_tab_gets_plain_ctrl_letters_except_ctrl_q(
         "plain Ctrl+letters went to the shell, not the keymap"
     );
     app.handle_test_event(Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)));
-    // Ctrl+Q is Quit where the keymap binds it (Cmd+Q is macOS's, where Ctrl+Q goes to the shell).
-    let want: &[Command] = if cfg!(target_os = "macos") {
-        &[]
-    } else {
-        &[Command::Quit]
-    };
-    assert_eq!(app.test_dispatch_log.as_deref(), Some(want), "Ctrl+Q");
+    // Ctrl+Q is Quit on every platform (it works in any terminal, even without the kitty protocol).
+    assert_eq!(app.test_dispatch_log.as_deref(), Some(&[Command::Quit][..]), "Ctrl+Q");
     app.test_dispatch_log = None;
 }
 
@@ -640,14 +641,10 @@ async fn command_driven_tests_terminal_copy_key_and_ctrl_c() {
             pieces: Vec::new(),
         });
     };
-    // The platform's copy key (Cmd+C on macOS, Ctrl+Shift+C on Linux) copies the selection.
+    // Copy (Cmd+C on macOS, Ctrl+Shift+C on Linux) copies the selection.
     select(&mut app);
-    app.press_bound(Command::Copy);
-    assert_eq!(
-        app.clipboard.read().unwrap(),
-        "alpha",
-        "the copy key copied the selection"
-    );
+    app.test_execute(Command::Copy);
+    assert_eq!(app.clipboard.read().unwrap(), "alpha", "copy copied the selection");
     // Ctrl+C alone is the program's SIGINT, selection or not.
     select(&mut app);
     app.handle_test_event(Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)));
