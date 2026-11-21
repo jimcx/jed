@@ -198,8 +198,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
     ui_menu::render(f, app);
 }
 
-/// Width of the `☰` button: the glyph and a cell each side.
-const MENU_BUTTON_WIDTH: u16 = 3;
+/// Width of the `☰` button: the glyph, a cell before it and two after.
+const MENU_BUTTON_WIDTH: u16 = 4;
 
 /// ` <session>  3 terminals · 1 running  <title>` on the left, the detach hint on the right. What
 /// doesn't fit goes: the title first, then the counts.

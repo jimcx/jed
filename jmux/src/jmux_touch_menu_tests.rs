@@ -79,20 +79,20 @@ async fn jmux_touch_menu_the_layout_has_no_bars_and_a_button() {
         );
         assert!(!h.row(0).contains("fakesh ○ ×"), "no tab bar drawn: {}", h.row(0));
         assert!(
-            h.row(12).starts_with(" ☰ work") && h.row(12).trim_end().ends_with("1 terminal"),
+            h.row(12).starts_with(" ☰  work") && h.row(12).trim_end().ends_with("1 terminal"),
             "the button, the session and the counts: {:?}",
             h.row(12)
         );
         assert!(
-            h.row(13).starts_with("    fakesh") && h.row(13).trim_end().ends_with("detach"),
+            h.row(13).starts_with("     fakesh") && h.row(13).trim_end().ends_with("detach"),
             "the title and the hint below: {:?}",
             h.row(13)
         );
-        for (x, y) in [(0, 12), (2, 12), (0, 13), (2, 13)] {
+        for (x, y) in [(0, 12), (3, 12), (0, 13), (3, 13)] {
             assert_eq!(h.app.hit.at(x, y), Some(Hit::Menu), "the button spans both rows");
         }
-        assert_eq!(h.app.hit.at(3, 12), None);
-        assert_eq!(h.app.hit.at(3, 13), None);
+        assert_eq!(h.app.hit.at(4, 12), None);
+        assert_eq!(h.app.hit.at(4, 13), None);
         // A new shell starts at the full height too.
         h.app.run(Command::NewTerminal);
         assert_eq!(h.shell_size(id), (12, 59));
