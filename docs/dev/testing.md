@@ -25,6 +25,21 @@ The release budget runs are jed's (the workspace's default member); they are the
 
 **Profiling:** `scripts/check --profile [jed args…]` builds jed with the `profiling` cargo profile (release, unstripped, line tables) into `target/profiling/jed`, runs it under [samply](https://github.com/mstange/samply) (`cargo install --locked samply`), and opens the Firefox Profiler on exit; the profile stays in `target/profile.json.gz` (`samply load` reopens it). On Linux it needs `kernel.perf_event_paranoid` ≤ 1 and `kernel.perf_event_mlock_kb` ≥ 2048, or samply fails with "mmap failed" (`sudo sysctl` each; a file in `/etc/sysctl.d/` keeps them across reboots). It runs the real UI, so it is for people, not agents.
 
+## Rules for every test
+
+Review ([review.md](review.md#tests-and-coverage)) holds tests to these, so write them this way first:
+
+- **Run the command, don't press its shortcut.** `app.test_execute(Command::..)` (jmux: `run(Command::..)`), so the
+  test does the same thing on macOS and Linux, whose keymaps differ. Only a test of key handling presses a key, and
+  then through `app.press_bound(Command::..)` / `press_field_key` ([below](#driving-the-app-headlessly)).
+- **Shells are `fakesh`.** A test that needs a shell runs `jterm::testing::fake_shell()`, never `/bin/sh` or
+  `$SHELL`, so its prompt and output are the same on every machine
+  ([the fake shell](#terminal-tests-the-fake-shell); a missing command is one match arm to add there).
+- **Use the helpers, and make one for a repeated pattern.** Before writing setup or a wait, look for it in this file
+  and in the test file's existing functions (`open_app`, `area_app`, `real_shell`, `idle`, `settle_for`, …). When
+  the same few lines appear in a second test, extract a helper in that test file (or `test_util` when several
+  files need it) and list a widely useful one here.
+
 ## Driving the app headlessly
 
 Helpers are `#[cfg(test)] impl App` in `app/mod.rs`.

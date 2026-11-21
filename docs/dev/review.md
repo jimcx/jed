@@ -32,6 +32,18 @@ don't pad, and don't report what rustfmt or clippy already catch, or matters of 
 - Coverage against every part of the task, as listed above. End-to-end tests go through real code paths
   ([testing.md](testing.md)) and sit where CLAUDE.md's "Tests" says (`jed/src/todo_tests.rs` for a single task,
   `jed/src/<id>_tests.rs` for a task with subtasks).
+- Tests are written the same way on every platform ([testing.md](testing.md#rules-for-every-test)):
+  - A test starts a feature by running its command (`app.test_execute(Command::..)`, jmux's `run(Command::..)`), not
+    by pressing its shortcut: keymaps differ between macOS and Linux, so a pressed Ctrl / Cmd / Alt key tests a
+    different path, or nothing, on the other platform. A test about key handling presses
+    `app.press_bound(Command::..)`, never a raw platform key; a new raw `.press(` with a modifier needs a reason in
+    `command_driven_tests::ALLOWED_LINES`.
+  - A test that needs a shell runs `fakesh` (`jterm::testing::fake_shell()`), not `/bin/sh` or the user's `$SHELL`:
+    a real shell's prompt, paste handling and output differ between machines. The only real-shell tests are the
+    listed exceptions in [testing.md](testing.md#terminal-tests-the-fake-shell), each saying why in a comment.
+  - A pattern that recurs in the diff's tests, or that an existing test file already wraps (building the app,
+    opening a shell and waiting for its prompt, reading a drawn row, settling on a state), uses or becomes a helper
+    instead of being copied; see [Code re-use](#code-re-use).
 - Where there is [evidence](#evidence), use it to aim: a mutation that survived, or a required behaviour with no
   mutation and no test, is where to look first.
 
