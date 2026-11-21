@@ -64,8 +64,6 @@ impl Workspace {
 
     /// `[lsp] idle_stop_minutes`: `.workspace`'s, else `settings.toml`'s, else 60; `None` for 0
     /// (never stop). Read live, so a reload of either file applies.
-    // Read by the idle clock (lsp_idle_stop-b).
-    #[allow(dead_code)]
     pub fn lsp_idle_stop(&self) -> Option<std::time::Duration> {
         let minutes = self
             .config

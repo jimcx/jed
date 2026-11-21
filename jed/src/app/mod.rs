@@ -168,6 +168,8 @@ enum Timer {
     Review,
     /// A Claude language server query's deadline or retry (`claude_lsp`).
     ClaudeLsp,
+    /// The servers have idled for `[lsp] idle_stop_minutes` (`lsp_idle_deadline`).
+    LspIdle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -483,6 +485,8 @@ pub struct App {
     /// `find_definition` / `find_references` / `get_hover` calls waiting for a language server
     /// (`claude_lsp`).
     claude_lsp: claude_lsp::State,
+    /// When the user last did something, for stopping idle language servers (`app/lsp.rs`).
+    lsp_idle: lsp::IdleClock,
     /// The Explorer view's "Git History" section: the active file's commits and the section's
     /// state (`app/git_history.rs`).
     pub git_history: crate::git_history::GitHistory,
@@ -695,6 +699,7 @@ impl App {
             suggest: None,
             claude_apply: None,
             claude_lsp: Default::default(),
+            lsp_idle: Default::default(),
             git_history: Default::default(),
             branch_history: {
                 let mut h = crate::git_history::GitHistory::default();
@@ -939,6 +944,7 @@ impl App {
             (self.files_poll, Timer::Files),
             (self.review_deadline(), Timer::Review),
             (self.claude_lsp.deadline(), Timer::ClaudeLsp),
+            (self.lsp_idle_deadline(), Timer::LspIdle),
         ]
         .into_iter()
         .filter_map(|(at, timer)| Some((tokio::time::Instant::from_std(at?), timer)))
@@ -977,6 +983,7 @@ impl App {
             Timer::Files => self.files_matched(),
             Timer::Review => self.review_refresh(),
             Timer::ClaudeLsp => self.claude_lsp_tick(Instant::now()),
+            Timer::LspIdle => self.lsp_idle_tick(Instant::now()),
         }
     }
 
@@ -1184,6 +1191,11 @@ impl App {
         let moved = matches!(&ev, Event::Mouse(m) if m.kind == crossterm::event::MouseEventKind::Moved);
         if !moved {
             self.needs_redraw = true;
+        }
+        match &ev {
+            Event::Key(k) if k.kind == KeyEventKind::Release => {}
+            Event::Key(_) | Event::Mouse(_) | Event::Paste(_) | Event::FocusGained => self.note_input(),
+            _ => {}
         }
         self.note_pre_event();
         let here = self.nav_begin();
@@ -2058,6 +2070,21 @@ impl App {
     /// Fires the hover resting timer as the event loop would at `now` (no sleeping in tests).
     pub fn test_hover_tick(&mut self, now: Instant) {
         self.hover_tick(now);
+    }
+
+    /// Fires the idle stop's timer as the event loop would at `now` (no sleeping in tests).
+    pub fn test_lsp_idle_tick(&mut self, now: Instant) {
+        self.lsp_idle_tick(now);
+    }
+
+    /// Pretends the user's last input was at `at`.
+    pub fn test_set_last_input(&mut self, at: Instant) {
+        self.lsp_idle.last_input = at;
+    }
+
+    /// When the idle stop is next due, if it is.
+    pub fn test_lsp_idle_deadline(&self) -> Option<Instant> {
+        self.lsp_idle_deadline()
     }
 
     /// The terminal reporting that it lost the focus.

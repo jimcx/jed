@@ -21,6 +21,22 @@ use crate::lsp::rpc::RpcError;
 use crate::lsp::{Event, Sent, ServerId, Source};
 use crate::syntax::Language;
 
+/// The idle clock (`[lsp] idle_stop_minutes`): when the user last did something.
+#[derive(Debug)]
+pub(super) struct IdleClock {
+    /// The last key, mouse event, paste or focus gained (not output, file changes or server
+    /// traffic).
+    pub last_input: std::time::Instant,
+}
+
+impl Default for IdleClock {
+    fn default() -> Self {
+        Self {
+            last_input: std::time::Instant::now(),
+        }
+    }
+}
+
 /// What a pending request is for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Request {
@@ -129,6 +145,56 @@ impl App {
         // Each turn: a document just opened (or a server just running) is due at once.
         self.check_semantic();
         self.check_pull();
+    }
+
+    /// User input: resets the idle clock (one store) and, if the servers were stopped for
+    /// idleness, starts them again before the event is handled, so a request it makes waits
+    /// for them as during startup.
+    pub(super) fn note_input(&mut self) {
+        self.lsp_idle.last_input = std::time::Instant::now();
+        self.wake_servers();
+    }
+
+    /// Starts the idle-stopped servers again (user input, a Claude query).
+    pub(super) fn wake_servers(&mut self) {
+        if self.lsp.idle_stopped().is_empty() {
+            return;
+        }
+        if self.lsp.wake(&self.workspace.root, &self.workspace.config, self.trust) {
+            tracing::info!("language servers restarting after idle");
+        }
+        // `sync_documents` sends `didOpen` once they run.
+        self.servers_dirty = true;
+        self.drop_cleared_diagnostics();
+    }
+
+    /// When the idle stop is due: `idle_stop_minutes` after the last input, while a server
+    /// is starting or running.
+    pub(super) fn lsp_idle_deadline(&self) -> Option<std::time::Instant> {
+        let after = self.workspace.lsp_idle_stop()?;
+        self.lsp
+            .servers()
+            .iter()
+            .any(|s| !matches!(s.state, crate::lsp::State::Failed))
+            .then(|| self.lsp_idle.last_input + after)
+    }
+
+    /// The idle deadline passed (the loop's timer; `now` injected by tests): stops the servers
+    /// if the setting still says so.
+    pub(super) fn lsp_idle_tick(&mut self, now: std::time::Instant) {
+        let Some(after) = self.workspace.lsp_idle_stop() else {
+            return;
+        };
+        if now.saturating_duration_since(self.lsp_idle.last_input) < after {
+            return;
+        }
+        let stopped = self.lsp.idle_stop(after);
+        if stopped.is_empty() {
+            return;
+        }
+        // They answer none of them now.
+        self.requests.retain(|(s, _), _| !stopped.contains(s));
+        self.claude_lsp_check();
     }
 
     fn start_servers(&mut self) {

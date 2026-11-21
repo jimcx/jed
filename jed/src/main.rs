@@ -102,6 +102,8 @@ mod locations;
 mod logging;
 mod logs;
 mod lsp;
+#[cfg(test)]
+mod lsp_idle_stop_tests;
 mod markdown;
 #[cfg(test)]
 mod markdown_preview_tests;

@@ -8128,27 +8128,6 @@ mod live_reload {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn live_reload_settings_update_the_lsp_idle_stop() {
-        use std::time::Duration;
-        let dir = tempfile::tempdir().unwrap();
-        let (mut app, _root, config_dir) = open_app(&dir, "[settings]\n", "", "", "x\n");
-        assert_eq!(
-            app.workspace.lsp_idle_stop(),
-            Some(Duration::from_secs(3600)),
-            "default"
-        );
-        fs::write(config_dir.join(settings::FILE_NAME), "[lsp]\nidle_stop_minutes = 7\n").unwrap();
-        assert!(
-            app.settle(|a| a.workspace.lsp_idle_stop() == Some(Duration::from_secs(420)))
-                .await,
-            "{:?}",
-            app.workspace.lsp_idle_stop()
-        );
-        fs::write(config_dir.join(settings::FILE_NAME), "[lsp]\nidle_stop_minutes = 0\n").unwrap();
-        assert!(app.settle(|a| a.workspace.lsp_idle_stop().is_none()).await, "0 = never");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
     async fn live_reload_settings_reload_in_single_file_mode() {
         let dir = tempfile::tempdir().unwrap();
         let base = crate::workspace::normalize(dir.path());

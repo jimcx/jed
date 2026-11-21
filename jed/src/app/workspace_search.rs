@@ -756,6 +756,8 @@ mod tests {
                 let buffer = app.groups.active_group().active_tab().unwrap().buffer;
                 app.claude_lsp.test_arm(buffer, at);
             }
+            // Needs a running server: covered by `lsp_idle_stop_tests`, not in `ALL`.
+            LspIdle => unreachable!("armed by a running server"),
         }
     }
 

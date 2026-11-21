@@ -170,6 +170,10 @@ pub struct Server {
     pub progress: progress::Progress,
     tx: mpsc::UnboundedSender<ToServer>,
     next_id: Arc<AtomicI64>,
+    /// The idle-stopped instances this one replaces (a chain, if it was stopped again before
+    /// publishing): their diagnostics stay until this one publishes (or fails, restarts or is
+    /// stopped), then are dropped (`Manager::idle_stop`).
+    replaces: Vec<ServerId>,
     /// Its protocol trace is on: every JSON-RPC message in / out also goes to its tool log.
     trace: Arc<AtomicBool>,
     task: JoinHandle<()>,
@@ -232,6 +236,18 @@ pub struct Stopped {
     pub languages: Vec<Language>,
 }
 
+/// A server stopped by `Manager::idle_stop` (jed sat idle): not an exit, so not in `stopped`.
+/// Its diagnostics stay (under `old`) until its replacement publishes.
+#[derive(Debug, Clone)]
+pub struct IdleStopped {
+    pub config: ServerConfig,
+    pub root: PathBuf,
+    pub languages: Vec<Language>,
+    /// The instances whose diagnostics are kept (the stopped one and those it replaced).
+    old: Vec<ServerId>,
+    trace: bool,
+}
+
 /// A server restarted by `Manager::restart`: the instance stopped (none for a stopped server)
 /// and the new one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,6 +293,8 @@ pub struct Manager {
     stopping: Vec<JoinHandle<()>>,
     /// Servers gone from `servers` (stopped or exited cleanly), for the Tools view.
     stopped: Vec<Stopped>,
+    /// Servers stopped for idleness, waiting for `wake` (`idle_stop`).
+    idle: Vec<IdleStopped>,
     next_server: u64,
     /// Buffers open on servers (`textDocument/didOpen` …).
     docs: Documents,
@@ -307,6 +325,7 @@ impl Manager {
             servers: Vec::new(),
             stopping: Vec::new(),
             stopped: Vec::new(),
+            idle: Vec::new(),
             next_server: 0,
             docs: Documents::default(),
             diagnostics: diagnostics::Store::default(),
@@ -350,6 +369,91 @@ impl Manager {
         &self.stopped
     }
 
+    /// Servers stopped for idleness and not started again yet (the Tools view's "stopped (idle)").
+    pub fn idle_stopped(&self) -> &[IdleStopped] {
+        &self.idle
+    }
+
+    /// Stops every starting or running server because jed was idle for `after` (a failed one
+    /// stays as it is): the same shutdown as `sync`'s (shutdown, exit, kill after the timeout),
+    /// remembered in `idle_stopped`. No notice; their diagnostics stay until a restarted
+    /// instance publishes. Returns the stopped ids (their requests are never answered).
+    pub fn idle_stop(&mut self, after: Duration) -> Vec<ServerId> {
+        let mut stopped = Vec::new();
+        let mut kept = Vec::with_capacity(self.servers.len());
+        for s in std::mem::take(&mut self.servers) {
+            if matches!(s.state, State::Failed) {
+                kept.push(s);
+                continue;
+            }
+            s.stop();
+            self.logs
+                .tool(crate::logs::Tool::Server(s.config.name.clone()))
+                .info(&format!("Stopped after {} min idle", after.as_secs() / 60));
+            stopped.push(s.id);
+            let trace = s.trace();
+            let mut old = s.replaces;
+            old.push(s.id);
+            let mut languages = s.languages;
+            // A same-named entry (another language's server) is merged, so nothing is lost.
+            if let Some(i) = self.idle.iter().position(|i| i.config.name == s.config.name) {
+                let before = self.idle.remove(i);
+                old.extend(before.old);
+                for l in before.languages {
+                    if !languages.contains(&l) {
+                        languages.push(l);
+                    }
+                }
+            }
+            self.idle.push(IdleStopped {
+                trace,
+                config: s.config,
+                root: s.root,
+                languages,
+                old,
+            });
+            self.stopping.push(s.task);
+        }
+        self.servers = kept;
+        if !stopped.is_empty() {
+            tracing::info!("stopping language servers after {} min idle", after.as_secs() / 60);
+        }
+        stopped
+    }
+
+    /// The user is back: starts every idle-stopped server again with its config and root, for
+    /// the languages that still resolve to it (`sync`'s current answer wins; one with no
+    /// language left is forgotten and its kept diagnostics dropped). True if any started.
+    pub fn wake(&mut self, root: &Path, workspace: &WorkspaceConfig, trust: Trust) -> bool {
+        let builtins = self.builtins.clone();
+        let mut started = false;
+        for mut i in std::mem::take(&mut self.idle) {
+            i.languages.retain(|&l| {
+                i.root == root && config::resolve(l, workspace, trust, &builtins) == Resolved::Server(i.config.clone())
+            });
+            let id = (!i.languages.is_empty())
+                .then(|| self.launch(i.config, i.root, i.languages, i.trace))
+                .flatten();
+            match id {
+                Some(new) => {
+                    if let Some(s) = self.servers.iter_mut().find(|s| s.id == new) {
+                        s.replaces = i.old;
+                    }
+                    started = true;
+                }
+                None => i.old.into_iter().for_each(|old| self.clear_kept(old)),
+            }
+        }
+        started
+    }
+
+    /// Drops the diagnostics kept for an idle-stopped instance.
+    fn clear_kept(&mut self, old: ServerId) {
+        if self.diagnostics.clear_server(old) {
+            self.cleared.push(old);
+        }
+    }
+
     /// The server for `language`, in any state.
     pub fn server_for(&self, language: Language) -> Option<&Server> {
         self.servers.iter().find(|s| s.languages.contains(&language))
@@ -371,6 +475,7 @@ impl Manager {
         if self.sink.is_none() || self.launcher.is_none() {
             return None;
         }
+        let mut idle_old = Vec::new();
         let (config, root, languages, trace, old) =
             if let Some(i) = self.servers.iter().position(|s| s.config.name == name) {
                 let s = self.servers.remove(i);
@@ -379,15 +484,25 @@ impl Manager {
                 if self.diagnostics.clear_server(s.id) {
                     self.cleared.push(s.id);
                 }
+                s.replaces.iter().for_each(|&old| self.clear_kept(old));
                 self.stopping.push(s.task);
                 (s.config, s.root, s.languages, trace, Some(s.id))
             } else {
-                let i = self.stopped.iter().position(|s| s.config.name == name)?;
-                let s = self.stopped.remove(i);
-                (s.config, s.root, s.languages, false, None)
+                if let Some(i) = self.idle.iter().position(|s| s.config.name == name) {
+                    let s = self.idle.remove(i);
+                    idle_old = s.old;
+                    (s.config, s.root, s.languages, s.trace, None)
+                } else {
+                    let i = self.stopped.iter().position(|s| s.config.name == name)?;
+                    let s = self.stopped.remove(i);
+                    (s.config, s.root, s.languages, false, None)
+                }
             };
         self.stopping.retain(|t| !t.is_finished());
         let new = self.launch(config, root, languages, trace)?;
+        if let Some(s) = self.servers.iter_mut().find(|s| s.id == new) {
+            s.replaces = idle_old;
+        }
         Some(Restarted { old, new })
     }
 
@@ -436,6 +551,7 @@ impl Manager {
             progress: progress::Progress::default(),
             tx,
             next_id,
+            replaces: Vec::new(),
             trace,
             task,
         });
@@ -479,6 +595,7 @@ impl Manager {
                 if self.diagnostics.clear_server(s.id) {
                     self.cleared.push(s.id);
                 }
+                s.replaces.iter().for_each(|&old| self.clear_kept(old));
                 self.stopping.push(s.task);
             } else {
                 kept.push(s);
@@ -495,6 +612,10 @@ impl Manager {
                 if !s.languages.contains(&language) {
                     s.languages.push(language);
                 }
+                continue;
+            }
+            // Idle-stopped: `wake` starts it with the user's next input.
+            if self.idle.iter().any(|i| i.languages.contains(&language)) {
                 continue;
             }
             self.launch(config, root.to_path_buf(), vec![language], false);
@@ -674,6 +795,7 @@ impl Manager {
             tracing::debug!("diagnostics from a language server that isn't running");
             return false;
         };
+        self.drop_replaced(server);
         if let Some(id) = buffers.find_path(&published.path) {
             self.docs.sync(&self.servers, buffers);
             if let Some(v) = published.version {
@@ -727,6 +849,18 @@ impl Manager {
         }
     }
 
+    /// `server` is heard from again after an idle stop: the diagnostics kept from the instance
+    /// it replaced go.
+    fn drop_replaced(&mut self, server: ServerId) {
+        let old = self
+            .servers
+            .iter_mut()
+            .find(|s| s.id == server)
+            .map(|s| std::mem::take(&mut s.replaces))
+            .unwrap_or_default();
+        old.into_iter().for_each(|old| self.clear_kept(old));
+    }
+
     /// Servers whose diagnostics were dropped since the last call.
     pub fn take_cleared(&mut self) -> Vec<ServerId> {
         std::mem::take(&mut self.cleared)
@@ -747,8 +881,11 @@ impl Manager {
             tracing::debug!(?event, "event from a stopped language server");
             return None;
         };
-        if matches!(event, Event::Failed { .. } | Event::Exited { .. }) && self.diagnostics.clear_server(id) {
-            self.cleared.push(id);
+        if matches!(event, Event::Failed { .. } | Event::Exited { .. }) {
+            if self.diagnostics.clear_server(id) {
+                self.cleared.push(id);
+            }
+            self.drop_replaced(id);
         }
         let s = &mut self.servers[index];
         let name = s.config.name.clone();
@@ -1010,6 +1147,112 @@ mod tests {
         }
         assert_eq!(fake.launches(), ["clangd", "clangd"]);
         m.shutdown().await;
+    }
+
+    /// Publishes one error for `id` on `/ws/a.cpp`, as a server would.
+    fn seed(m: &mut Manager, id: ServerId) {
+        let p = diagnostics::parse(json!({
+            "uri": "file:///ws/a.cpp",
+            "diagnostics": [{
+                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } },
+                "message": "x",
+                "severity": 1
+            }]
+        }))
+        .unwrap();
+        m.diagnostics.publish(id, crate::buffer::pos::PosEncoding::Utf16, p);
+    }
+
+    fn errors(m: &Manager) -> usize {
+        m.diagnostics.counts().of(crate::diagnostics::Severity::Error)
+    }
+
+    fn wake(m: &mut Manager, ws: &WorkspaceConfig, trust: Trust) -> bool {
+        m.wake(Path::new("/ws"), ws, trust)
+    }
+
+    /// An idle-stopped server comes back as a new instance; the diagnostics it left stay until
+    /// that instance is heard from, also when it is stopped again before that (the chain).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn idle_stop_keeps_diagnostics_until_the_replacement_is_heard_from() {
+        let fake = FakeLauncher::new(FakeOptions::default());
+        let (mut m, _rx) = manager(&fake);
+        sync(&mut m, &[Language::Cpp]);
+        let first = m.servers()[0].id;
+        seed(&mut m, first);
+        assert_eq!(m.idle_stop(Duration::from_secs(3600)), [first]);
+        assert!(m.servers().is_empty() && m.stopped().is_empty());
+        assert_eq!(m.idle_stopped().len(), 1);
+        sync(&mut m, &[Language::Cpp]);
+        assert!(m.servers().is_empty(), "sync leaves an idle-stopped language to wake");
+
+        let ws = WorkspaceConfig::default();
+        assert!(wake(&mut m, &ws, Trust::NotNeeded));
+        let second = m.servers()[0].id;
+        assert_ne!(second, first);
+        assert_eq!(errors(&m), 1, "kept");
+        // Stopped again before it published: the chain keeps the first one's.
+        assert_eq!(m.idle_stop(Duration::from_secs(3600)), [second]);
+        assert!(wake(&mut m, &ws, Trust::NotNeeded));
+        let third = m.servers()[0].id;
+        assert_eq!(errors(&m), 1, "still kept");
+        m.drop_replaced(third);
+        assert_eq!(errors(&m), 0, "dropped once the third is heard from");
+        assert_eq!(m.take_cleared(), [first]);
+        m.shutdown().await;
+    }
+
+    /// The configuration changed while idle: `wake` starts nothing for a language that no
+    /// longer resolves to the server and drops what it left.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wake_forgets_an_idle_server_whose_config_changed() {
+        let fake = FakeLauncher::new(FakeOptions::default());
+        let (mut m, _rx) = manager(&fake);
+        sync(&mut m, &[Language::Cpp]);
+        let id = m.servers()[0].id;
+        seed(&mut m, id);
+        m.idle_stop(Duration::from_secs(3600));
+        let other = WorkspaceConfig::parse("[lsp.cpp]\ncommand = \"ccls\"").unwrap();
+        assert!(!wake(&mut m, &other, Trust::Trusted));
+        assert!(m.idle_stopped().is_empty() && m.servers().is_empty());
+        assert_eq!(errors(&m), 0, "kept diagnostics dropped");
+        assert_eq!(m.take_cleared(), [id]);
+        m.shutdown().await;
+    }
+
+    /// "Restart Server" on an idle-stopped server starts it (its kept diagnostics stay until
+    /// the new instance is heard from).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn restarting_an_idle_stopped_server_starts_it() {
+        let fake = FakeLauncher::new(FakeOptions::default());
+        let (mut m, _rx) = manager(&fake);
+        sync(&mut m, &[Language::Cpp]);
+        let id = m.servers()[0].id;
+        seed(&mut m, id);
+        m.idle_stop(Duration::from_secs(3600));
+        let r = m.restart("clangd").expect("an idle-stopped server restarts");
+        assert_eq!(r.old, None);
+        assert!(m.idle_stopped().is_empty());
+        assert_eq!(m.servers()[0].id, r.new);
+        assert_eq!(errors(&m), 1, "kept until the new one is heard from");
+        m.drop_replaced(r.new);
+        assert_eq!(errors(&m), 0);
+        m.shutdown().await;
+    }
+
+    /// A failed server isn't stopped; only starting and running ones are.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn idle_stop_leaves_a_failed_server() {
+        let fake = FakeLauncher::new(FakeOptions {
+            missing: vec!["clangd".into()],
+            ..Default::default()
+        });
+        let (mut m, mut rx) = manager(&fake);
+        sync(&mut m, &[Language::Cpp]);
+        m.handle(next(&mut rx).await);
+        assert!(m.idle_stop(Duration::from_secs(60)).is_empty());
+        assert_eq!(m.servers().len(), 1);
+        assert!(m.idle_stopped().is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]
