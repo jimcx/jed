@@ -1385,6 +1385,25 @@ impl Harness {
     }
 }
 
+/// A program in a pane that copies through OSC 52 has it sent on to the client, as jmux's own
+/// copy is; a read (`52;c;?`) sends nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_d_a_programs_osc_52_copy_reaches_the_client() {
+    let mut h = Harness::new(12, 60).await;
+    h.settle_text("fakesh ○").await;
+    h.app.type_text("printf '\\033]52;c;?\\007'; echo READ_DONE\n");
+    h.settle_text("READ_DONE").await;
+    h.frame().await;
+    // `\x1b]52;`: the echoed command line draws `]52;` as text.
+    assert!(
+        !String::from_utf8_lossy(&h.raw).contains("\x1b]52;"),
+        "a read isn't answered or sent on"
+    );
+    h.app
+        .type_text(&format!("printf '\\033]52;c;%s\\007' {}\n", b64("from vim")));
+    h.settle("the copy sent to the client", |h| h.copied("from vim")).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_layout_d_dragging_selects_and_copy_sends_osc_52() {
     let mut h = Harness::new(12, 60).await;

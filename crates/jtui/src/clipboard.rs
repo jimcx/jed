@@ -141,9 +141,60 @@ pub fn base64(bytes: &[u8]) -> String {
     out
 }
 
+/// Decodes standard base64 (RFC 4648), padded or not; `None` on a character outside the alphabet
+/// or a dangling single character. What a program in a terminal sends in its OSC 52.
+pub fn base64_decode(text: &[u8]) -> Option<Vec<u8>> {
+    let text = text
+        .strip_suffix(b"==")
+        .or_else(|| text.strip_suffix(b"="))
+        .unwrap_or(text);
+    let mut out = Vec::with_capacity(text.len() / 4 * 3 + 2);
+    for chunk in text.chunks(4) {
+        if chunk.len() == 1 {
+            return None;
+        }
+        let mut n = 0u32;
+        for (i, c) in chunk.iter().enumerate() {
+            let v = match c {
+                b'A'..=b'Z' => c - b'A',
+                b'a'..=b'z' => c - b'a' + 26,
+                b'0'..=b'9' => c - b'0' + 52,
+                b'+' => 62,
+                b'/' => 63,
+                _ => return None,
+            };
+            n |= u32::from(v) << (18 - 6 * i);
+        }
+        out.extend_from_slice(&n.to_be_bytes()[1..chunk.len()]);
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base64_decode_reverses_base64() {
+        for input in ["", "f", "fo", "foo", "foob", "fooba", "foobar", "héllo wörld\n"] {
+            let encoded = base64(input.as_bytes());
+            assert_eq!(
+                base64_decode(encoded.as_bytes()).as_deref(),
+                Some(input.as_bytes()),
+                "{input:?}"
+            );
+            // Unpadded too.
+            let bare = encoded.trim_end_matches('=');
+            assert_eq!(
+                base64_decode(bare.as_bytes()).as_deref(),
+                Some(input.as_bytes()),
+                "{bare:?}"
+            );
+        }
+        assert_eq!(base64_decode(b"Zm9v!"), None);
+        assert_eq!(base64_decode(b"Zm9vY"), None);
+        assert_eq!(base64_decode(b"Zm=v"), None);
+    }
 
     #[test]
     fn osc52_sequence_sets_the_clipboard_to_the_base64_of_the_text() {

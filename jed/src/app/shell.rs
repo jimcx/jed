@@ -499,9 +499,19 @@ impl App {
                 };
                 self.notify(level, note);
             }
+            Event::Clipboard { text, .. } => self.terminal_clipboard(text),
             // Output keeps the mouse selection on its text (`Run`'s reader decides).
             Event::Output(_) | Event::Started(_) => {}
         }
+    }
+
+    /// `Event::Clipboard`: a program in a shell or task copied through OSC 52; onto the clipboard
+    /// as any copy (arboard, or OSC 52 to the outer terminal over SSH).
+    pub(super) fn terminal_clipboard(&mut self, text: String) {
+        self.clipboard.write(crate::clipboard::Copied {
+            text,
+            ..Default::default()
+        });
     }
 
     /// `AppEvent::Terminal(TerminalEvent::IntegrationWritten)`: only a failure needs saying (the wizard still opens:

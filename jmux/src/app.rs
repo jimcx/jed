@@ -1331,6 +1331,12 @@ impl App {
                 }
                 self.feed_history(id);
             }
+            // A program's OSC 52 copy: on to the client, as jmux's own copy (dropped while none is
+            // attached, as `redraw` clears `out`).
+            Event::Clipboard { text, .. } => {
+                self.out.extend_from_slice(osc52_sequence(&text).as_bytes());
+                self.needs_redraw = true;
+            }
             // The shell exited (or never started): its tab goes, with no question.
             Event::Ended(id) => {
                 // A last finish may not have sent a `Foreground`.

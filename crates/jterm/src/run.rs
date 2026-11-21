@@ -21,7 +21,7 @@
 //! A shell's tab follows the OSC codes its terminal sends: `133;B` (a command starts) and
 //! `133;D;<code>` (it finished) from the shell integration, and a program's own window title
 //! (OSC 0 / 2, vim's for one) while it runs. `TitleCallback` turns them into
-//! `Event::Foreground`. The same codes (plus `633;E`, the command line, and OSC 7, the directory)
+//! `Event::Foreground`. A program's OSC 52 copy becomes `Event::Clipboard`. The same codes (plus `633;E`, the command line, and OSC 7, the directory)
 //! fill a ring of the last `StartOptions::command_ring` `CommandRecord`s, each anchored to absolute rows so
 //! `Run::command_output` can read its text back while the scrollback still holds it. A run whose env has the
 //! app's IPC variable also gets the terminal variable `=<RunId>` (`EnvNames`, set in `Run::start`).
@@ -95,9 +95,17 @@ pub enum Event {
         idle: bool,
         error: bool,
     },
+    /// The program set the clipboard through OSC 52 (`ESC ] 52 ; c ; <base64> BEL`): `text`, decoded
+    /// (invalid UTF-8 replaced), never empty, at most `CLIPBOARD_MAX` bytes. The app puts it on its
+    /// own clipboard, so it reaches the outer terminal. Reads (`52;c;?`) aren't answered: a program
+    /// in a pane can't read the clipboard.
+    Clipboard { id: RunId, text: String },
     /// The process exited (all its output read) or never started: `Exited` / `Failed`.
     Ended(RunId),
 }
+
+/// The most an OSC 52 copy can carry, decoded; a bigger one is dropped (and logged).
+pub const CLIPBOARD_MAX: usize = 1 << 20;
 
 pub type Sink = Arc<dyn Fn(Event) + Send + Sync>;
 
@@ -349,6 +357,28 @@ impl TitleCallback {
 }
 
 impl vt100::Callbacks for TitleCallback {
+    /// OSC 52: a copy, whatever selection it names (`c`, `p`, `s`, …), sent on as
+    /// `Event::Clipboard`. An empty one (xterm's "clear") is ignored.
+    fn copy_to_clipboard(&mut self, _screen: &mut vt100::Screen, _ty: &[u8], data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        // The encoded length first, so a huge one isn't decoded only to be dropped.
+        if data.len() > CLIPBOARD_MAX.div_ceil(3) * 4 {
+            tracing::warn!(id = ?self.id, bytes = data.len(), "OSC 52 copy too large, dropped");
+            return;
+        }
+        let Some(bytes) = jtui::clipboard::base64_decode(data) else {
+            tracing::debug!(id = ?self.id, "OSC 52 copy with invalid base64, dropped");
+            return;
+        };
+        if bytes.is_empty() || bytes.len() > CLIPBOARD_MAX {
+            return;
+        }
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        (self.sink)(Event::Clipboard { id: self.id, text });
+    }
+
     /// OSC 0 and 2: the window title (a program's own, while it runs).
     fn set_window_title(&mut self, _screen: &mut vt100::Screen, title: &[u8]) {
         self.title = sanitized(&String::from_utf8_lossy(title)).map(|t| self.unwrapped(t));
@@ -1637,6 +1667,37 @@ mod tests {
     /// snippet's `OSC 0 <first word>` then names it), `133;D;<code>` returns to the shell's name
     /// (`code` non-zero = `error`), a program's own OSC 0 / 2 title shows while it runs until
     /// `133;D`, and a title with control bytes is sanitized (an empty one falls back to the base).
+    #[test]
+    fn osc_52_copies_become_clipboard_events_and_reads_are_ignored() {
+        let (mut parser, events) = title_parser("zsh");
+        let copy = |text: &str| Event::Clipboard {
+            id: RunId(7),
+            text: text.into(),
+        };
+        // vim's / tmux's form (`c`, BEL) and the primary selection with ST; both are copies.
+        let seq = format!("\x1b]52;c;{}\x07", jtui::clipboard::base64("héllo\nworld".as_bytes()));
+        parser.process(seq.as_bytes());
+        parser.process(b"\x1b]52;p;Zm9v\x1b\\");
+        assert_eq!(*lock(&events), [copy("héllo\nworld"), copy("foo")]);
+
+        // A read, a clear (empty data) and invalid base64 send nothing.
+        lock(&events).clear();
+        parser.process(b"\x1b]52;c;?\x07\x1b]52;c;\x07\x1b]52;c;Zm9vY\x07");
+        assert!(lock(&events).is_empty(), "{:?}", lock(&events));
+        assert!(
+            parser.callbacks_mut().take_replies().is_empty(),
+            "a read is never answered"
+        );
+
+        // Over the cap: dropped.
+        let big = jtui::clipboard::base64(&vec![b'x'; CLIPBOARD_MAX + 3]);
+        parser.process(format!("\x1b]52;c;{big}\x07").as_bytes());
+        assert!(lock(&events).is_empty());
+        let max = jtui::clipboard::base64(&vec![b'x'; CLIPBOARD_MAX]);
+        parser.process(format!("\x1b]52;c;{max}\x07").as_bytes());
+        assert_eq!(lock(&events).len(), 1, "exactly the cap still copies");
+    }
+
     #[test]
     fn osc_codes_title_a_shell_and_its_state() {
         let id = RunId(7);

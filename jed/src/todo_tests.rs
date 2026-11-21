@@ -14218,3 +14218,71 @@ mod review_blame {
         assert!(!rows.iter().any(|r| r.contains('•')), "{rows:#?}");
     }
 }
+
+/// terminal_osc52: a program in a shell tab or a task that copies through OSC 52 puts its text on
+/// jed's clipboard (so arboard, or OSC 52 on to the outer terminal over SSH); a read gets no
+/// answer and leaves the clipboard alone.
+mod terminal_osc52 {
+    use std::collections::BTreeMap;
+
+    use crate::app::App;
+    use crate::clipboard::base64;
+    use crate::shell_tests::{dirs, run_in_shell, screen_text, shell_app};
+    use crate::tasks::{Source, Task, Template};
+
+    fn clipboard(app: &mut App) -> String {
+        app.clipboard.read().unwrap_or_default()
+    }
+
+    /// The line that makes `fakesh` print an OSC 52 copy of `text`.
+    fn osc52_line(text: &str) -> String {
+        format!("printf '\\033]52;c;%s\\007' {}", base64(text.as_bytes()))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_shell_programs_osc_52_copy_reaches_the_clipboard() {
+        let (_d, root, state) = dirs();
+        let mut app = shell_app(&root, &state);
+        app.tasks.shell = jterm::testing::fake_shell();
+        app.new_shell_in_editor();
+        assert!(
+            app.settle(|a| screen_text(a).contains(jterm::testing::FAKE_PROMPT))
+                .await,
+            "the prompt:\n{}",
+            screen_text(&app)
+        );
+        // A read first: nothing answers it and the clipboard stays empty.
+        run_in_shell(&mut app, "printf '\\033]52;c;?\\007'; echo READ_DONE");
+        assert!(app.settle(|a| screen_text(a).contains("READ_DONE")).await);
+        assert_eq!(clipboard(&mut app), "");
+
+        run_in_shell(&mut app, &osc52_line("héllo\nworld"));
+        assert!(
+            app.settle(|a| a.clipboard.copied("héllo\nworld").is_some()).await,
+            "copied: {:?}",
+            clipboard(&mut app)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_tasks_osc_52_copy_reaches_the_clipboard() {
+        let (_d, root, state) = dirs();
+        let mut app = shell_app(&root, &state);
+        app.tasks.shell = jterm::testing::fake_shell();
+        let template = Template {
+            name: "copy".into(),
+            task: Task {
+                command: osc52_line("from a task"),
+                cwd: None,
+                env: BTreeMap::new(),
+            },
+            source: Source::User,
+        };
+        app.start_task(&template).unwrap();
+        assert!(
+            app.settle(|a| a.clipboard.copied("from a task").is_some()).await,
+            "copied: {:?}",
+            clipboard(&mut app)
+        );
+    }
+}
