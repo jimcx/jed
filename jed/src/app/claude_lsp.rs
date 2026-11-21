@@ -316,6 +316,8 @@ impl App {
         if !self.lsp.started() {
             return responder.answer(Reply::error("language servers are off"));
         }
+        // A request from Claude is input: idle-stopped servers restart and the query waits.
+        self.note_input();
         let ask = Ask {
             responder,
             ask,

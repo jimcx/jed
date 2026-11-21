@@ -33,11 +33,11 @@ use crate::workspace::{self, Workspace};
 
 const A: &str = "int foo() { return 1; }\nint main() {\treturn foo() + foo(); }\n";
 
-struct Env {
+pub(crate) struct Env {
     _dirs: (tempfile::TempDir, tempfile::TempDir),
-    app: App,
-    fake: Arc<FakeLauncher>,
-    root: PathBuf,
+    pub(crate) app: App,
+    pub(crate) fake: Arc<FakeLauncher>,
+    pub(crate) root: PathBuf,
     socket: PathBuf,
 }
 
@@ -68,7 +68,7 @@ async fn env_with(files: &[(&str, &str)], launcher: Arc<dyn Launcher>, fake: Arc
     }
 }
 
-async fn env() -> Env {
+pub(crate) async fn env() -> Env {
     let fake = FakeLauncher::new(FakeOptions {
         utf8: true,
         ..Default::default()
@@ -112,7 +112,7 @@ async fn finish(app: &mut App, worker: JoinHandle<Vec<Value>>) -> Vec<Value> {
 }
 
 /// Runs the calls and returns their answers.
-async fn calls(env: &mut Env, calls: Vec<(&'static str, Value)>) -> Vec<Result<Value, String>> {
+pub(crate) async fn calls(env: &mut Env, calls: Vec<(&'static str, Value)>) -> Vec<Result<Value, String>> {
     let worker = mcp(&env.socket, calls);
     finish(&mut env.app, worker).await[1..].iter().map(answer).collect()
 }
@@ -128,7 +128,7 @@ fn user_state(app: &App) -> (usize, crate::buffer::BufferId, usize, usize) {
     )
 }
 
-fn path(env: &Env, name: &str) -> String {
+pub(crate) fn path(env: &Env, name: &str) -> String {
     env.root.join(name).to_string_lossy().into_owned()
 }
 

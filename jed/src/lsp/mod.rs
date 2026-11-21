@@ -349,6 +349,17 @@ impl Manager {
         self.launcher = Some(launcher);
     }
 
+    /// Records an exited entry as `stopped()` lists it, beside any idle entry of its name (tests).
+    #[cfg(test)]
+    pub fn test_note_exited(&mut self, config: ServerConfig, root: PathBuf, languages: Vec<Language>) {
+        self.stopped.retain(|o| o.config.name != config.name);
+        self.stopped.push(Stopped {
+            config,
+            root,
+            languages,
+        });
+    }
+
     /// From `App::start`: servers may be spawned from now on.
     pub fn start(&mut self, sink: Sink) {
         self.sink = Some(sink);

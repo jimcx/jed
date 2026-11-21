@@ -1155,7 +1155,7 @@ pub(crate) fn tools_app(dir: &Path, fake: &Arc<FakeLauncher>, state: bool) -> (A
 }
 
 /// Opens `a.cpp` and waits for the fake clangd to run.
-async fn with_clangd(app: &mut App, root: &Path) {
+pub(crate) async fn with_clangd(app: &mut App, root: &Path) {
     app.test_open(Buffer::open(&root.join("a.cpp")).unwrap());
     assert!(
         app.settle(|a| a.lsp.server_for(Language::Cpp).and_then(|s| s.encoding()).is_some())
@@ -1177,12 +1177,12 @@ pub(crate) async fn run_ended(app: &mut App, name: &str) -> RunId {
     id
 }
 
-fn terminal() -> Terminal<TestBackend> {
+pub(crate) fn terminal() -> Terminal<TestBackend> {
     Terminal::new(TestBackend::new(100, 30)).unwrap()
 }
 
 /// Draws, then each drawn row of the Tools view's list (trailing blanks trimmed).
-fn tools_rows(app: &mut App, term: &mut Terminal<TestBackend>) -> Vec<String> {
+pub(crate) fn tools_rows(app: &mut App, term: &mut Terminal<TestBackend>) -> Vec<String> {
     draw(app, term);
     let hit = app.hits.tools.clone().expect("the Tools view drawn");
     (0..hit.rows.len() as u16)
@@ -1197,7 +1197,7 @@ fn tools_rows(app: &mut App, term: &mut Terminal<TestBackend>) -> Vec<String> {
 }
 
 /// The cell where `text` starts on the drawn row showing `key`.
-fn cell_of(app: &App, term: &Terminal<TestBackend>, key: &RowKey, text: &str) -> ratatui::buffer::Cell {
+pub(crate) fn cell_of(app: &App, term: &Terminal<TestBackend>, key: &RowKey, text: &str) -> ratatui::buffer::Cell {
     let hit = app.hits.tools.as_ref().unwrap();
     let i = hit.rows.iter().position(|k| k == key).expect("the row drawn");
     let y = hit.list.y + i as u16;
@@ -1210,11 +1210,11 @@ fn cell_of(app: &App, term: &Terminal<TestBackend>, key: &RowKey, text: &str) ->
     term.backend().buffer()[(hit.list.x + at as u16, y)].clone()
 }
 
-fn fg(app: &App, key: &str) -> ratatui::style::Color {
+pub(crate) fn fg(app: &App, key: &str) -> ratatui::style::Color {
     app.theme.get(key).fg.unwrap()
 }
 
-fn clangd_row() -> RowKey {
+pub(crate) fn clangd_row() -> RowKey {
     RowKey::Server("clangd".into())
 }
 

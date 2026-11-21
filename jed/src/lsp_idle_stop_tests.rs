@@ -5,7 +5,8 @@
 //! notifications, losing the focus don't; a key, a paste, the focus coming back do), the next
 //! input starting the server again with `didOpen` for every open buffer and a hover then
 //! answered, a fresh publish replacing the kept diagnostics, `0` never stopping, a failed server
-//! staying failed, a lowered value applying at the next check, and a live reload of the setting.
+//! staying failed (and, with `lsp_idle_stop-c`, an MCP `find_definition` while stopped restarting the
+//! server and being answered; and the Tools view's "stopped (idle)" row), a lowered value applying at the next check, and a live reload of the setting.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -284,4 +285,119 @@ async fn lsp_idle_stop_drops_pending_requests() {
     app.test_lsp_idle_tick(later(61));
     assert!(app.lsp.servers().is_empty());
     assert!(app.pending_requests().is_empty(), "{:?}", app.pending_requests());
+}
+
+/// An MCP `find_definition` while the server is idle-stopped counts as input: it restarts the
+/// server, waits for it and returns its answer; the idle clock moves.
+#[tokio::test(flavor = "multi_thread")]
+async fn lsp_idle_stop_claude_query_restarts_the_server_and_is_answered() {
+    let mut e = crate::claude_lsp_tests::env().await;
+    let a = e.root.join("a.cpp");
+    e.fake.respond(
+        "textDocument/definition",
+        json!([crate::milestone9_tests::location(&a, 0, 4, 7)]),
+    );
+    e.app.test_set_last_input(Instant::now() - MIN * 120);
+    e.app.test_lsp_idle_tick(Instant::now());
+    assert_eq!(e.app.lsp.idle_stopped().len(), 1);
+    assert!(e.app.settle(|_| e.fake.exited() == 1).await);
+    let pa = crate::claude_lsp_tests::path(&e, "a.cpp");
+    let out = crate::claude_lsp_tests::calls(
+        &mut e,
+        vec![("find_definition", json!({"path": pa, "line": 2, "symbol": "foo"}))],
+    )
+    .await;
+    let def = out[0].clone().unwrap();
+    assert_eq!(def["locations"][0]["path"], "a.cpp");
+    assert_eq!(def["locations"][0]["line"], 1);
+    assert!(e.app.lsp.idle_stopped().is_empty());
+    assert_eq!(e.fake.launches().len(), 2);
+    assert!(
+        e.app.test_lsp_idle_deadline().unwrap() > later(59),
+        "the query reset the clock"
+    );
+}
+
+/// An idle-stopped server is listed as "stopped (idle)" (not exited) until input restarts it.
+#[tokio::test(flavor = "multi_thread")]
+async fn lsp_idle_stop_tools_row_says_stopped_idle() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let (mut app, root) = crate::tools_tests::tools_app(dir.path(), &fake, false);
+    crate::tools_tests::with_clangd(&mut app, &root).await;
+    app.test_execute(crate::command::Command::ShowTools);
+    let mut term = crate::tools_tests::terminal();
+    assert_eq!(
+        crate::tools_tests::tools_rows(&mut app, &mut term)[0],
+        " ● clangd  C++ · running"
+    );
+    app.test_lsp_idle_tick(later(61));
+    let rows = crate::tools_tests::tools_rows(&mut app, &mut term);
+    assert_eq!(rows[0], " – clangd  C++ · stopped (idle)");
+    assert_eq!(
+        crate::tools_tests::cell_of(&app, &term, &crate::tools_tests::clangd_row(), "–").fg,
+        crate::tools_tests::fg(&app, "tools.exited")
+    );
+    assert!(
+        app.settle(|a| a.lsp.stopped().is_empty() && !a.lsp.idle_stopped().is_empty())
+            .await
+    );
+    assert_eq!(
+        crate::tools_tests::tools_rows(&mut app, &mut term)[0],
+        " – clangd  C++ · stopped (idle)"
+    );
+    app.press(K::Right, M::NONE);
+    assert!(
+        app.settle(|a| a.lsp.server_for(Language::Cpp).is_some_and(|s| s.encoding().is_some()))
+            .await
+    );
+    assert_eq!(
+        crate::tools_tests::tools_rows(&mut app, &mut term)[0],
+        " ● clangd  C++ · running"
+    );
+    app.shutdown_servers().await;
+}
+
+/// The same for a file with no tab: the query loads it in the background while the servers
+/// restart, then is answered.
+#[tokio::test(flavor = "multi_thread")]
+async fn lsp_idle_stop_claude_query_for_an_unopened_file_restarts_the_server() {
+    let mut e = crate::claude_lsp_tests::env().await;
+    let a = e.root.join("a.cpp");
+    e.fake.respond(
+        "textDocument/definition",
+        json!([crate::milestone9_tests::location(&a, 0, 4, 7)]),
+    );
+    e.app.test_set_last_input(Instant::now() - MIN * 120);
+    e.app.test_lsp_idle_tick(Instant::now());
+    assert_eq!(e.app.lsp.idle_stopped().len(), 1);
+    assert!(e.app.settle(|_| e.fake.exited() == 1).await);
+    let pb = crate::claude_lsp_tests::path(&e, "b.cpp");
+    let out = crate::claude_lsp_tests::calls(
+        &mut e,
+        vec![("find_definition", json!({"path": pb, "line": 1, "symbol": "bar"}))],
+    )
+    .await;
+    let def = out[0].clone().unwrap();
+    assert_eq!(def["locations"][0]["path"], "a.cpp");
+    assert!(e.app.lsp.idle_stopped().is_empty());
+    assert_eq!(e.fake.launches().len(), 2);
+}
+
+/// An older exited entry of the same name doesn't shadow the idle one: one row, "stopped (idle)".
+#[tokio::test(flavor = "multi_thread")]
+async fn lsp_idle_stop_tools_row_idle_beats_an_older_exited_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let (mut app, root) = crate::tools_tests::tools_app(dir.path(), &fake, false);
+    crate::tools_tests::with_clangd(&mut app, &root).await;
+    app.test_lsp_idle_tick(later(61));
+    let idle = app.lsp.idle_stopped()[0].clone();
+    app.lsp
+        .test_note_exited(idle.config.clone(), idle.root.clone(), idle.languages.clone());
+    assert_eq!(app.lsp.stopped().len(), 1);
+    let rows = crate::tools_view::server_rows(&app.lsp, &[], &root);
+    let states: Vec<_> = rows.iter().map(|r| (r.name.as_str(), r.state)).collect();
+    assert_eq!(states, [("clangd", crate::tools_view::ServerState::Idle)]);
+    app.shutdown_servers().await;
 }

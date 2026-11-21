@@ -1,5 +1,5 @@
 //! The Tools view, in the side panel below its title: one row per tool (`tools_view::rows`) —
-//! a language server's state mark (`○` starting, `●` running, `✗` failed, `–` exited, in its
+//! a language server's state mark (`○` starting, `●` running, `✗` failed, `–` exited or stopped (idle), in its
 //! `tools.*` colour), name, then dimmed its languages and state (its progress while it has
 //! some) and its root when not the workspace's; a task run's mark (`task_mark`: `●` / `✓` /
 //! `✗`), name and dimmed status; "jed" — and, at the right edge, the count of error lines in the

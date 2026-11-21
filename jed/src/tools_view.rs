@@ -72,6 +72,8 @@ pub enum ServerState {
     /// Stopped (no language resolves to it any more: a `.workspace` change, a trust decision)
     /// or exited without a crash.
     Exited,
+    /// Stopped by the idle timer; the next input starts it again.
+    Idle,
 }
 
 impl ServerState {
@@ -81,6 +83,7 @@ impl ServerState {
             ServerState::Running => "running",
             ServerState::Failed => "failed",
             ServerState::Exited => "exited",
+            ServerState::Idle => "stopped (idle)",
         }
     }
 
@@ -90,6 +93,7 @@ impl ServerState {
             ServerState::Running => "●",
             ServerState::Failed => "✗",
             ServerState::Exited => "–",
+            ServerState::Idle => "–",
         }
     }
 
@@ -98,7 +102,7 @@ impl ServerState {
             ServerState::Starting => "tools.starting",
             ServerState::Running => "tools.running",
             ServerState::Failed => "tools.failed",
-            ServerState::Exited => "tools.exited",
+            ServerState::Exited | ServerState::Idle => "tools.exited",
         }
     }
 }
@@ -200,7 +204,7 @@ pub fn task_label(status: &Status) -> String {
     }
 }
 
-/// The servers' rows: live ones (starting / running / failed) in start order, then stopped ones
+/// The servers' rows: live ones (starting / running / failed) in start order, then idle-stopped ones, then stopped ones
 /// not shadowed by a live one of their name, then any other server with a log (pushed to by
 /// a server no longer known), each with its log's error count.
 pub fn server_rows(manager: &lsp::Manager, errors: &[(Tool, u64)], workspace_root: &Path) -> Vec<ServerRow> {
@@ -232,6 +236,19 @@ pub fn server_rows(manager: &lsp::Manager, errors: &[(Tool, u64)], workspace_roo
             root: root_of(&s.root),
             state,
             progress,
+            errors: errors_of(&s.config.name),
+        });
+    }
+    for s in manager.idle_stopped() {
+        if rows.iter().any(|r| r.name == s.config.name) {
+            continue;
+        }
+        rows.push(ServerRow {
+            name: s.config.name.clone(),
+            languages: languages(&s.languages),
+            root: root_of(&s.root),
+            state: ServerState::Idle,
+            progress: None,
             errors: errors_of(&s.config.name),
         });
     }
@@ -565,7 +582,8 @@ mod tests {
                 ServerState::Starting,
                 ServerState::Running,
                 ServerState::Failed,
-                ServerState::Exited
+                ServerState::Exited,
+                ServerState::Idle
             ]
             .map(|s| (s.label(), s.glyph(), s.theme_key())),
             [
@@ -573,6 +591,7 @@ mod tests {
                 ("running", "●", "tools.running"),
                 ("failed", "✗", "tools.failed"),
                 ("exited", "–", "tools.exited"),
+                ("stopped (idle)", "–", "tools.exited"),
             ]
         );
     }

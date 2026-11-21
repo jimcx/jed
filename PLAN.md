@@ -386,7 +386,7 @@ More languages without rebuilding jed (the [Syntax plugins](tasks/syntax_plugins
   - Best effort: if ty can't do either, SCons files get what ty gives them and it's noted as deferred
 - Server per language set in config / `.workspace`: `[lsp.<id>]` (`command`, `args`, `init_options`) in `.workspace` (when trusted) or in the user's `settings.toml` (always trusted: the user's own file); a trusted `.workspace` entry wins, then `settings.toml`'s, then the built-ins (`clangd`, `ty`, `rust-analyzer`). An id that is neither built-in nor a syntax plugin's is reported
 - Incremental text sync (`didChange` with ranges), never full text per keystroke
-- Idle stop (the [Stop idle language servers](tasks/lsp_idle_stop.md) task): servers stop after `[lsp] idle_stop_minutes` (default 60, `0` = never) without user input and start again on the next input, documents reopened; diagnostics stay meanwhile
+- Idle stop (the [Stop idle language servers](tasks/lsp_idle_stop.md) task): servers stop after `[lsp] idle_stop_minutes` (default 60, `0` = never; in `settings.toml` and `.workspace`, which wins) without user input (a key, mouse event, paste, focus gained, or a Claude language server query) and start again on the next input, documents reopened; diagnostics stay until the restarted server publishes; the Tools view shows them as "stopped (idle)"
 - Request `positionEncoding: utf-8`; fall back to UTF-16 — see [Text positions](#text-positions)
 - v1 features:
   - Diagnostics (squiggles plus the Problems list)
@@ -726,7 +726,6 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Side panel resizing, finished** (`side_panel_resize`): make the side panel's resize sash discoverable and smooth — [tasks/side_panel_resize.md](tasks/side_panel_resize.md)
 - **Snippets** (`snippets`): LSP snippet completions with tab stops, mirrors and choices — [tasks/snippets.md](tasks/snippets.md)
 - **Stale cargo check diagnostics** (`stale_cargo_check`): dim cargo-check diagnostics until the next save — [tasks/stale_cargo_check.md](tasks/stale_cargo_check.md)
-- **Stop idle language servers** (`lsp_idle_stop`): language servers stop after jed has had no input for an hour (`[lsp] idle_stop_minutes`) and start again on the next input, so jed instances left in the background hold little memory — [tasks/lsp_idle_stop.md](tasks/lsp_idle_stop.md)
 - **Themes** (`themes`): a built-in Light+, a `theme` setting, a picker with live preview and theme files — [tasks/themes.md](tasks/themes.md)
 - **Transform, sort and dedupe lines** (`transform_sort_dedupe`): change case, sort, and deduplicate lines — [tasks/transform_sort_dedupe.md](tasks/transform_sort_dedupe.md)
 - **VHDL: tree-sitter and VHDL-LS** (`vhdl`): VHDL files get syntax colours, comment / pair / indent behaviour and a language server (`vhdl_ls` from rust_hdl), as C++ / Python / Rust do — [tasks/vhdl.md](tasks/vhdl.md)
@@ -824,6 +823,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - ✅ **Source Control branch history** (`scm_branch_history`): a commits pane under the Source Control view listing the current branch's history; a click opens the commit tab — [tasks/scm_branch_history.md](tasks/scm_branch_history.md)
 - ✅ **Spell checker** (`spell_check`): misspelled words in comments, strings and identifiers are underlined (camelCase / snake_case split into words), with suggestions and a user dictionary for words to accept — [tasks/spell_check.md](tasks/spell_check.md)
 - ✅ **Stage / unstage / revert selected lines** (`stage_selected_lines`): stage, unstage or revert just the selected lines, from a text tab or a diff tab's selection — [tasks/stage_selected_lines.md](tasks/stage_selected_lines.md)
+- ✅ **Stop idle language servers** (`lsp_idle_stop`): language servers stop after jed has had no input for an hour (`[lsp] idle_stop_minutes`) and start again on the next input (or a Claude language server query), so jed instances left in the background hold little memory — [tasks/lsp_idle_stop.md](tasks/lsp_idle_stop.md)
 - ✅ **Streamed git history** (`history_stream`): the Explorer's Git History and the Source Control view's commits pane show their first commits at once (a resumable walk kept alive per list, streamed in chunks) and fill in as it goes on — [tasks/history_stream.md](tasks/history_stream.md)
 - ✅ **Syntax highlighting in the diff view** (`diff_syntax`): diff tabs draw both sides with the file's syntax colours — [tasks/diff_syntax.md](tasks/diff_syntax.md)
 - ✅ **Syntax plugins** (`syntax_plugins`): tree-sitter grammars from `~/.config/jed/languages/<id>/`, built with the system C compiler and loaded at runtime — [tasks/syntax_plugins.md](tasks/syntax_plugins.md)
