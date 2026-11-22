@@ -55,7 +55,7 @@ fn server_with(main: &str, head: &str, comments: &str, extra: Vec<(String, Reply
 
 /// The repository (mod.txt CRLF when asked: committed so, so the thread places), and the server
 /// with `comments(head, main)`.
-pub(super) fn world(dir: &Path, crlf: bool, comments: impl Fn(&str, &str) -> String) -> (PathBuf, FakeServer) {
+pub(crate) fn world(dir: &Path, crlf: bool, comments: impl Fn(&str, &str) -> String) -> (PathBuf, FakeServer) {
     let (root, main) = make_repo(dir);
     if crlf {
         fs::write(root.join("mod.txt"), "m1\r\nm2 changed\r\nm3\r\n").unwrap();

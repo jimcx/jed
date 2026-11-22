@@ -27,6 +27,7 @@ mod command;
 #[cfg(test)]
 mod command_driven_tests;
 mod comment;
+mod comment_format;
 mod commit_view;
 #[cfg(test)]
 mod compare_files_tests;
@@ -157,6 +158,8 @@ mod replace_tests;
 mod review;
 mod review_anchor;
 mod review_blocks;
+#[cfg(test)]
+mod review_comment_format_tests;
 #[cfg(test)]
 mod review_conversation_tests;
 mod review_drafts;

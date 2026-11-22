@@ -448,6 +448,8 @@ pub enum Command {
     /// "Code Review: Insert Suggestion" (unbound): while a comment box is open, a suggestion
     /// fence round the diff's lines it is on.
     ReviewInsertSuggestion,
+    /// A formatting button of the comment box.
+    ReviewFormat(crate::comment_format::Style),
     /// "Code Review: Open Thread" (unbound): the selected thread's tab (its code and comments), whatever its placement.
     ReviewOpenThread,
     /// "Code Review: Open Conversation" (unbound): the merge request's conversation tab (its description and comments).
@@ -1371,6 +1373,7 @@ impl Command {
             Command::ReviewCommentOnMergeRequest,
         ]);
         all.extend(ReviewCommand::ALL.map(Command::Review));
+        all.extend(crate::comment_format::Style::ALL.map(Command::ReviewFormat));
         all
     }
 
@@ -1793,6 +1796,7 @@ impl Command {
             Command::ReviewInsertSuggestion => "review.insertSuggestion".into(),
             Command::ReviewOpenThread => "review.openThread".into(),
             Command::ReviewOpenConversation => "review.openConversation".into(),
+            Command::ReviewFormat(s) => format!("review.format.{}", s.name()),
             Command::ReviewOpenOnForge => "review.openOnForge".into(),
             Command::ReviewWithdraw => "review.withdraw".into(),
             Command::ReviewDiscardPending => "review.discardPending".into(),
@@ -1947,6 +1951,7 @@ impl Command {
             Command::ToggleSidebar => "View: Toggle Side Bar Visibility",
             Command::FocusExplorer => "View: Show Explorer",
             Command::FocusGroup(n) => return format!("View: Focus Editor Group {n}"),
+            Command::ReviewFormat(s) => return format!("Code Review: {}", s.title()),
             Command::FocusTerminal(n) => return format!("View: Focus Terminal Area {n}"),
             Command::FocusNextGroup => "View: Focus Next Editor Group",
             Command::FocusPreviousGroup => "View: Focus Previous Editor Group",
@@ -2479,6 +2484,7 @@ mod tests {
             Command::ReviewDeleteComment => 168,
             Command::ReviewApplySuggestion => 169,
             Command::ReviewInsertSuggestion => 170,
+            Command::ReviewFormat(_) => 191,
             Command::ReviewOpenThread => 181,
             Command::ReviewOpenConversation => 182,
             Command::ReviewCommentOnMergeRequest => 183,

@@ -62,6 +62,7 @@ impl Mode {
                     | Command::ReviewDeleteComment
                     | Command::ReviewApplySuggestion
                     | Command::ReviewInsertSuggestion
+                    | Command::ReviewFormat(_)
                     | Command::ReviewOpenThread
                     | Command::ReviewOpenConversation
                     | Command::ReviewOpenOnForge

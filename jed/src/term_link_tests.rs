@@ -162,6 +162,7 @@ async fn term_link_opens_a_url_in_the_browser() {
     assert!(app.palette.is_none() && app.active_buffer().is_none());
 }
 
+// FLAKE: 2026-11-22, the final `settle` on `url::opened` timed out under load (full run 36 s).
 #[tokio::test(flavor = "multi_thread")]
 async fn term_link_opens_a_url_wrapped_over_rows() {
     let (_d, root, state) = dirs();
@@ -179,8 +180,23 @@ async fn term_link_opens_a_url_wrapped_over_rows() {
     );
     let term = draw(&mut app, 100, 30);
     let (x, y) = crate::milestone9_tests::find_cells(&term, "tail-end").unwrap();
+    let before = screen_text(&app);
     link_click(&mut app, (x + 2, y));
-    assert!(app.settle(|_| crate::url::opened(&url)).await);
+    if !app.settle(|_| crate::url::opened(&url)).await {
+        let opened: Vec<String> = crate::url::OPENED
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|u| u.contains("term-link-wrapped"))
+            .cloned()
+            .collect();
+        eprintln!(
+            "FLAKE term_link_opens_a_url_wrapped_over_rows: clicked ({}, {y}); opened like this: {opened:?}\nscreen at click:\n{before}\nscreen now:\n{}",
+            x + 2,
+            screen_text(&app)
+        );
+        panic!("FLAKE term_link_opens_a_url_wrapped_over_rows: the url was not opened");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

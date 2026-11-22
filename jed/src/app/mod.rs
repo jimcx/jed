@@ -55,6 +55,7 @@ mod replace;
 mod review;
 mod review_comment;
 mod review_forge;
+mod review_format;
 mod review_suggest;
 mod review_write;
 mod scm;
@@ -1682,6 +1683,7 @@ impl App {
             Command::ReviewDeleteComment => self.review_delete_comment(),
             Command::ReviewApplySuggestion => self.review_apply_suggestion(),
             Command::ReviewInsertSuggestion => self.review_insert_suggestion(),
+            Command::ReviewFormat(s) => self.review_format(s),
             Command::ReviewOpenThread => self.review_open_thread(),
             Command::ReviewOpenConversation => self.review_open_conversation(None),
             Command::ReviewOpenOnForge => self.review_link(true),

@@ -1340,22 +1340,39 @@ mod tests {
     /// The same picked changes undone, on `NEW`: `TWO` back to `3` (`THREE` stays), `5` back.
     const UNDO_PATCH: &str = "@@ -2,2 +2,2 @@\n-TWO\n+3\n THREE\n@@ -4,0 +5,1 @@\n+5\n";
 
+    // FLAKE: 2026-11-22, failed once in a full `scripts/check` run (message not captured), passed on re-run.
     #[test]
     fn stage_lines_like_a_hand_edited_patch() {
         let (_d, root) = picked_repo();
         let other = copy(&root);
         let repo = r(&root);
         let shown = zero_diff(&repo, Side::Unstaged);
-        assert_eq!(stage_lines(&repo, Path::new("f.txt"), &shown, &the_pick()).unwrap(), 3);
+        let staged = stage_lines(&repo, Path::new("f.txt"), &shown, &the_pick());
+        assert!(
+            matches!(staged, Ok(3)),
+            "FLAKE stage_lines_like_a_hand_edited_patch: stage_lines gave {staged:?}; shown {shown:?}"
+        );
         apply_patch(&other, true, STAGE_PATCH);
-        assert_eq!(index_state(&root), index_state(&other));
+        let status = git(&root, &["status", "--porcelain"]);
+        assert_eq!(
+            index_state(&root),
+            index_state(&other),
+            "FLAKE stage_lines_like_a_hand_edited_patch: index differs from git apply's; status {status:?}"
+        );
         assert_eq!(
             git(&root, &["show", ":f.txt"]),
             "1\n2\nTWO\n4\n6\n",
-            "THREE and six stay unstaged"
+            "THREE and six stay unstaged (FLAKE stage_lines_like_a_hand_edited_patch: status {status:?})"
         );
-        assert_eq!(std::fs::read_to_string(root.join("f.txt")).unwrap(), NEW);
-        assert_eq!(git(&root, &["status", "--porcelain"]), "MM f.txt\n");
+        assert_eq!(
+            std::fs::read_to_string(root.join("f.txt")).unwrap(),
+            NEW,
+            "FLAKE stage_lines_like_a_hand_edited_patch: work tree changed; status {status:?}"
+        );
+        assert_eq!(
+            status, "MM f.txt\n",
+            "FLAKE stage_lines_like_a_hand_edited_patch: git status"
+        );
     }
 
     #[test]
