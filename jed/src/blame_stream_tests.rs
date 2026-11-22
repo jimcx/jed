@@ -1,5 +1,6 @@
-//! Streamed inline blame, "Done when": a repository of 5,000 commits built with `git2` whose last
-//! commit changes one line of a file (`blame_stream_first_chunk_*`: the walk held back after its
+//! Streamed inline blame, "Done when": a repository built with `git2` whose last commit changes
+//! one line of a file (50 commits by default; the Done when's 5,000 in the `#[ignore]`d
+//! `blame_stream_first_chunk_with_5000_commits`) (`blame_stream_first_chunk_*`: the walk held back after its
 //! first chunk by `App::blame_probe`, so the changed line's label shows while the others have
 //! none until the rest arrives); edits during the walk (`blame_stream_edits_*`: "Uncommitted
 //! changes" within `blame::DELAY`, one walk, chunks landing on the lines mapped through the
@@ -85,7 +86,7 @@ fn build(dir: &Path, commits: usize, every: usize, lines: usize) -> usize {
 #[test]
 fn milestone_blame_stream_budget() {
     let (commits, every, lines) = if cfg!(debug_assertions) {
-        (1_000, 20, 400)
+        (200, 20, 400)
     } else {
         (20_000, 20, 3_000)
     };
@@ -128,7 +129,12 @@ fn milestone_blame_stream_budget() {
     }
 }
 
-const COMMITS: usize = 5_000;
+/// The default tests' history: the probe holds the walk after each chunk, so a short history is
+/// still mid-walk when they look. `FULL_COMMITS` is the Done when's size, run by the `#[ignore]`d
+/// `blame_stream_first_chunk_with_5000_commits` (about 6 s alone in debug, most of it building
+/// the repository).
+const COMMITS: usize = 50;
+const FULL_COMMITS: usize = 5_000;
 const LINES: usize = 12;
 const CHANGED: usize = 5;
 
@@ -141,18 +147,23 @@ fn target_text(last: bool) -> String {
         .collect()
 }
 
-/// 5,000 commits (`c0` .. `c4999`) built with `git2`, each changing `other.txt`; the first writes
-/// `target.txt`, the last changes its line `CHANGED`. The work tree matches HEAD.
-fn many_commits(root: &Path) {
+/// The last commit's summary in a history of `commits`.
+fn last(commits: usize) -> String {
+    format!("c{}", commits - 1)
+}
+
+/// `commits` commits (`c0` .. `c{commits - 1}`) built with `git2`, each changing `other.txt`; the
+/// first writes `target.txt`, the last changes its line `CHANGED`. The work tree matches HEAD.
+fn many_commits(root: &Path, commits: usize) {
     let repo = Repository::init(root).unwrap();
     let (old, new) = (
         repo.blob(target_text(false).as_bytes()).unwrap(),
         repo.blob(target_text(true).as_bytes()).unwrap(),
     );
     let mut parent: Option<Oid> = None;
-    for i in 0..COMMITS {
+    for i in 0..commits {
         let mut tree = repo.treebuilder(None).unwrap();
-        tree.insert("target.txt", if i == COMMITS - 1 { new } else { old }, 0o100644)
+        tree.insert("target.txt", if i == commits - 1 { new } else { old }, 0o100644)
             .unwrap();
         tree.insert("other.txt", repo.blob(format!("{i}\n").as_bytes()).unwrap(), 0o100644)
             .unwrap();
@@ -186,11 +197,15 @@ impl Drop for Release {
     }
 }
 
-/// The app on the 5,000-commit repository with the walk's slice cut to one commit and the probe
+/// The app on a `COMMITS`-commit repository with the walk's slice cut to one commit and the probe
 /// holding the walk after each chunk it sends.
 async fn walking_app() -> (tempfile::TempDir, PathBuf, App, Release) {
+    walking_app_with(COMMITS).await
+}
+
+async fn walking_app_with(commits: usize) -> (tempfile::TempDir, PathBuf, App, Release) {
     let (dir, root, state) = dirs();
-    many_commits(&root);
+    many_commits(&root, commits);
     let mut app = open_file_app(&root, &state, "target.txt");
     assert!(settle_git(&mut app, |_| true).await);
     app.blame.slice = Some(Duration::ZERO);
@@ -260,7 +275,18 @@ fn line_of(app: &App, line: usize) -> Option<String> {
 /// until their chunk arrives, then their commit.
 #[tokio::test(flavor = "multi_thread")]
 async fn blame_stream_first_chunk_shows_the_changed_line_while_the_walk_runs() {
-    let (_d, _root, mut app, _release) = walking_app().await;
+    first_chunk_while_walking(COMMITS).await;
+}
+
+/// The same at the Done when's 5,000 commits: run with `--ignored`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "slow: builds a 5,000-commit repository; the default test runs the same on 50"]
+async fn blame_stream_first_chunk_with_5000_commits() {
+    first_chunk_while_walking(FULL_COMMITS).await;
+}
+
+async fn first_chunk_while_walking(commits: usize) {
+    let (_d, _root, mut app, _release) = walking_app_with(commits).await;
     first_chunk(&mut app).await;
     assert!(app.active_buffer().unwrap().blame.walking(), "the walk is held back");
     assert_eq!(app.active_buffer().unwrap().blame.settled(), 1);
@@ -268,7 +294,8 @@ async fn blame_stream_first_chunk_shows_the_changed_line_while_the_walk_runs() {
     at_line(&mut app, CHANGED);
     let shown = row(&mut app, CHANGED as u16);
     assert!(shown.starts_with("changed line   "), "{shown}");
-    assert!(shown.contains(" Alice, ") && shown.ends_with(" • c4999"), "{shown}");
+    let label = format!(" • {}", last(commits));
+    assert!(shown.contains(" Alice, ") && shown.ends_with(&label), "{shown}");
 
     // An old line: its commit isn't known yet.
     at_line(&mut app, 2);
@@ -304,7 +331,7 @@ async fn blame_stream_edits_during_the_walk_neither_restart_it_nor_lose_chunks()
     assert_eq!(app.blame_probe.walks.load(Ordering::SeqCst), 1, "still one walk");
     let lines: Vec<_> = (0..=LINES).map(|l| line_of(&app, l).unwrap()).collect();
     let expected: Vec<_> = std::iter::once("-".to_string())
-        .chain((0..LINES).map(|i| if i == CHANGED { "c4999" } else { "c0" }.to_string()))
+        .chain((0..LINES).map(|i| if i == CHANGED { last(COMMITS) } else { "c0".to_string() }))
         .collect();
     assert_eq!(lines, expected);
 }
@@ -387,7 +414,7 @@ async fn blame_stream_reopening_reuses_the_finished_base() {
     app.test_execute(Command::ToggleBlame);
     finished(&mut app).await;
     assert_eq!(line_of(&app, 2).as_deref(), Some("c0"));
-    assert_eq!(line_of(&app, CHANGED).as_deref(), Some("c4999"));
+    assert_eq!(line_of(&app, CHANGED), Some(last(COMMITS)));
     assert_eq!(app.blame_probe.walks.load(Ordering::SeqCst), 1, "no new walk");
 }
 
