@@ -1,7 +1,7 @@
 //! The formatting buttons of a review comment box (review_comment_format): which Markdown each
 //! style writes for a forge, and `apply`, which edits a text with it at every selection. No app
-//! state, nothing drawn: `app/review_format.rs` runs it on the box, the toolbar (subtask b) lists
-//! `styles(kind)`.
+//! state, nothing drawn: `app/review_format.rs` runs it on the box, the toolbar
+//! (`review_blocks::composer_tool_cols`) lists `styles(kind)`.
 //!
 //! What each forge renders in a merge request comment (research for review_comment_format-a;
 //! "unverified" = not confirmed from a source):
@@ -98,6 +98,23 @@ impl Style {
             Style::Numbers => "Numbered List",
             Style::Tasks => "Task List",
             Style::Heading => "Heading",
+        }
+    }
+
+    /// The toolbar button's short ASCII label (without brackets).
+    pub fn label(self) -> &'static str {
+        match self {
+            Style::Bold => "B",
+            Style::Italic => "I",
+            Style::Underline => "U",
+            Style::Strike => "S",
+            Style::Code => "<>",
+            Style::Link => "Link",
+            Style::Quote => ">",
+            Style::Bullets => "-",
+            Style::Numbers => "1.",
+            Style::Tasks => "Task",
+            Style::Heading => "H",
         }
     }
 

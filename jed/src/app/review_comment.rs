@@ -140,7 +140,7 @@ impl Composer {
         self.buf.rope.to_string()
     }
 
-    pub fn block(&self, submit: review_blocks::SubmitLabel, now: bool) -> ThreadBlock {
+    pub fn block(&self, submit: review_blocks::SubmitLabel, now: bool, kind: crate::forge::Kind) -> ThreadBlock {
         use review_blocks::SubmitLabel as L;
         let verb = match (&self.kind, self.editing.is_some()) {
             (ComposerKind::Reply { .. }, _) => match submit {
@@ -164,6 +164,7 @@ impl Composer {
                 caret: self.view.selections.primary().head.0,
                 submit,
                 now,
+                kind,
             },
             id: "composer".into(),
             right: self.right,
@@ -588,13 +589,21 @@ impl App {
         let width = (b.rect.width as usize).saturating_sub(2);
         let rows = review_blocks::composer_rows(&text, width).len();
         let x = col.saturating_sub(b.rect.x) as usize;
-        if (1..=rows).contains(&rel) {
-            let at = review_blocks::composer_byte(&text, rel - 1, x.saturating_sub(2), width);
+        if rel == 1 {
+            let kind = self.review.review().map_or(crate::forge::Kind::GitHub, |r| r.kind);
+            if let Some((_, style)) = review_blocks::composer_tool_cols(kind, b.rect.width as usize)
+                .into_iter()
+                .find(|(cols, _)| cols.contains(&x))
+            {
+                self.review_format(style);
+            }
+        } else if (2..=rows + 1).contains(&rel) {
+            let at = review_blocks::composer_byte(&text, rel - 2, x.saturating_sub(2), width);
             if let Some(c) = &mut self.composer {
                 c.view.selections = Selections::single(Selection::new(ByteIdx(at), ByteIdx(at)));
             }
             self.composer_changed();
-        } else if rel == rows + 1 {
+        } else if rel == rows + 2 {
             let now = self.composer_now_offered(c);
             for (cols, button) in review_blocks::composer_button_cols(label, now, b.rect.width as usize) {
                 if cols.contains(&x) {

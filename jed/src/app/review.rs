@@ -528,10 +528,11 @@ impl App {
             _ => &[],
         };
         let label = self.submit_label();
+        let forge_kind = self.review.review().map_or(crate::forge::Kind::GitHub, |r| r.kind);
         let composer = self
             .composer
             .as_ref()
-            .map(|c| (c.tab, c.block(label, self.composer_now_offered(c))));
+            .map(|c| (c.tab, c.block(label, self.composer_now_offered(c), forge_kind)));
         let editing = self.composer.as_ref().and_then(|c| c.editing.clone());
         let mut live = Vec::new();
         let review = self.review.review();

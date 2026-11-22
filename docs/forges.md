@@ -43,6 +43,30 @@ the whole file is ignored while it holds a token and group or others can read it
 - While the file has any error, Claude's review tools are read-only on hosts without a valid entry (including github.com / gitlab.com); configured hosts keep their own `mcp_read_only`.
 - Redirects are not followed and only HTTPS is used unless `api_url` says `http://`.
 
+## Formatting buttons
+
+The comment box (a line comment, a reply, an edit, a conversation comment or a review summary) has a row
+of buttons under its header: `[B] [I] [U] [S] [<>] [Link] [>] [-] [1.] [Task] [H]`. A click wraps the
+selection in the Markdown the merge request's forge renders, or inserts the marks at the caret; a second
+click on a wrapped selection (or on prefixed lines) takes them off again, and each is one undo step. In a
+narrow box the buttons that don't fit are dropped from the right; every style is also a palette command
+("Code Review: Bold", …) that you can bind in the comment box's context. Link writes `[text](url)` with
+the part to type selected; a selection of several lines in `[<>]` gets a fence around it.
+
+| Button | Writes | GitHub | GitLab | Gitea / Forgejo |
+|--------|--------|--------|--------|-----------------|
+| `[B]` | `**x**` | yes | yes | yes |
+| `[I]` | `_x_` | yes | yes | yes |
+| `[U]` | `<ins>x</ins>` (Markdown has no underline) | yes | yes (unverified) | yes |
+| `[S]` | `~~x~~` | yes | yes | yes |
+| `[<>]` | `` `x` ``, a fence over several lines | yes | yes | yes |
+| `[Link]` | `[x](url)` | yes | yes | yes |
+| `[>]` | `> ` | yes | yes | yes |
+| `[-]` | `- ` | yes | yes | yes |
+| `[1.]` | `1. `, `2. `, … | yes | yes | yes |
+| `[Task]` | `- [ ] ` | yes | yes | yes |
+| `[H]` | `### ` | yes | yes | yes |
+
 ## Suggestions
 
 In jed a plain ` ```suggestion ` fence in a comment replaces the lines the comment is on, and

@@ -313,6 +313,7 @@ fn own_entries(truecolor: bool) -> Vec<(&'static str, Style)> {
         ("review.draft.header", fg_bg(0xE2C08D, 0x1E2A33)),
         ("review.composer.border", fg_bg(0x4FC1FF, 0x1E2A33)),
         ("review.composer.button", fg_bg(0xFFFFFF, 0x0E639C)),
+        ("review.composer.tool", fg_bg(0xCCCCCC, 0x3A3D41)),
         ("review.thread.button", fg_bg(0xFFFFFF, 0x3A3D41)),
         // The gutter bar beside the lines a review diff's thread, resolved thread, draft or comment
         // box is on.

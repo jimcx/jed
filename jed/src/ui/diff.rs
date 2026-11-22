@@ -374,10 +374,10 @@ pub fn render(
                 if let review_blocks::Role::Composer { caret, .. } = block.role
                     && line.kind == BlockKind::Body
                 {
-                    // The caret in the box: its row is body row `offset - 1`.
+                    // The caret in the box: its row is body row `offset - 2` (the toolbar is row 1).
                     let text = block.comments.first().map_or("", |c| c.1.as_str());
                     let (row, col) = review_blocks::composer_caret(text, caret, block_width.saturating_sub(2));
-                    if row + 1 == offset {
+                    if row + 2 == offset {
                         composer_cell = Some((x + 2 + col as u16, y));
                     }
                 }
@@ -695,10 +695,18 @@ fn draw_block_line(
             );
             out.set_stringn(x, y, "│", 1.min(room), border);
         }
-        BlockKind::Body | BlockKind::Buttons => {
+        BlockKind::Body | BlockKind::Buttons | BlockKind::Toolbar => {
             out.set_stringn(x, y, &line.text, room, text);
             out.set_stringn(x, y, "│", 1.min(room), border);
-            if line.kind == BlockKind::Buttons
+            if line.kind == BlockKind::Toolbar
+                && let Role::Composer { kind, .. } = block.role
+            {
+                let style = theme.get("review.composer.tool");
+                for (cols, _) in review_blocks::composer_tool_cols(kind, width) {
+                    let w = cols.len().min(room.saturating_sub(cols.start));
+                    out.set_style(Rect::new(x + cols.start as u16, y, w as u16, 1), style);
+                }
+            } else if line.kind == BlockKind::Buttons
                 && let Role::Composer { submit, now, .. } = block.role
             {
                 let style = theme.get("review.composer.button");

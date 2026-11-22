@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use crate::comment_format::{self, Style};
 use crate::diff_view::Aligned;
 
 /// Rows under a block's comments for buttons: a composer's Comment / Cancel, a forge thread's
@@ -43,6 +44,8 @@ pub enum Role {
         submit: SubmitLabel,
         /// A second button posts the text at once ([`NOW_LABEL`]).
         now: bool,
+        /// The forge, which decides the toolbar's buttons.
+        kind: crate::forge::Kind,
     },
 }
 
@@ -479,6 +482,8 @@ pub enum Kind {
     /// `├ author ────` before a reply.
     Reply,
     Body,
+    /// The comment box's formatting buttons.
+    Toolbar,
     /// Room for the buttons.
     Buttons,
     /// A line inside a suggestion fence.
@@ -504,7 +509,7 @@ pub fn height(t: &ThreadBlock, collapsed: bool, width: usize) -> usize {
     }
     if let Role::Composer { .. } = t.role {
         let body = t.comments.first().map_or("", |c| c.1.as_str());
-        return 1 + composer_rows(body, width.saturating_sub(2)).len() + button_rows(t) + 1;
+        return 2 + composer_rows(body, width.saturating_sub(2)).len() + button_rows(t) + 1;
     }
     let mut h = 1 + button_rows(t) + 1;
     for (i, (_, body)) in t.comments.iter().enumerate() {
@@ -670,16 +675,45 @@ pub fn composer_button_cols(
     out
 }
 
+/// The formatting buttons on a `width`-column toolbar row, in `styles(kind)`'s order, as
+/// `[label]` spans (the brackets included); the ones that don't fit are dropped from the right.
+pub fn composer_tool_cols(kind: crate::forge::Kind, width: usize) -> Vec<(std::ops::Range<usize>, Style)> {
+    let mut out = Vec::new();
+    let mut at = 2;
+    for &style in comment_format::styles(kind) {
+        let w = style.label().width() + 2;
+        if at + w > width {
+            break;
+        }
+        out.push((at..at + w, style));
+        at += w + 1;
+    }
+    out
+}
+
 fn composer_lines(t: &ThreadBlock, width: usize) -> Vec<BlockLine> {
     let (heading, body) = t.comments.first().map_or(("", ""), |c| (c.0.as_str(), c.1.as_str()));
-    let (submit, now) = match t.role {
-        Role::Composer { submit, now, .. } => (submit, now),
-        _ => (SubmitLabel::Comment, false),
+    let (submit, now, kind) = match t.role {
+        Role::Composer { submit, now, kind, .. } => (submit, now, kind),
+        _ => (SubmitLabel::Comment, false, crate::forge::Kind::GitHub),
     };
     let mut out = vec![BlockLine {
         kind: Kind::Header,
         text: rule(&format!("┌ {heading}"), "", width),
     }];
+    out.push(BlockLine {
+        kind: Kind::Toolbar,
+        text: {
+            let mut row = String::from("│ ");
+            for (i, (_, style)) in composer_tool_cols(kind, width).iter().enumerate() {
+                if i > 0 {
+                    row.push(' ');
+                }
+                row.push_str(&format!("[{}]", style.label()));
+            }
+            row
+        },
+    });
     for r in composer_rows(body, width.saturating_sub(2)) {
         out.push(BlockLine {
             kind: Kind::Body,
@@ -1054,12 +1088,27 @@ mod tests {
     }
 
     #[test]
+    fn the_toolbar_columns_follow_the_styles_and_drop_from_the_right() {
+        use crate::forge::Kind;
+        let all = composer_tool_cols(Kind::GitHub, 200);
+        let styles: Vec<_> = all.iter().map(|(_, s)| *s).collect();
+        assert_eq!(styles, comment_format::styles(Kind::GitHub));
+        assert_eq!(all[0].0, 2..5);
+        assert_eq!(all[1].0, 6..9);
+        let narrow = composer_tool_cols(Kind::GitHub, 12);
+        assert_eq!(narrow.len(), 2);
+        assert!(narrow.iter().all(|(c, _)| c.end <= 12));
+        assert!(composer_tool_cols(Kind::GitHub, 4).is_empty());
+    }
+
+    #[test]
     fn a_composer_has_a_header_body_buttons_and_footer_and_never_collapses() {
         let t = ThreadBlock {
             role: Role::Composer {
                 caret: 0,
                 submit: SubmitLabel::AddToReview,
                 now: true,
+                kind: crate::forge::Kind::GitHub,
             },
             id: "composer".into(),
             right: true,
@@ -1076,12 +1125,19 @@ mod tests {
         let kinds: Vec<_> = ls.iter().map(|l| l.kind).collect();
         assert_eq!(
             kinds,
-            vec![Kind::Header, Kind::Body, Kind::Body, Kind::Buttons, Kind::Footer]
+            vec![
+                Kind::Header,
+                Kind::Toolbar,
+                Kind::Body,
+                Kind::Body,
+                Kind::Buttons,
+                Kind::Footer
+            ]
         );
         assert_eq!(ls.len(), height(&t, false, 60));
         assert!(ls[0].text.starts_with("┌ Comment on lines 3–4 ─"));
         assert!(
-            ls[3]
+            ls[4]
                 .text
                 .contains("[Add to Review Ctrl+Enter] [Comment Now] [Cancel Esc]")
         );
@@ -1098,7 +1154,7 @@ mod tests {
         assert!(tight[1].0.end <= 42);
         assert!(narrow.iter().all(|(_, b)| *b != ComposerButton::Insert));
         assert_eq!(composer_button_cols(SubmitLabel::Comment, false, 80).len(), 3);
-        let at = |r: std::ops::Range<usize>| ls[3].text.chars().skip(r.start).take(r.len()).collect::<String>();
+        let at = |r: std::ops::Range<usize>| ls[4].text.chars().skip(r.start).take(r.len()).collect::<String>();
         assert_eq!(at(submit), SubmitLabel::AddToReview.text());
         assert_eq!(at(cancel), CANCEL_LABEL);
         let mut ts = Threads::default();

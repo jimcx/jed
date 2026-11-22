@@ -211,3 +211,190 @@ async fn review_comment_format_the_drawn_box_follows_the_formatted_text() {
     let s = screen(&mut app);
     assert_eq!(s.matches("```").count(), 2, "{s}");
 }
+
+// ---- review_comment_format-b: the toolbar row, through the drawn hit map ----
+
+use crossterm::event::{MouseButton, MouseEventKind};
+
+/// The drawn screen at `w` columns (rows) and the terminal's cursor cell.
+fn draw_at(app: &mut App, w: u16) -> (Vec<String>, (u16, u16)) {
+    use ratatui::{Terminal, backend::TestBackend};
+    let mut term = Terminal::new(TestBackend::new(w, 40)).unwrap();
+    term.draw(|f| crate::ui::render(f, app)).unwrap();
+    let cur = term.get_cursor_position().unwrap();
+    let buf = term.backend().buffer().clone();
+    let rows = (0..buf.area.height)
+        .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+        .collect();
+    (rows, (cur.x, cur.y))
+}
+
+/// The toolbar's screen row and text.
+fn toolbar(rows: &[String]) -> (usize, String) {
+    let y = rows
+        .iter()
+        .position(|r| r.contains("[B]"))
+        .unwrap_or_else(|| panic!("a toolbar row in {rows:#?}"));
+    (y, rows[y].clone())
+}
+
+fn click(app: &mut App, x: usize, y: usize) {
+    app.mouse(MouseEventKind::Down(MouseButton::Left), x as u16, y as u16);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), x as u16, y as u16);
+}
+
+/// Clicks the `[label]` button on the drawn toolbar.
+fn click_tool(app: &mut App, w: u16, label: &str) {
+    let (rows, _) = draw_at(app, w);
+    let (y, row) = toolbar(&rows);
+    let at = row
+        .find(&format!("[{label}]"))
+        .unwrap_or_else(|| panic!("no [{label}] in {row}"));
+    click(app, row[..at].chars().count() + 1, y);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_comment_format_the_toolbar_lists_the_forges_styles_in_order() {
+    for kind in KINDS {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = boot(dir.path(), kind).await;
+        open_box(&mut app, "hello world");
+        // Wide enough for every label in a half-width box.
+        let (rows, _) = draw_at(&mut app, 240);
+        let (_, row) = toolbar(&rows);
+        let want: Vec<String> = comment_format::styles(kind)
+            .iter()
+            .map(|s| format!("[{}]", s.label()))
+            .collect();
+        let want = want.join(" ");
+        let at = row.find("│ [B]").unwrap() + "│ ".len();
+        let got: String = row[at..].chars().take(want.chars().count()).collect();
+        assert_eq!(got, want, "{kind:?}");
+        // The block carries the review's forge kind, so a per-forge difference reaches the toolbar.
+        let d = app.group_mut().active_diff_mut().unwrap();
+        let carried = d.threads.list().iter().find_map(|t| match t.role {
+            crate::review_blocks::Role::Composer { kind, .. } => Some(kind),
+            _ => None,
+        });
+        assert_eq!(carried, Some(kind));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_comment_format_clicking_each_label_applies_its_style_and_toggles_off() {
+    for kind in KINDS {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = boot(dir.path(), kind).await;
+        open_box(&mut app, "hello world");
+        for style in comment_format::styles(kind) {
+            app.test_composer_select(6, 11);
+            click_tool(&mut app, 120, style.label());
+            let (want, selected) = expected(*style);
+            assert_eq!(text(&app), want, "{kind:?} {style:?}");
+            assert_eq!(app.test_composer_selected(), selected, "{kind:?} {style:?}");
+            // One undo removes it.
+            app.test_execute(Command::Undo);
+            assert_eq!(text(&app), "hello world", "{kind:?} {style:?} undo");
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = boot(dir.path(), Kind::GitHub).await;
+    open_box(&mut app, "hello world");
+    app.test_composer_select(6, 11);
+    click_tool(&mut app, 120, "B");
+    assert_eq!(text(&app), "hello **world**");
+    click_tool(&mut app, 120, "B");
+    assert_eq!(text(&app), "hello world");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_comment_format_a_narrow_box_drops_labels_from_the_right() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = boot(dir.path(), Kind::GitHub).await;
+    open_box(&mut app, "hello world");
+    let (rows, _) = draw_at(&mut app, 56);
+    let (_, row) = toolbar(&rows);
+    assert!(row.contains("[B]") && row.contains("[S]"), "{row}");
+    assert!(!row.contains("[H]"), "{row}");
+    // Every drawn label is whole: the row's brackets pair up, ending on the last label that fits.
+    let tools = &row[row.find("│ [B]").unwrap() + "│ ".len()..];
+    let drawn: Vec<&str> = tools
+        .split_whitespace()
+        .take_while(|t| t.starts_with('[') && t.ends_with(']'))
+        .collect();
+    let all: Vec<String> = comment_format::styles(Kind::GitHub)
+        .iter()
+        .map(|s| format!("[{}]", s.label()))
+        .collect();
+    assert!(!drawn.is_empty() && drawn.len() < all.len(), "{row}");
+    assert_eq!(drawn, all[..drawn.len()], "{row}");
+    app.test_composer_select(6, 11);
+    click_tool(&mut app, 56, "I");
+    assert_eq!(text(&app), "hello _world_");
+    // A click past the last label does nothing.
+    let (rows, _) = draw_at(&mut app, 56);
+    let (y, row) = toolbar(&rows);
+    let end = row.trim_end().chars().count();
+    let before = text(&app);
+    click(&mut app, end + 1, y);
+    assert_eq!(text(&app), before);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_comment_format_text_rows_still_take_clicks_and_the_caret_is_drawn_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = boot(dir.path(), Kind::GitHub).await;
+    open_box(&mut app, "one\ntwo");
+    let (rows, _) = draw_at(&mut app, 120);
+    let y = rows.iter().position(|r| r.contains("│ two")).unwrap();
+    let x = rows[y].chars().position(|c| c == 't').unwrap();
+    click(&mut app, x + 2, y);
+    let (_, cur) = draw_at(&mut app, 120);
+    assert_eq!(cur, ((x + 2) as u16, y as u16));
+    app.type_text("X");
+    assert_eq!(text(&app), "one\ntwXo");
+    // The first text row too.
+    click(&mut app, x + 1, y - 1);
+    app.type_text("Y");
+    assert_eq!(text(&app), "oYne\ntwXo");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_comment_format_the_toolbar_is_on_the_conversation_box_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = boot(dir.path(), Kind::GitHub).await;
+    app.test_execute(Command::ReviewCommentOnMergeRequest);
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    assert!(app.test_composer_text().is_some());
+    app.type_text("hello");
+    let (rows, _) = draw_at(&mut app, 120);
+    toolbar(&rows);
+    app.test_composer_select(0, 5);
+    click_tool(&mut app, 120, "B");
+    assert_eq!(text(&app), "**hello**");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_comment_format_the_toolbar_is_on_the_summary_and_edit_boxes_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = boot(dir.path(), Kind::GitHub).await;
+    open_box(&mut app, "hello world");
+    // The edit box: the saved draft opened again.
+    app.press_bound(Command::ReviewSaveComment);
+    assert!(app.test_composer_text().is_none());
+    draw_wide(&mut app, 120);
+    app.test_execute(Command::ReviewEditDraft);
+    assert_eq!(app.test_composer_text().as_deref(), Some("hello world"));
+    app.test_composer_select(6, 11);
+    click_tool(&mut app, 120, "B");
+    assert_eq!(text(&app), "hello **world**");
+    app.press_bound(Command::ReviewCancelComment);
+    // The summary box.
+    app.test_execute(Command::ReviewSubmitComment);
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    assert_eq!(app.test_composer_text().as_deref(), Some(""));
+    app.type_text("done");
+    app.test_composer_select(0, 4);
+    click_tool(&mut app, 120, "I");
+    assert_eq!(text(&app), "_done_");
+}
