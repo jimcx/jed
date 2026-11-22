@@ -1059,3 +1059,54 @@ async fn review_pending_replies_c_github_refuses_a_claude_comment_outside_the_di
     assert!(drafts(&r.app).is_empty(), "no draft stored");
     assert_eq!(r.writes().len(), n, "no write: {:?}", r.writes());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_pending_replies_a_failed_comment_now_from_a_reopened_reply_draft_keeps_both() {
+    let mut r = rig(F::Gitea, false).await;
+    reply_saved(&mut r, "Draft reply").await;
+    let before = reply_drafts(&r.app);
+    assert_eq!(before.len(), 1);
+    r.server.set(
+        "POST /api/v1/repos/alice/project/pulls/7/comments/11/replies",
+        Reply::status(400).with_body(r#"{"message":"reply refused"}"#),
+    );
+    on_thread(&mut r.app);
+    r.app.test_execute(Command::ReviewReply);
+    assert_eq!(r.app.test_composer_text().as_deref(), Some("Draft reply"));
+    click(&mut r.app, "[Comment Now]");
+    assert!(r.app.settle(|a| !a.review.writing && a.review.error.is_some()).await);
+    let e = r.app.review.error.clone().unwrap_or_default();
+    assert!(e.contains("reply refused"), "{e}");
+    assert_eq!(r.app.test_composer_text().as_deref(), Some("Draft reply"));
+    let after = reply_drafts(&r.app);
+    assert_eq!(after.len(), 1);
+    assert_eq!((&after[0].id, &after[0].body), (&before[0].id, &before[0].body));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_pending_replies_a_failed_comment_now_from_a_reopened_line_draft_keeps_both() {
+    let mut r = rig(F::GitLab, false).await;
+    line_box(&mut r.app, "Draft line");
+    click(&mut r.app, "Ctrl+Enter]");
+    quiet(&mut r.app).await;
+    let before = drafts(&r.app);
+    assert_eq!(before.len(), 1);
+    r.server.set(
+        &format!(
+            "POST {}/merge_requests/7/discussions",
+            crate::mr_review_tests::gitlab::API
+        ),
+        Reply::status(400).with_body(r#"{"message":"line refused"}"#),
+    );
+    pick_first_draft(&mut r.app);
+    r.app.test_execute(Command::ReviewEditDraft);
+    assert_eq!(r.app.test_composer_text().as_deref(), Some("Draft line"));
+    click(&mut r.app, "[Comment Now]");
+    assert!(r.app.settle(|a| !a.review.writing && a.review.error.is_some()).await);
+    let e = r.app.review.error.clone().unwrap_or_default();
+    assert!(e.contains("line refused"), "{e}");
+    assert_eq!(r.app.test_composer_text().as_deref(), Some("Draft line"));
+    let after = drafts(&r.app);
+    assert_eq!(after.len(), 1);
+    assert_eq!((&after[0].id, &after[0].body), (&before[0].id, &before[0].body));
+}
