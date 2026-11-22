@@ -727,6 +727,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Side panel resizing, finished** (`side_panel_resize`): make the side panel's resize sash discoverable and smooth — [tasks/side_panel_resize.md](tasks/side_panel_resize.md)
 - **Snippets** (`snippets`): LSP snippet completions with tab stops, mirrors and choices — [tasks/snippets.md](tasks/snippets.md)
 - **Stale cargo check diagnostics** (`stale_cargo_check`): dim cargo-check diagnostics until the next save — [tasks/stale_cargo_check.md](tasks/stale_cargo_check.md)
+- **Streamed inline blame** (`blame_stream`): inline blame from our own blame walk over the file's history (resumable, streamed in pieces, cancelled when HEAD moves) instead of libgit2's blame_file, so recent lines show at once and the whole file is done in a fraction of the time — [tasks/blame_stream.md](tasks/blame_stream.md)
 - **Themes** (`themes`): a built-in Light+, a `theme` setting, a picker with live preview and theme files — [tasks/themes.md](tasks/themes.md)
 - **Transform, sort and dedupe lines** (`transform_sort_dedupe`): change case, sort, and deduplicate lines — [tasks/transform_sort_dedupe.md](tasks/transform_sort_dedupe.md)
 - **VHDL: tree-sitter and VHDL-LS** (`vhdl`): VHDL files get syntax colours, comment / pair / indent behaviour and a language server (`vhdl_ls` from rust_hdl), as C++ / Python / Rust do — [tasks/vhdl.md](tasks/vhdl.md)

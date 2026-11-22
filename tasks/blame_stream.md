@@ -1,0 +1,49 @@
+---
+id: blame_stream
+name: Streamed inline blame
+summary: inline blame from our own blame walk over the file's history (resumable, streamed in pieces, cancelled when HEAD moves) instead of libgit2's blame_file, so recent lines show at once and the whole file is done in a fraction of the time
+status: open
+priority: 0
+dependencies: [git_blame, history_stream]
+---
+
+Turning inline blame on in a file with a long history takes seconds before any label shows. `blame::blame_head` (`jed/src/blame.rs`) calls libgit2's `Repository::blame_file` and waits for the whole file. libgit2's blame is 15–20× slower than `git blame`. Measured in release at HEAD:
+
+| File | `git blame --porcelain` | libgit2 `blame_file`, whole file | libgit2, one line (`min_line` = `max_line`) |
+|---|---|---|---|
+| jed `jed/src/app/mod.rs` (2,377 lines, 23 commits touch it) | 0.04 s | 0.69 s | 0.87 s |
+| a 20k-commit C project, a 7,386-line file (910 touch it) | 0.38 s | 5.9 s | 1.1 s |
+| same project, a 4,295-line Python file (1,074 touch it) | 0.28 s | 4.1 s | 3.1 s |
+
+Blaming only the cursor's line doesn't help: libgit2 still walks most of the history. The fix is `history_stream`'s approach applied to blame: our own walk over the file's history that can pause and resume, reports what it has found in pieces as it goes, and is cancelled when it's no longer needed.
+
+  - Needs: `jed/src/blame.rs` (`Base`, `Blame`, `Job`, `Computed`, `Found`, `compute`, `find`, `blame_head`, `hunks`, `Line`), `jed/src/app/blame.rs` (`sync_blame`, `blame_done`, `blame_head_changed`), `GutterEvent::Blame` (`app/quick_diff.rs`), `jed/src/git/log.rs` (`Walker`: the date-ordered heap, the path-entry cache, following renames, `SLICE`; `stream`, `Chunk`, `FLUSH`), `jed/src/git_history.rs` (`HistoryStream`: a cancel flag set on drop), `jed/src/git/diff.rs` (`diff`), `ui/editor.rs` / `ui/diff.rs` (the label). Read `tasks/history_stream.md` and `tasks/git_blame.md`, docs/dev/conventions.md's background-work rules and docs/dev/app.md's `blame.rs` entry first.
+  - Design:
+    - **The walk** (`git::blame` or in `blame.rs`): git's blame scoreboard without `-M` / `-C`. Each queued commit holds the ranges of HEAD lines it is still suspected of, as line ranges in its own version of the file. Commits come off a date-ordered heap, built from `Walker`'s pieces (the heap order, the `(commit, path)` → entry cache, the rename following). For each commit with suspects:
+      - If some parent has the same blob id, that parent takes every suspect with no diff (git's rule; the first such parent).
+      - Otherwise each parent in order gets the lines its version shares with this one, found with `git::diff::diff(parent, ours, 0)`, so the same xdiff and options. A parent without the file takes nothing.
+      - The lines left are this commit's, final. A root commit keeps all of its suspects.
+    - Renames are followed the way `Walker` follows them, which is what `git blame` does by default (the git_blame task deferred it). The walk ends when no suspects are left. Commit metadata (author, "You", time, summary, cleaned) is read once per commit, as `blame_head` reads it now.
+    - **Pieces as it goes:** `step(budget)` walks until a time slice runs out (like `Walker::with_slice`, default `SLICE`) or the walk ends, and returns the HEAD line ranges settled since the last step as `(first_line, count, Arc<Commit>)`, plus `done`. It blocks (call from `spawn_blocking`) and must be `Send`. The newest commits come first, so recently changed lines settle in the first milliseconds and the oldest lines last.
+    - **The job:** one long-running `spawn_blocking` job per (HEAD, path), like `log::stream`. It sends the first chunk as soon as anything has settled, then every `FLUSH` (~200 ms) and at the end, through a new `GutterEvent::BlameChunk { buffer, generation, .. }` or similar. It ends when the walk is done, on an error, when a send is refused, or when its cancel flag is set. The flag lives in a handle on `buf.blame` that sets it on drop (as `HistoryStream`), so it is set when HEAD moves, the blame is turned off, the path changes or the buffer closes.
+    - **The model:** `Base` holds HEAD's text and its HEAD lines' commits, each line `Some(commit)` once settled. It fills in as chunks arrive. A finished `Base` is cached and reused per (HEAD, path) as now. One to decide while building: either the HEAD text vs buffer diff (the second step, rerun after edits) becomes a buffer line → HEAD line map, so a chunk only fills in commits on the UI thread with no diff, or each chunk reruns `hunks` off-thread. Whichever is chosen, an edit during the walk must neither restart the walk nor lose its chunks.
+    - **Display:** a committed line not settled yet draws no label, the same as no blame. It is a new state for `Blame::line` (e.g. `None` or a `Line::Pending` that `label` skips), distinct from "Uncommitted changes". A line changed since HEAD says "Uncommitted changes" at once, before any chunk arrives. Once the cursor line's chunk arrives, its label shows without a cursor move. The hash click (`blame_hash`) works on settled lines.
+    - libgit2's `blame_file` is no longer called, so `blame_head` goes.
+  - **Reference outputs, no `git` in tests:** the comparison tests never run the `git` CLI.
+    - The fixture repositories are built in the test with `git2` alone, with fixed author / committer names, emails and times, so their commit ids are the same on every run.
+    - Keep them small, but cover: lines changed in many commits; a merge where one side changed the file and the other didn't; a merge where both sides changed it, in different places; a whole-file rename partway through history; lines moved within the file (no `-M`, so they go to the commit that moved them); a deleted and re-added file; an empty file; a last line without a final line break.
+    - While building, run `git blame --porcelain <HEAD> -- <path>` once per fixture, check the output by eye against the fixture's history, and save it as `jed/src/testdata/blame/<fixture>.porcelain`.
+    - The tests read the saved files (`include_str!`), parse each line's commit id and original line number, and compare them with the walk's result: the result of one full walk, and of chunks merged from small time slices.
+    - The step that runs git (an `#[ignore]` test or a small script, named in docs/dev/testing.md) is run by hand only, to make the files again if a fixture changes. If that step finds the ids changed, the fixture wasn't deterministic: fix that first.
+  - Done when:
+    - The walk's result matches the saved `git blame --porcelain` reference for every fixture, line for line (commit id and original line number). This holds both for a full walk and for one taken in many short steps. No test runs `git`.
+    - In a test repository (built with `git2`) of 5,000 commits, the last commit changes one line of a file whose other lines date from the first commit. With inline blame on and the cursor on the changed line, its label shows from a chunk that arrives while the walk is still running. A test hook holds the walk back, as `stream_probe` does for the history. The cursor line on an old line shows no label until its chunk arrives, then shows the right commit.
+    - Editing the buffer during the walk shows "Uncommitted changes" on the edited line within `blame::DELAY` and doesn't restart the walk: a walk counter shows one walk. Chunks that arrive afterwards still land on the right lines, mapped through the edits.
+    - HEAD moving during the walk (a commit made outside jed), toggling the blame off, or closing the buffer sets the cancel flag. After that the job sends nothing more and exits, and a test sees both. A HEAD move starts a new walk, and the old walk's chunks are dropped.
+    - Reopening the blame for the same (HEAD, path) after a finished walk reuses the cached `Base` with no new walk.
+    - A release budget test `milestone_blame_stream_budget` (keeps `milestone` in its name) builds a repository with `git2`: 20,000 commits, and a file of a few thousand lines touched by about 1,000 of them. It reports the time to the first chunk and to the whole file, before (libgit2 `blame_file`, timed in the same test) and after. Budgets on the "after" numbers: first chunk < 100 ms, whole file at least 5× faster than before.
+    - `scripts/check` is green.
+  - Subtasks (one agent and one commit each):
+    - blame_stream-a: the blame walk (`step`, resumable, renames, merges), the `git2`-built deterministic fixtures, their saved `git blame --porcelain` references in `jed/src/testdata/blame/` (git run once, by hand, and checked), the comparison tests over a full walk and over short steps, and the budget test with the "before" numbers and the walk's first-chunk / whole-file times, recorded in this file
+    - blame_stream-b: the streaming job (cancel handle on `buf.blame`, chunks every `FLUSH`, first chunk at once), `Base` filling in as chunks arrive, unsettled lines drawing no label, edits during the walk, `blame_head` removed, the done-when app tests in `jed/src/blame_stream_tests.rs`, the budget test's "after" numbers, docs (docs/dev/app.md's `blame.rs` entry, docs/dev/modules.md's `blame.rs` / `git::log` lines, docs/dev/testing.md's note on the reference files)
+  - Deferred: `-M` / `-C` (moved and copied lines; jed doesn't ask libgit2 for them now either); `blame.ignoreRevsFile`; settling the cursor line first (a walk can't skip ahead to a line's commit; recent lines come first anyway).
