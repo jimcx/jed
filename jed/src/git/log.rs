@@ -91,8 +91,7 @@ pub struct Walker {
     seq: u64,
     /// Each parsed commit's path entry, so a parent shared by several children reads its tree
     /// once.
-    #[allow(clippy::type_complexity)]
-    entries: RefCell<HashMap<(Oid, PathBuf), Option<(i32, Oid)>>>,
+    entries: Entries,
     /// The path each queued commit is followed under (a rename changes it for the parents).
     paths: HashMap<Oid, PathBuf>,
     slice: Duration,
@@ -117,7 +116,7 @@ impl Walker {
             heap: BinaryHeap::new(),
             queued: HashSet::new(),
             seq: 0,
-            entries: RefCell::default(),
+            entries: Entries::default(),
             paths: HashMap::new(),
             slice: SLICE,
             visited: 0,
@@ -204,7 +203,7 @@ impl Walker {
         };
         if commit.parent_count() == 0 {
             let tree = commit.tree()?;
-            return Ok((Vec::new(), self.entry_of(&tree, path)?.is_some(), None));
+            return Ok((Vec::new(), entry_of(&tree, path).is_some(), None));
         }
         let own = self.entry(commit, path)?;
         let mut treesame = None;
@@ -243,36 +242,12 @@ impl Walker {
         if self.entry(&parent, path)?.is_some() {
             return Ok(None);
         }
-        let mut diff = self
-            .repo
-            .diff_tree_to_tree(Some(&parent.tree()?), Some(&commit.tree()?), None)?;
-        diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
-        for delta in diff.deltas() {
-            if delta.status() == git2::Delta::Renamed && delta.new_file().path() == Some(path) {
-                return Ok(delta.old_file().path().map(Path::to_path_buf));
-            }
-        }
-        Ok(None)
+        renamed_from(&self.repo, &parent, commit, path)
     }
 
-    /// The path's entry in `commit`, from the cache or its tree (the commit is already parsed, so
-    /// no second lookup).
+    /// The path's entry in `commit`, from the cache or its tree.
     fn entry(&self, commit: &git2::Commit, path: &Path) -> Result<Option<(i32, Oid)>, git2::Error> {
-        let id = (commit.id(), path.to_path_buf());
-        if let Some(entry) = self.entries.borrow().get(&id) {
-            return Ok(*entry);
-        }
-        let entry = self.entry_of(&commit.tree()?, path)?;
-        self.entries.borrow_mut().insert(id, entry);
-        Ok(entry)
-    }
-
-    /// The path's tree entry as (mode, blob id); `None` when the tree doesn't have it.
-    fn entry_of(&self, tree: &Tree, path: &Path) -> Result<Option<(i32, Oid)>, git2::Error> {
-        match tree.get_path(path) {
-            Ok(entry) => Ok(Some((entry.filemode(), entry.id()))),
-            Err(_) => Ok(None),
-        }
+        self.entries.get(commit, path)
     }
 
     #[cfg(test)]
@@ -294,6 +269,51 @@ impl Walker {
             more,
         })
     }
+}
+
+/// The path's tree entry as (mode, blob id); `None` when the tree doesn't have it.
+pub(super) fn entry_of(tree: &Tree, path: &Path) -> Option<(i32, Oid)> {
+    tree.get_path(path).ok().map(|e| (e.filemode(), e.id()))
+}
+
+/// Each parsed commit's path entry, so a parent shared by several children reads its tree once
+/// (shared by the history walk and the blame walk).
+#[derive(Default)]
+pub(super) struct Entries {
+    #[allow(clippy::type_complexity)]
+    map: RefCell<HashMap<(Oid, PathBuf), Option<(i32, Oid)>>>,
+}
+
+impl Entries {
+    /// The path's entry in `commit`, from the cache or its tree (the commit is already parsed, so
+    /// no second lookup).
+    pub(super) fn get(&self, commit: &git2::Commit, path: &Path) -> Result<Option<(i32, Oid)>, git2::Error> {
+        let id = (commit.id(), path.to_path_buf());
+        if let Some(entry) = self.map.borrow().get(&id) {
+            return Ok(*entry);
+        }
+        let entry = entry_of(&commit.tree()?, path);
+        self.map.borrow_mut().insert(id, entry);
+        Ok(entry)
+    }
+}
+
+/// The path `commit` has at `path` renamed from in `parent` (a file of the parent's the rename
+/// detection pairs with it), for a parent that lacks `path` (`git log --follow`, `git blame`).
+pub(super) fn renamed_from(
+    repo: &Repository,
+    parent: &git2::Commit,
+    commit: &git2::Commit,
+    path: &Path,
+) -> Result<Option<PathBuf>, git2::Error> {
+    let mut diff = repo.diff_tree_to_tree(Some(&parent.tree()?), Some(&commit.tree()?), None)?;
+    diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
+    for delta in diff.deltas() {
+        if delta.status() == git2::Delta::Renamed && delta.new_file().path() == Some(path) {
+            return Ok(delta.old_file().path().map(Path::to_path_buf));
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]

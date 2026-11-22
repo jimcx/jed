@@ -1,0 +1,53 @@
+fb4701b9119e67c239c41063d6bb988911c41dcf 1 1 1
+author Bob
+author-mail <bob@example.com>
+author-time 1600000200
+author-tz +0000
+committer Bob
+committer-mail <bob@example.com>
+committer-time 1600000200
+committer-tz +0000
+summary p changes line 1
+previous 41c306a5086576ea4df355f5b1b557bcf667c209 f.txt
+filename f.txt
+	line 1 p
+41c306a5086576ea4df355f5b1b557bcf667c209 2 2 7
+author Bob
+author-mail <bob@example.com>
+author-time 1600009000
+author-tz +0000
+committer Bob
+committer-mail <bob@example.com>
+committer-time 1600009000
+committer-tz +0000
+summary create
+boundary
+filename f.txt
+	line 2
+41c306a5086576ea4df355f5b1b557bcf667c209 3 3
+	line 3
+41c306a5086576ea4df355f5b1b557bcf667c209 4 4
+	line 4
+41c306a5086576ea4df355f5b1b557bcf667c209 5 5
+	line 5
+41c306a5086576ea4df355f5b1b557bcf667c209 6 6
+	line 6
+41c306a5086576ea4df355f5b1b557bcf667c209 7 7
+	line 7
+41c306a5086576ea4df355f5b1b557bcf667c209 8 8
+	line 8
+ca2b331c9c6c3774b53b4a69753cf250f5e96cb5 9 9 1
+author Alice
+author-mail <alice@example.com>
+author-time 1600000300
+author-tz +0000
+committer Alice
+committer-mail <alice@example.com>
+committer-time 1600000300
+committer-tz +0000
+summary merge
+previous 7506de445ed2b95c8859f0fa4f34d7a221c60bdf f.txt
+filename f.txt
+	line 9 merged
+41c306a5086576ea4df355f5b1b557bcf667c209 10 10 1
+	line 10

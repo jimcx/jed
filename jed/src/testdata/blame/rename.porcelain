@@ -1,0 +1,95 @@
+309af4ea5cc85eb88531321901ed9ed69f5002fb 1 1 1
+author Bob
+author-mail <bob@example.com>
+author-time 1600000100
+author-tz +0000
+committer Bob
+committer-mail <bob@example.com>
+committer-time 1600000100
+committer-tz +0000
+summary create a
+boundary
+filename a.txt
+	line 1
+2d48f7aa005f42ec5dc0ae4b9e8bc8bf28908fbc 2 2 1
+author Alice
+author-mail <alice@example.com>
+author-time 1600000600
+author-tz +0000
+committer Alice
+committer-mail <alice@example.com>
+committer-time 1600000600
+committer-tz +0000
+summary change c
+previous a5f401a1a5d57e0ce4fadb543882d5cee8e0d355 c.txt
+filename c.txt
+	line 2 v2
+309af4ea5cc85eb88531321901ed9ed69f5002fb 3 3 2
+	line 3
+309af4ea5cc85eb88531321901ed9ed69f5002fb 4 4
+	line 4
+3a4c31e605d09d3e56ad31f35e7591543123ddca 5 5 1
+author Alice
+author-mail <alice@example.com>
+author-time 1600000200
+author-tz +0000
+committer Alice
+committer-mail <alice@example.com>
+committer-time 1600000200
+committer-tz +0000
+summary change a
+previous 309af4ea5cc85eb88531321901ed9ed69f5002fb a.txt
+filename a.txt
+	line 5 v2
+309af4ea5cc85eb88531321901ed9ed69f5002fb 6 6 4
+	line 6
+309af4ea5cc85eb88531321901ed9ed69f5002fb 7 7
+	line 7
+309af4ea5cc85eb88531321901ed9ed69f5002fb 8 8
+	line 8
+309af4ea5cc85eb88531321901ed9ed69f5002fb 9 9
+	line 9
+66c9d9a086c680f59ec0015a3bd69266d47ac363 10 10 1
+author Alice
+author-mail <alice@example.com>
+author-time 1600000400
+author-tz +0000
+committer Alice
+committer-mail <alice@example.com>
+committer-time 1600000400
+committer-tz +0000
+summary change b
+previous ba586a1aac03835300ebff108c1e0c88a5916e91 b.txt
+filename b.txt
+	line 10 v2
+309af4ea5cc85eb88531321901ed9ed69f5002fb 11 11 4
+	line 11
+309af4ea5cc85eb88531321901ed9ed69f5002fb 12 12
+	line 12
+309af4ea5cc85eb88531321901ed9ed69f5002fb 13 13
+	line 13
+309af4ea5cc85eb88531321901ed9ed69f5002fb 14 14
+	line 14
+a5f401a1a5d57e0ce4fadb543882d5cee8e0d355 15 15 1
+author Bob
+author-mail <bob@example.com>
+author-time 1600000500
+author-tz +0000
+committer Bob
+committer-mail <bob@example.com>
+committer-time 1600000500
+committer-tz +0000
+summary rename b to c with an edit
+previous 66c9d9a086c680f59ec0015a3bd69266d47ac363 b.txt
+filename c.txt
+	line 15 renamed
+309af4ea5cc85eb88531321901ed9ed69f5002fb 16 16 5
+	line 16
+309af4ea5cc85eb88531321901ed9ed69f5002fb 17 17
+	line 17
+309af4ea5cc85eb88531321901ed9ed69f5002fb 18 18
+	line 18
+309af4ea5cc85eb88531321901ed9ed69f5002fb 19 19
+	line 19
+309af4ea5cc85eb88531321901ed9ed69f5002fb 20 20
+	line 20

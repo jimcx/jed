@@ -372,7 +372,7 @@ fn find(job: &Job) -> Result<Found, git2::Error> {
 }
 
 /// Blocking: `git blame` of `path` at `head`; `None` when the file isn't in that commit.
-fn blame_head(r: &git2::Repository, head: Oid, path: &std::path::Path) -> Result<Option<Base>, git2::Error> {
+pub(crate) fn blame_head(r: &git2::Repository, head: Oid, path: &std::path::Path) -> Result<Option<Base>, git2::Error> {
     let tree = r.find_commit(head)?.tree()?;
     let entry = match tree.get_path(path) {
         Ok(e) => e,
@@ -387,11 +387,7 @@ fn blame_head(r: &git2::Repository, head: Oid, path: &std::path::Path) -> Result
     let mut opts = git2::BlameOptions::new();
     opts.newest_commit(head);
     let blame = r.blame_file(path, Some(&mut opts))?;
-    let email = r
-        .config()
-        .and_then(|c| c.get_string("user.email"))
-        .ok()
-        .filter(|e| !e.is_empty());
+    let email = user_email(r);
     let mut commits: HashMap<Oid, Arc<Commit>> = HashMap::new();
     let mut lines = Vec::with_capacity(blame.len());
     for h in blame.iter() {
@@ -399,23 +395,7 @@ fn blame_head(r: &git2::Repository, head: Oid, path: &std::path::Path) -> Result
         let commit = match commits.get(&id) {
             Some(c) => c.clone(),
             None => {
-                let c = r.find_commit(id)?;
-                let author = c.author();
-                let summary = String::from_utf8_lossy(c.message_bytes())
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                let commit = Arc::new(Commit {
-                    id,
-                    author: clean(&String::from_utf8_lossy(author.name_bytes())),
-                    you: email
-                        .as_deref()
-                        .is_some_and(|e| e.eq_ignore_ascii_case(&String::from_utf8_lossy(author.email_bytes()))),
-                    time: author.when().seconds(),
-                    summary: clean(&summary),
-                });
+                let commit = describe(r, id, email.as_deref())?;
                 commits.insert(id, commit.clone());
                 commit
             }
@@ -428,6 +408,33 @@ fn blame_head(r: &git2::Repository, head: Oid, path: &std::path::Path) -> Result
         path: path.to_path_buf(),
         text,
         lines,
+    }))
+}
+
+/// The repository's `user.email` (the author whose email it is shows as "You").
+pub(crate) fn user_email(r: &git2::Repository) -> Option<String> {
+    r.config()
+        .and_then(|c| c.get_string("user.email"))
+        .ok()
+        .filter(|e| !e.is_empty())
+}
+
+/// Blocking: commit `id`'s blame metadata (`email`: [`user_email`]).
+pub(crate) fn describe(r: &git2::Repository, id: Oid, email: Option<&str>) -> Result<Arc<Commit>, git2::Error> {
+    let c = r.find_commit(id)?;
+    let author = c.author();
+    let summary = String::from_utf8_lossy(c.message_bytes())
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    Ok(Arc::new(Commit {
+        id,
+        author: clean(&String::from_utf8_lossy(author.name_bytes())),
+        you: email.is_some_and(|e| e.eq_ignore_ascii_case(&String::from_utf8_lossy(author.email_bytes()))),
+        time: author.when().seconds(),
+        summary: clean(&summary),
     }))
 }
 

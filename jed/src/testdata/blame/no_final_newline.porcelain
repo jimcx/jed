@@ -1,0 +1,41 @@
+2fab27400e6e5f01901b1af2c4db2d2e940f3782 1 1 1
+author Bob
+author-mail <bob@example.com>
+author-time 1600000300
+author-tz +0000
+committer Bob
+committer-mail <bob@example.com>
+committer-time 1600000300
+committer-tz +0000
+summary add a line above
+previous 8eca7c670f9378a58c03a7a80209fd0b3bde693e f.txt
+filename f.txt
+	zero
+8d621dab01402999869954a88a4d3a8b956a813e 1 2 2
+author Bob
+author-mail <bob@example.com>
+author-time 1600000100
+author-tz +0000
+committer Bob
+committer-mail <bob@example.com>
+committer-time 1600000100
+committer-tz +0000
+summary create
+boundary
+filename f.txt
+	one
+8d621dab01402999869954a88a4d3a8b956a813e 2 3
+	two
+8eca7c670f9378a58c03a7a80209fd0b3bde693e 3 4 1
+author Alice
+author-mail <alice@example.com>
+author-time 1600000200
+author-tz +0000
+committer Alice
+committer-mail <alice@example.com>
+committer-time 1600000200
+committer-tz +0000
+summary change the last line
+previous 8d621dab01402999869954a88a4d3a8b956a813e f.txt
+filename f.txt
+	three!

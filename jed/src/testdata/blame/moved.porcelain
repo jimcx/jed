@@ -1,0 +1,53 @@
+c8f0cd35e6e474b1ddc62cf87468a9524b41d505 4 1 1
+author Bob
+author-mail <bob@example.com>
+author-time 1600000100
+author-tz +0000
+committer Bob
+committer-mail <bob@example.com>
+committer-time 1600000100
+committer-tz +0000
+summary create
+boundary
+filename f.txt
+	delta
+5a37baf9da748acb7f2f7f6da039563642aa0891 2 2 1
+author Bob
+author-mail <bob@example.com>
+author-time 1600000300
+author-tz +0000
+committer Bob
+committer-mail <bob@example.com>
+committer-time 1600000300
+committer-tz +0000
+summary move one line up
+previous d70b9eb5059c91b41e27fb8d8cfb70b7e919b15a f.txt
+filename f.txt
+	india
+c8f0cd35e6e474b1ddc62cf87468a9524b41d505 5 3 4
+	echo
+c8f0cd35e6e474b1ddc62cf87468a9524b41d505 6 4
+	foxtrot
+c8f0cd35e6e474b1ddc62cf87468a9524b41d505 7 5
+	golf
+c8f0cd35e6e474b1ddc62cf87468a9524b41d505 8 6
+	hotel
+c8f0cd35e6e474b1ddc62cf87468a9524b41d505 10 7 1
+	juliet
+d70b9eb5059c91b41e27fb8d8cfb70b7e919b15a 8 8 3
+author Alice
+author-mail <alice@example.com>
+author-time 1600000200
+author-tz +0000
+committer Alice
+committer-mail <alice@example.com>
+committer-time 1600000200
+committer-tz +0000
+summary move the top three to the bottom
+previous c8f0cd35e6e474b1ddc62cf87468a9524b41d505 f.txt
+filename f.txt
+	alpha
+d70b9eb5059c91b41e27fb8d8cfb70b7e919b15a 9 9
+	bravo
+d70b9eb5059c91b41e27fb8d8cfb70b7e919b15a 10 10
+	charlie

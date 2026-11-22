@@ -13,6 +13,7 @@
 //! - [`show`]: a commit's header, message and per-file stat against its first parent
 //!   (`git_show::render` turns it into `git show --stat`'s lines)
 
+pub mod blame;
 pub mod diff;
 pub mod log;
 pub mod range;

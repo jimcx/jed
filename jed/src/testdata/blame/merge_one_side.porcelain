@@ -1,0 +1,53 @@
+560c8a95bad83218ba179cbb012931432c812986 1 1 3
+author Bob
+author-mail <bob@example.com>
+author-time 1600000100
+author-tz +0000
+committer Bob
+committer-mail <bob@example.com>
+committer-time 1600000100
+committer-tz +0000
+summary create
+boundary
+filename f.txt
+	line 1
+560c8a95bad83218ba179cbb012931432c812986 2 2
+	line 2
+560c8a95bad83218ba179cbb012931432c812986 3 3
+	line 3
+28e45bcb0793f401cef5b6314c3278275cdb1b13 4 4 1
+author Alice
+author-mail <alice@example.com>
+author-time 1600000200
+author-tz +0000
+committer Alice
+committer-mail <alice@example.com>
+committer-time 1600000200
+committer-tz +0000
+summary change line 4
+previous 560c8a95bad83218ba179cbb012931432c812986 f.txt
+filename f.txt
+	line 4 v2
+560c8a95bad83218ba179cbb012931432c812986 5 5 4
+	line 5
+560c8a95bad83218ba179cbb012931432c812986 6 6
+	line 6
+560c8a95bad83218ba179cbb012931432c812986 7 7
+	line 7
+560c8a95bad83218ba179cbb012931432c812986 8 8
+	line 8
+ee4618ba86d991375920d1d3fa15e9a0f4bdde70 9 9 1
+author Alice
+author-mail <alice@example.com>
+author-time 1600000600
+author-tz +0000
+committer Alice
+committer-mail <alice@example.com>
+committer-time 1600000600
+committer-tz +0000
+summary change line 9
+previous 20f72ca7180aeded21f59c022cfd83888f698e2b f.txt
+filename f.txt
+	line 9 v2
+560c8a95bad83218ba179cbb012931432c812986 10 10 1
+	line 10

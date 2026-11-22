@@ -1,0 +1,68 @@
+be03e74fba28b5b53092463b743ac22bdf356555 1 1 1
+author Bob
+author-mail <bob@example.com>
+author-time 1600000500
+author-tz +0000
+committer Bob
+committer-mail <bob@example.com>
+committer-time 1600000500
+committer-tz +0000
+summary change lines 1 and 3
+previous 20d5e8c13de0c58035d7a8e4098a101a4ec85b0d f.txt
+filename f.txt
+	line 1 v2
+179bfb8c1b23f2b19b26409b11435666ec41b0d9 2 2 1
+author Bob
+author-mail <bob@example.com>
+author-time 1600000100
+author-tz +0000
+committer Bob
+committer-mail <bob@example.com>
+committer-time 1600000100
+committer-tz +0000
+summary create
+boundary
+filename f.txt
+	line 2
+be03e74fba28b5b53092463b743ac22bdf356555 3 3 1
+	line 3 v3
+f808df356f5188fe5217cfbc3e63bbb7134b64ea 4 4 2
+author Bob
+author-mail <bob@example.com>
+author-time 1600000700
+author-tz +0000
+committer Bob
+committer-mail <bob@example.com>
+committer-time 1600000700
+committer-tz +0000
+summary replace three with two
+previous 44e13198186833009ec68129017f1f28017ac6de f.txt
+filename f.txt
+	mid x
+f808df356f5188fe5217cfbc3e63bbb7134b64ea 5 5
+	mid y
+179bfb8c1b23f2b19b26409b11435666ec41b0d9 6 6 2
+	line 6
+179bfb8c1b23f2b19b26409b11435666ec41b0d9 7 7
+	line 7
+179bfb8c1b23f2b19b26409b11435666ec41b0d9 10 8 3
+	line 10
+179bfb8c1b23f2b19b26409b11435666ec41b0d9 11 9
+	line 11
+179bfb8c1b23f2b19b26409b11435666ec41b0d9 12 10
+	line 12
+44e13198186833009ec68129017f1f28017ac6de 12 11 2
+author Alice
+author-mail <alice@example.com>
+author-time 1600000600
+author-tz +0000
+committer Alice
+committer-mail <alice@example.com>
+committer-time 1600000600
+committer-tz +0000
+summary append
+previous be03e74fba28b5b53092463b743ac22bdf356555 f.txt
+filename f.txt
+	tail 1
+44e13198186833009ec68129017f1f28017ac6de 13 12
+	tail 2
