@@ -41,6 +41,8 @@ pub enum Role {
         caret: usize,
         /// The save button's label.
         submit: SubmitLabel,
+        /// A second button posts the text at once ([`NOW_LABEL`]).
+        now: bool,
     },
 }
 
@@ -629,29 +631,50 @@ pub fn lines(t: &ThreadBlock, collapsed: bool, width: usize, now: i64) -> Vec<Bl
 pub const INSERT_LABEL: &str = "[Insert Suggestion]";
 pub const CANCEL_LABEL: &str = "[Cancel Esc]";
 
+pub const NOW_LABEL: &str = "[Comment Now]";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComposerButton {
     Submit,
+    Now,
     Cancel,
     Insert,
 }
 
-pub fn composer_button_cols(label: SubmitLabel) -> [(std::ops::Range<usize>, ComposerButton); 3] {
-    let submit = 2..2 + label.text().width();
-    let cancel = submit.end + 1..submit.end + 1 + CANCEL_LABEL.width();
-    let insert = cancel.end + 1..cancel.end + 1 + INSERT_LABEL.width();
-    [
-        (submit, ComposerButton::Submit),
-        (cancel, ComposerButton::Cancel),
-        (insert, ComposerButton::Insert),
-    ]
+/// The buttons on a `width`-column buttons row, in order: the main one, Comment Now when `now`,
+/// Cancel, and Insert Suggestion, which is dropped first when the row is too narrow.
+pub fn composer_button_cols(
+    label: SubmitLabel,
+    now: bool,
+    width: usize,
+) -> Vec<(std::ops::Range<usize>, ComposerButton)> {
+    let mut out: Vec<(std::ops::Range<usize>, ComposerButton)> = Vec::new();
+    let mut texts = vec![(label.text(), ComposerButton::Submit)];
+    if now {
+        texts.push((NOW_LABEL, ComposerButton::Now));
+    }
+    let fits = |texts: &[(&str, ComposerButton)], extra: &str| {
+        2 + texts.iter().map(|(t, _)| t.width() + 1).sum::<usize>() + extra.width() <= width
+    };
+    if fits(&texts, CANCEL_LABEL) {
+        texts.push((CANCEL_LABEL, ComposerButton::Cancel));
+        if fits(&texts, INSERT_LABEL) {
+            texts.push((INSERT_LABEL, ComposerButton::Insert));
+        }
+    }
+    let mut at = 2;
+    for (text, button) in texts {
+        out.push((at..at + text.width(), button));
+        at += text.width() + 1;
+    }
+    out
 }
 
 fn composer_lines(t: &ThreadBlock, width: usize) -> Vec<BlockLine> {
     let (heading, body) = t.comments.first().map_or(("", ""), |c| (c.0.as_str(), c.1.as_str()));
-    let submit = match t.role {
-        Role::Composer { submit, .. } => submit,
-        _ => SubmitLabel::Comment,
+    let (submit, now) = match t.role {
+        Role::Composer { submit, now, .. } => (submit, now),
+        _ => (SubmitLabel::Comment, false),
     };
     let mut out = vec![BlockLine {
         kind: Kind::Header,
@@ -665,7 +688,22 @@ fn composer_lines(t: &ThreadBlock, width: usize) -> Vec<BlockLine> {
     }
     out.push(BlockLine {
         kind: Kind::Buttons,
-        text: format!("│ {} {CANCEL_LABEL} {INSERT_LABEL}", submit.text()),
+        text: {
+            let cols = composer_button_cols(submit, now, width);
+            let mut row = String::from("│ ");
+            for (i, (_, button)) in cols.iter().enumerate() {
+                if i > 0 {
+                    row.push(' ');
+                }
+                row.push_str(match button {
+                    ComposerButton::Submit => submit.text(),
+                    ComposerButton::Now => NOW_LABEL,
+                    ComposerButton::Cancel => CANCEL_LABEL,
+                    ComposerButton::Insert => INSERT_LABEL,
+                });
+            }
+            row
+        },
     });
     out.push(BlockLine {
         kind: Kind::Footer,
@@ -1021,6 +1059,7 @@ mod tests {
             role: Role::Composer {
                 caret: 0,
                 submit: SubmitLabel::AddToReview,
+                now: true,
             },
             id: "composer".into(),
             right: true,
@@ -1033,16 +1072,32 @@ mod tests {
             outdated_on: None,
             comments: vec![("Comment on lines 3–4".into(), "one\ntwo".into())],
         };
-        let ls = lines(&t, false, 40, 0);
+        let ls = lines(&t, false, 60, 0);
         let kinds: Vec<_> = ls.iter().map(|l| l.kind).collect();
         assert_eq!(
             kinds,
             vec![Kind::Header, Kind::Body, Kind::Body, Kind::Buttons, Kind::Footer]
         );
-        assert_eq!(ls.len(), height(&t, false, 40));
+        assert_eq!(ls.len(), height(&t, false, 60));
         assert!(ls[0].text.starts_with("┌ Comment on lines 3–4 ─"));
-        assert!(ls[3].text.contains("[Add to Review Ctrl+Enter] [Cancel Esc]"));
-        let [(submit, _), (cancel, _), _] = composer_button_cols(SubmitLabel::AddToReview);
+        assert!(
+            ls[3]
+                .text
+                .contains("[Add to Review Ctrl+Enter] [Comment Now] [Cancel Esc]")
+        );
+        let cols = composer_button_cols(SubmitLabel::AddToReview, true, 80);
+        assert_eq!(cols.len(), 4);
+        let (submit, cancel) = (cols[0].0.clone(), cols[2].0.clone());
+        // Narrow: Insert Suggestion goes first, the main button and Comment Now stay.
+        let narrow = composer_button_cols(SubmitLabel::AddToReview, true, 60);
+        assert_eq!(narrow.len(), 3);
+        // Narrower still: Cancel goes too (Esc stays), the main button and Comment Now fit.
+        let tight = composer_button_cols(SubmitLabel::AddToReview, true, 42);
+        let kinds: Vec<_> = tight.iter().map(|(_, b)| *b).collect();
+        assert_eq!(kinds, [ComposerButton::Submit, ComposerButton::Now]);
+        assert!(tight[1].0.end <= 42);
+        assert!(narrow.iter().all(|(_, b)| *b != ComposerButton::Insert));
+        assert_eq!(composer_button_cols(SubmitLabel::Comment, false, 80).len(), 3);
         let at = |r: std::ops::Range<usize>| ls[3].text.chars().skip(r.start).take(r.len()).collect::<String>();
         assert_eq!(at(submit), SubmitLabel::AddToReview.text());
         assert_eq!(at(cancel), CANCEL_LABEL);

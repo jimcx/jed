@@ -415,6 +415,9 @@ pub enum Command {
     ReviewSaveComment,
     /// "Code Review: Cancel Comment" (Esc in `Context::Composer`).
     ReviewCancelComment,
+    /// "Code Review: Comment Now" (unbound): posts the open reply box's text at once, without the
+    /// pending review (the box's second button).
+    ReviewCommentNow,
     /// "Code Review: Edit Draft" (unbound): the draft at the caret, or the PENDING list's selected
     /// one, in the comment box again.
     ReviewEditDraft,
@@ -1346,6 +1349,7 @@ impl Command {
             Command::ReviewComment,
             Command::ReviewSaveComment,
             Command::ReviewCancelComment,
+            Command::ReviewCommentNow,
             Command::ReviewEditDraft,
             Command::ReviewDeleteDraft,
             Command::ReviewSubmitComment,
@@ -1774,6 +1778,7 @@ impl Command {
             Command::ReviewComment => "review.comment".into(),
             Command::ReviewSaveComment => "review.saveComment".into(),
             Command::ReviewCancelComment => "review.cancelComment".into(),
+            Command::ReviewCommentNow => "review.commentNow".into(),
             Command::ReviewEditDraft => "review.editDraft".into(),
             Command::ReviewDeleteDraft => "review.deleteDraft".into(),
             Command::ReviewSubmitComment => "review.submitComment".into(),
@@ -2223,6 +2228,7 @@ impl Command {
             Command::ReviewComment => "Code Review: Add Comment",
             Command::ReviewSaveComment => "Code Review: Comment as Draft",
             Command::ReviewCancelComment => "Code Review: Cancel Comment",
+            Command::ReviewCommentNow => "Code Review: Comment Now",
             Command::ReviewEditDraft => "Code Review: Edit Draft",
             Command::ReviewDeleteDraft => "Code Review: Delete Draft",
             Command::ReviewSubmitComment => "Code Review: Submit Review (Comment)",
@@ -2480,6 +2486,7 @@ mod tests {
             Command::ReviewCopyLink => 185,
             Command::ReviewWithdraw => 186,
             Command::ReviewDiscardPending => 187,
+            Command::ReviewCommentNow => 190,
             Command::Review(_) => 154,
             Command::ToggleToolTrace => 92,
             Command::RestartServer => 93,

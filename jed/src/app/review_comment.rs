@@ -56,7 +56,8 @@ pub(super) struct Composer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ComposerKind {
     Draft,
-    /// A reply in the thread `thread_id`.
+    /// A reply in the thread `thread_id`: saved as a draft (the user's reply draft of that
+    /// thread), or posted at once by Comment Now.
     Reply {
         thread_id: String,
         /// The thread's first and last line.
@@ -140,8 +141,13 @@ impl Composer {
     }
 
     pub fn block(&self, submit: review_blocks::SubmitLabel) -> ThreadBlock {
+        use review_blocks::SubmitLabel as L;
         let verb = match (&self.kind, self.editing.is_some()) {
-            (ComposerKind::Reply { .. }, _) => "Reply (posted at once)",
+            (ComposerKind::Reply { .. }, _) => match submit {
+                L::SaveDraft => "Reply (saved as a draft)",
+                L::StartReview => "Reply (starts your review)",
+                _ => "Reply (added to your review)",
+            },
             (ComposerKind::Edit { .. }, _) => "Edit your comment (saved at once)",
             (ComposerKind::Conversation, _) => "Comment on the merge request (posted at once)",
             (ComposerKind::EditConversation { .. }, _) => "Edit your comment (saved at once)",
@@ -157,6 +163,7 @@ impl Composer {
             role: Role::Composer {
                 caret: self.view.selections.primary().head.0,
                 submit,
+                now: matches!(self.kind, ComposerKind::Reply { .. }),
             },
             id: "composer".into(),
             right: self.right,
@@ -373,7 +380,13 @@ impl App {
             lines: draft.lines,
             commit: draft.commit,
             editing: Some(draft.id),
-            kind: ComposerKind::Draft,
+            kind: match &draft.reply_to {
+                Some(thread_id) => ComposerKind::Reply {
+                    thread_id: thread_id.clone(),
+                    lines: (draft.start, draft.end),
+                },
+                None => ComposerKind::Draft,
+            },
             outside: false,
         });
     }
@@ -451,7 +464,7 @@ impl App {
     /// one's new body) and the box closes. An empty comment is not saved.
     pub(super) fn composer_save(&mut self) {
         let Some(c) = &self.composer else { return };
-        if c.kind != ComposerKind::Draft {
+        if !matches!(c.kind, ComposerKind::Draft | ComposerKind::Reply { .. }) {
             return self.composer_post();
         }
         let body = c.text().trim().to_string();
@@ -475,6 +488,22 @@ impl App {
             );
         };
         let Some(c) = self.composer.take() else { return };
+        if let ComposerKind::Reply { thread_id, lines } = &c.kind {
+            // One reply draft per thread: it keeps its id and its resolve choice; saving makes
+            // it the user's (a Claude draft is theirs now, and goes to the forge).
+            let resolve = store.reply_for(&key, thread_id).is_some_and(|d| d.resolve);
+            let draft = Draft::reply(c.path.clone(), c.right, *lines, thread_id.clone(), body, resolve);
+            store.set_reply(&key, draft);
+            let id = store
+                .reply_for(&key, thread_id)
+                .map(|d| d.id.clone())
+                .unwrap_or_default();
+            self.save_drafts();
+            self.draft_saved(&id);
+            self.review_blocks_changed();
+            let n = self.review.draft_rows().len();
+            return self.notify(Level::Info, format!("Reply draft saved ({n} pending)"));
+        }
         let edited = c
             .editing
             .as_ref()
@@ -495,6 +524,15 @@ impl App {
         self.review_blocks_changed();
         let n = self.review.draft_rows().len();
         self.notify(Level::Info, format!("Draft saved ({n} pending)"));
+    }
+
+    /// "Code Review: Comment Now": a reply box's text is posted at once, not added to the review.
+    pub(super) fn composer_now(&mut self) {
+        match self.composer.as_ref().map(|c| &c.kind) {
+            Some(ComposerKind::Reply { .. }) => self.composer_post(),
+            Some(_) => self.notify(Level::Info, "Comment Now is for a reply box".into()),
+            None => self.notify(Level::Info, "No comment is open".into()),
+        }
     }
 
     /// Esc: the box closes, its text is dropped (an edited draft stays as it was).
@@ -533,10 +571,12 @@ impl App {
             }
             self.composer_changed();
         } else if rel == rows + 1 {
-            for (cols, button) in review_blocks::composer_button_cols(label) {
+            let now = matches!(c.kind, ComposerKind::Reply { .. });
+            for (cols, button) in review_blocks::composer_button_cols(label, now, b.rect.width as usize) {
                 if cols.contains(&x) {
                     match button {
                         review_blocks::ComposerButton::Submit => self.composer_save(),
+                        review_blocks::ComposerButton::Now => self.composer_now(),
                         review_blocks::ComposerButton::Cancel => self.composer_cancel(),
                         review_blocks::ComposerButton::Insert => self.review_insert_suggestion(),
                     }

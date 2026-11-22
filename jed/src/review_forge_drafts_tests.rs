@@ -21,22 +21,22 @@ use crate::review_drafts::Draft;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
-const PULLS: &str = "/api/v1/repos/alice/project/pulls/7";
+pub(crate) const PULLS: &str = "/api/v1/repos/alice/project/pulls/7";
 
-fn drafts(app: &App) -> Vec<Draft> {
+pub(crate) fn drafts(app: &App) -> Vec<Draft> {
     let key = app.review.drafts_key().unwrap();
     app.review.drafts.store.as_ref().unwrap().get(&key).to_vec()
 }
 
 /// Waits until no draft write is queued or on its way.
-async fn quiet(app: &mut App) {
+pub(crate) async fn quiet(app: &mut App) {
     assert!(
         app.settle(|a| a.review.drafts.inflight.is_none() && a.review.drafts.queue.is_empty())
             .await
     );
 }
 
-fn wide(app: &mut App) -> String {
+pub(crate) fn wide(app: &mut App) -> String {
     let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
     term.draw(|f| crate::ui::render(f, app)).unwrap();
     let buf = term.backend().buffer();
@@ -46,7 +46,7 @@ fn wide(app: &mut App) -> String {
         .join("\n")
 }
 
-fn sent(server: &FakeServer, method: &str, ends_with: &str) -> Vec<Request> {
+pub(crate) fn sent(server: &FakeServer, method: &str, ends_with: &str) -> Vec<Request> {
     server
         .requests()
         .into_iter()
@@ -442,21 +442,21 @@ use crate::app::Prompt;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum F {
+pub(crate) enum F {
     Gitea,
     GitHub,
     GitLab,
 }
 
-struct Rig {
-    app: App,
-    server: FakeServer,
-    f: F,
+pub(crate) struct Rig {
+    pub(crate) app: App,
+    pub(crate) server: FakeServer,
+    pub(crate) f: F,
     _dir: tempfile::TempDir,
 }
 
 const LIST: &str = "/api/v1/repos/alice/project/pulls/7/reviews?page=1&limit=50";
-const GH: &str = "/api/v3/repos/alice/project";
+pub(crate) const GH: &str = "/api/v3/repos/alice/project";
 
 fn gitea_list(pending: bool) -> String {
     let bob = r#"{"id":1,"user":{"login":"bob"},"body":"","state":"COMMENT","comments_count":9}"#;
@@ -469,7 +469,7 @@ fn gitea_list(pending: bool) -> String {
 
 /// A fake forge whose user has a pending review holding one comment made on the website
 /// (`web`) or none; `post` answers a plain `POST …/reviews` (Gitea's old path / a new pending review).
-async fn rig(f: F, web: bool) -> Rig {
+pub(crate) async fn rig(f: F, web: bool) -> Rig {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, server) = match f {
         F::Gitea => {
@@ -583,14 +583,14 @@ async fn rig(f: F, web: bool) -> Rig {
 }
 
 /// Looks the merge request up again and waits for it.
-async fn refresh(app: &mut App) {
+pub(crate) async fn refresh(app: &mut App) {
     app.test_execute(Command::ReviewRefresh);
     assert!(app.settle(|a| !a.review.loading && !a.review.queued).await);
 }
 
 impl Rig {
     /// The forge's pending review is gone (submitted or deleted on the website).
-    fn gone(&self) {
+    pub(crate) fn gone(&self) {
         match self.f {
             F::Gitea => self.server.set(&format!("GET {LIST}"), Reply::json(&gitea_list(false))),
             F::GitHub => self.server.set(&format!("GET {GH}/pulls/7/reviews"), Reply::json("[]")),
@@ -602,7 +602,7 @@ impl Rig {
     }
 
     /// What the app sent that changes something (GitHub's GraphQL reads are POSTs too).
-    fn writes(&self) -> Vec<Request> {
+    pub(crate) fn writes(&self) -> Vec<Request> {
         self.server
             .requests()
             .into_iter()
@@ -610,7 +610,7 @@ impl Rig {
             .collect()
     }
 
-    fn label(&self) -> &'static str {
+    pub(crate) fn label(&self) -> &'static str {
         match self.f {
             F::Gitea => "Gitea",
             F::GitHub => "GitHub",
@@ -619,14 +619,14 @@ impl Rig {
     }
 }
 
-fn pick_first_draft(app: &mut App) {
+pub(crate) fn pick_first_draft(app: &mut App) {
     let len = app.review.draft_rows().len();
     app.review.view.pending.focused = true;
     app.review.view.pending.select(len, 0);
 }
 
 /// Submit Review with `verdict` and `summary`, through the summary box.
-fn submit(app: &mut App, verdict: Command, summary: &str) {
+pub(crate) fn submit(app: &mut App, verdict: Command, summary: &str) {
     app.test_execute(verdict);
     if !summary.is_empty() {
         app.type_text(summary);
@@ -634,7 +634,7 @@ fn submit(app: &mut App, verdict: Command, summary: &str) {
     app.press_bound(Command::ReviewSaveComment);
 }
 
-async fn submitted(app: &mut App) {
+pub(crate) async fn submitted(app: &mut App) {
     assert!(
         app.settle(|a| !a.review.writing && a.review.draft_rows().is_empty())
             .await

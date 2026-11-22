@@ -2710,9 +2710,9 @@ pub(crate) mod write {
         assert!(app.test_composer_text().is_some());
         app.type_text("Yes, fixed");
         let l = lines(&mut app, 120, 30).join("\n");
-        assert!(l.contains("Reply (posted at once)"), "{l}");
+        assert!(l.contains("Reply (") && l.contains("[Comment Now]"), "{l}");
         let before = lookups(&server);
-        app.press_bound(Command::ReviewSaveComment);
+        app.test_execute(Command::ReviewCommentNow);
         assert!(
             app.settle(|a| a.test_composer_text().is_none() && !a.review.writing)
                 .await
@@ -2801,7 +2801,7 @@ pub(crate) mod write {
         app.mouse(MouseEventKind::Down(MouseButton::Left), col + 2, row as u16);
         assert!(app.test_composer_text().is_some());
         let l = lines(&mut app, 120, 30).join("\n");
-        assert!(l.contains("Reply (posted at once)"), "{l}");
+        assert!(l.contains("Reply (") && l.contains("[Comment Now]"), "{l}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2814,7 +2814,7 @@ pub(crate) mod write {
         select(&mut app, false, 1, 1);
         app.test_execute(Command::ReviewReply);
         app.type_text("hello");
-        app.press_bound(Command::ReviewSaveComment);
+        app.test_execute(Command::ReviewCommentNow);
         assert!(app.settle(|a| a.review.error.is_some()).await);
         assert_eq!(app.test_composer_text().as_deref(), Some("hello"), "the text is kept");
         assert!(message(&app).contains("404"), "{}", message(&app));

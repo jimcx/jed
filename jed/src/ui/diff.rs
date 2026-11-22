@@ -699,10 +699,10 @@ fn draw_block_line(
             out.set_stringn(x, y, &line.text, room, text);
             out.set_stringn(x, y, "│", 1.min(room), border);
             if line.kind == BlockKind::Buttons
-                && let Role::Composer { submit, .. } = block.role
+                && let Role::Composer { submit, now, .. } = block.role
             {
                 let style = theme.get("review.composer.button");
-                for (cols, _) in review_blocks::composer_button_cols(submit) {
+                for (cols, _) in review_blocks::composer_button_cols(submit, now, width) {
                     let w = cols.len().min(room.saturating_sub(cols.start));
                     out.set_style(Rect::new(x + cols.start as u16, y, w as u16, 1), style);
                 }

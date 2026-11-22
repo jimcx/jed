@@ -52,6 +52,8 @@ pub enum Job {
         body: String,
         /// The thread's first and last line.
         lines: (u32, u32),
+        /// The reply draft the box was opened from: removed once the reply is posted.
+        draft: Option<String>,
     },
     Resolve {
         thread_id: String,
@@ -482,6 +484,7 @@ pub fn run(req: Request, job: Job) -> Done {
             thread_id,
             body,
             lines,
+            ..
         } => api.reply(repo, *number, thread_id, body, *lines),
         Job::Resolve { thread_id, resolved } => api.set_resolved(repo, thread_id, *resolved),
         Job::Edit {

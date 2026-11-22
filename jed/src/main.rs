@@ -168,6 +168,8 @@ mod review_forge_drafts_tests;
 mod review_forge_fixes_tests;
 #[cfg(test)]
 mod review_links_tests;
+#[cfg(test)]
+mod review_pending_replies_tests;
 mod review_write;
 mod scm;
 mod scrollbar;

@@ -74,7 +74,7 @@ mod gitlab_suggestions {
         on_thread(&mut app);
         app.test_execute(Command::ReviewReply);
         app.type_text("```suggestion\nX\n```");
-        app.press_bound(Command::ReviewSaveComment);
+        app.test_execute(Command::ReviewCommentNow);
         assert!(
             app.settle(|a| a.test_composer_text().is_none() && !a.review.writing)
                 .await

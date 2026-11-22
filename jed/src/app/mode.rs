@@ -49,6 +49,7 @@ impl Mode {
                     | Command::ReviewComment
                     | Command::ReviewSaveComment
                     | Command::ReviewCancelComment
+                    | Command::ReviewCommentNow
                     | Command::ReviewEditDraft
                     | Command::ReviewDeleteDraft
                     | Command::ReviewSubmitComment

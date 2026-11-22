@@ -38,7 +38,10 @@ pub(super) fn new_draft(d: &Draft, hunks: &std::collections::BTreeMap<String, Fi
 impl App {
     /// The comment box's save button.
     pub(super) fn submit_label(&self) -> SubmitLabel {
-        if !matches!(self.composer.as_ref().map(|c| &c.kind), Some(ComposerKind::Draft)) {
+        if !matches!(
+            self.composer.as_ref().map(|c| &c.kind),
+            Some(ComposerKind::Draft | ComposerKind::Reply { .. })
+        ) {
             return SubmitLabel::Comment;
         }
         if !self.settings.review_drafts_on_forge {

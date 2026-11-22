@@ -435,8 +435,8 @@ mod thread_tab {
         assert!(app.test_composer_text().is_some());
         app.type_text("Fixed it");
         let text = wide(&mut app);
-        assert!(text.contains("Reply (posted at once)"), "{text}");
-        app.press_bound(Command::ReviewSaveComment);
+        assert!(text.contains("Reply (") && text.contains("[Comment Now]"), "{text}");
+        app.test_execute(Command::ReviewCommentNow);
         assert!(
             app.settle(|a| a.test_composer_text().is_none() && !a.review.writing)
                 .await

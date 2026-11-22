@@ -130,6 +130,10 @@ impl App {
                     self.review_blocks_changed();
                 }
                 self.notify(Level::Info, job.done_text().into());
+                if let Job::Reply { draft: Some(id), .. } = &job {
+                    // Posted now, so its draft would post it again at Submit.
+                    self.draft_deleted(id);
+                }
                 self.review_refresh();
                 self.draft_pump();
             }
@@ -728,7 +732,22 @@ impl App {
             thread_id: row.thread.id.clone(),
             lines: (row.thread.anchor.start_line, row.thread.anchor.end_line),
         };
-        self.compose_in(&row, kind, "");
+        // One reply draft per thread: a second Reply opens it (Claude's too: saving makes it
+        // the user's).
+        let existing = self.review.drafts_key().and_then(|key| {
+            self.review
+                .drafts
+                .store
+                .as_ref()?
+                .reply_for(&key, &row.thread.id)
+                .cloned()
+        });
+        let text = existing.as_ref().map_or("", |d| d.body.as_str());
+        let opened = self.composer.is_none();
+        self.compose_in(&row, kind, text);
+        if opened && let Some(c) = &mut self.composer {
+            c.editing = existing.map(|d| d.id);
+        }
     }
 
     fn edit_in(&mut self, row: ThreadRow) {
@@ -764,6 +783,7 @@ impl App {
                 thread_id: thread_id.clone(),
                 body,
                 lines: *lines,
+                draft: c.editing.clone(),
             },
             ComposerKind::Edit {
                 comment_id,

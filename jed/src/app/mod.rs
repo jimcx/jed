@@ -1662,6 +1662,7 @@ impl App {
             Command::ReviewComment => self.review_comment(),
             Command::ReviewSaveComment => self.composer_save(),
             Command::ReviewCancelComment => self.composer_cancel(),
+            Command::ReviewCommentNow => self.composer_now(),
             Command::ReviewEditDraft => self.review_edit_draft(),
             Command::ReviewDeleteDraft => self.review_delete_draft(),
             Command::ReviewSubmitComment => self.review_submit_open(crate::forge::ReviewEvent::Comment),
