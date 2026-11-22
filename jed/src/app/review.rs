@@ -35,6 +35,8 @@ pub(super) enum ReviewEvent {
     Wrote(crate::review_write::Done),
     /// The commit's text under a suggestion (`app/review_suggest.rs`).
     Suggestion(super::review_suggest::Staged),
+    /// The lines under a Claude line draft, read (`app/claude_review.rs`).
+    ClaudeLines(super::claude_review::ClaudeLines),
 }
 
 impl App {
@@ -144,6 +146,7 @@ impl App {
             ReviewEvent::DraftsChecked(held) => return self.drafts_checked(held),
             ReviewEvent::Wrote(done) => return self.review_wrote(done),
             ReviewEvent::Suggestion(staged) => return self.suggestion_read(staged),
+            ReviewEvent::ClaudeLines(read) => return self.claude_comment_read(read),
         };
         let r = &mut self.review;
         r.loading = false;

@@ -7,8 +7,9 @@
 //! an op starts. A refusal or failure keeps the draft local (its reason in `drafts.errors`); a 404
 //! on an edit or delete means the draft is gone on the forge, so it is dropped here too.
 //!
-//! Claude never posts: a draft with `by_claude` is never queued. Only the user editing and saving
-//! it (which makes it theirs) sends it.
+//! Claude never publishes: its drafts (`by_claude`) are queued like the user's, so they reach the
+//! pending review (and no job here submits, discards or posts). The user editing and saving one makes
+//! it theirs (`by_claude` cleared).
 
 use super::review_comment::ComposerKind;
 use super::{App, Level};
@@ -150,7 +151,7 @@ impl App {
     }
 
     /// Draft `id` was saved (new or edited): sends it to the forge when the setting is on and it
-    /// isn't Claude's.
+    /// (Claude's drafts included).
     pub(super) fn draft_saved(&mut self, id: &str) {
         if !self.settings.review_drafts_on_forge {
             return;
@@ -159,9 +160,6 @@ impl App {
         let Some(d) = self.review.drafts.store.as_ref().and_then(|s| s.find(&key, id)) else {
             return;
         };
-        if d.by_claude {
-            return;
-        }
         let op = if d.forge.is_some() || self.add_pending(id) {
             DraftOp::Edit(id.to_string())
         } else {
@@ -218,7 +216,7 @@ impl App {
         match op {
             DraftOp::Add(id) => {
                 let d = store.find(&key, id)?;
-                if d.by_claude || d.forge.is_some() {
+                if d.forge.is_some() {
                     return None;
                 }
                 Some(Job::AddDraft {

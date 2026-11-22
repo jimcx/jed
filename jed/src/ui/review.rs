@@ -492,13 +492,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
                     None => (
                         format!(
                             "{}{}{}",
+                            row.draft.tags(),
                             where_tag(
                                 row.draft,
                                 forge_name,
                                 drafts_on_forge,
                                 state.drafts.local_why.get(&row.draft.id)
                             ),
-                            row.draft.tags(),
                             row.draft.body.lines().next().unwrap_or("").trim()
                         ),
                         row_style.patch(dim_fg),
@@ -519,13 +519,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
 
 /// Where a draft is kept, before its text: `on GitHub · ` once the forge has it, `local only: why · `
 /// when it was refused (`local only · ` for any other draft that isn't on it), nothing with
-/// the setting off or for Claude's, which carry their `[claude]` tag.
+/// the setting off (Claude's drafts carry their `[claude]` tag before it).
 fn where_tag(d: &crate::review_drafts::Draft, forge: Option<&str>, on: bool, why: Option<&String>) -> String {
     if let (Some(_), Some(name)) = (&d.forge, forge) {
         format!("on {name} · ")
     } else if let Some(why) = why {
         format!("local only: {why} · ")
-    } else if on && !d.by_claude {
+    } else if on {
         "local only · ".into()
     } else {
         String::new()
@@ -620,6 +620,6 @@ mod where_tests {
         assert_eq!(where_tag(&d, Some("GitHub"), true, None), "on GitHub · ");
         d.forge = None;
         d.by_claude = true;
-        assert_eq!(where_tag(&d, Some("GitHub"), true, None), "");
+        assert_eq!(where_tag(&d, Some("GitHub"), true, None), "local only · ");
     }
 }

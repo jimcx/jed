@@ -25,7 +25,7 @@ mcp_read_only = true                         # optional
 | `api_url`       | no       | API root. Defaults to the host's standard one over HTTPS. `http://` is used only if you write it out here. |
 | `token_env`     | no       | Environment variable holding the token. Default `GITEA_TOKEN`, `GITHUB_TOKEN` or `GITLAB_TOKEN` by `kind`. |
 | `token`         | no       | The token itself, used instead of the environment variable. |
-| `mcp_read_only` | no       | Default `false`. When `true`, Claude's review tools may read the review but not apply suggestions or draft replies. |
+| `mcp_read_only` | no       | Default `false`. When `true`, Claude's review tools may read the review but not apply suggestions or draft replies and comments. |
 
 Add one `[[forge]]` table per host.
 
@@ -71,10 +71,11 @@ included, and saving makes it yours) and `[Comment Now]` in the reply box posts 
 the pending review ("Code Review: Comment Now"); a new line comment box has `[Comment Now]` too (an edited draft is dropped once it posts). GitLab posts it as a discussion beside the draft notes; GitHub (REST refuses a single comment while you have a pending review) and Gitea (a comment review would publish the pending one) have no button while a pending review exists, and the command says why. Editing a comment, a conversation comment and the review
 summary still post at once. Editing or deleting a draft in jed does the same there; a draft
 the forge no longer has is dropped with a notice. PENDING tags each row `on GitHub`, `local only` or
-`claude`. If the forge can't take a draft (Gitea can't hold a reply; GitHub can't resolve a thread with
+`claude` (before the rest). If the forge can't take a draft (Gitea can't hold a reply; GitHub can't resolve a thread with
 a pending reply; any network error) it stays a local draft, `local only: why`, and Submit Review posts it
-as before. Claude's drafts are never sent when made; they reach the forge only when you submit the
-review or edit and save one. With the setting off the button reads `[Save Draft]` and nothing is sent
+as before. Claude's drafts (`[claude]`, line comments and replies) go to your pending review when it
+makes them, as yours (visible only to you until you submit, also on the website); it can start and add to
+the review but never submit, discard or post. With the setting off the button reads `[Save Draft]` and nothing is sent
 until Submit Review.
 
 Each refresh also reads your pending review: a comment made on the website or another machine becomes

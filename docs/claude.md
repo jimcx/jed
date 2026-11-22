@@ -68,11 +68,13 @@ and not fed back to it):
 | `get_document_symbols` | a file's symbols as a tree: name, kind, detail, line range, children |
 | `find_workspace_symbols` | symbols by name across the workspace (`max`, default 50, up to 200) |
 | `open_file` | opens a file at a line in jed |
-| `get_review` | the merge request, its files and your pending drafts |
+| `get_review` | the merge request, its files and the pending drafts (each with its id, author `claude` / `you` and state `on_forge` / `local_only`) |
 | `get_review_threads` | the threads, their live lines, comments and suggestions |
 | `review_refresh` | reloads the merge request |
 | `review_apply_suggestion` | applies a suggestion and saves the file |
-| `review_draft_reply` | adds a reply as a draft, optionally marking the thread to resolve |
+| `review_draft_reply` | adds a reply as a draft in your pending review, optionally marking the thread to resolve |
+| `review_draft_comment` | adds a line comment (`path`, `side` old / new, `start`, `end`, `body`) as a draft in your pending review; with `draft`, replaces the body of one of Claude's own drafts |
+| `review_delete_draft` | deletes one of Claude's own drafts (never yours), also on the forge |
 
 The language server tools ask the servers jed already runs, so they know what the editor knows (and need the
 server for that language to be running). Name a place with `path`, a 1-based `line` and the `symbol` on it
@@ -101,13 +103,17 @@ jed terminal".
 ## Code review
 
 With a merge request open in jed, ask Claude to "deal with the review feedback". It reads the threads
-(`get_review_threads`), fixes the code with its own edits, applies suggestions, and drafts replies. It can
-never post: the drafts wait in PENDING, tagged `claude`, and you read, edit or delete them and press Submit
-Review in jed, which posts the replies and resolves the threads marked "+ resolve". Claude's tools read what jed
-already loaded; only `review_refresh` reloads it (read requests to the forge) and none of them writes to the forge.
+(`get_review_threads`), fixes the code with its own edits, applies suggestions, and drafts replies and line
+comments. Its drafts appear in PENDING, tagged `claude`, and (with `review_drafts_on_forge`, the default) in your
+pending review on the forge: visible only to you, as your own, until you submit, also from the website. You read,
+edit or delete them and press Submit Review in jed, which publishes the review, posts the replies and resolves the
+threads marked "+ resolve". Claude can start and add to the pending review but never submit, discard or post
+anything else: there is no such tool, and it tells you to submit. On Gitea a reply can't be pending, so
+Claude's reply stays local only in jed until you submit. With the setting off, nothing reaches the forge before you
+submit. Claude's other tools only read what jed already loaded; `review_refresh` reloads it (read requests).
 
 `review_apply_suggestion` refuses while the file has unsaved changes in jed or when the suggestion is out of
-date. To forbid applying and drafting altogether, set `mcp_read_only = true` on the host's entry in
+date. To forbid applying and drafting altogether (replies, comments, deletes), set `mcp_read_only = true` on the host's entry in
 `~/.config/jed/forges.toml`; reading still works. The setting is read only from that file.
 
 ## Troubleshooting

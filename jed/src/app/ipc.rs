@@ -120,7 +120,11 @@ impl App {
                     Reply::opened()
                 }
                 Query::Open { .. } => Reply::error("open needs an absolute path"),
-                Query::ReviewRefresh | Query::ReviewReply { .. } | Query::ReviewApply { .. } => {
+                Query::ReviewRefresh
+                | Query::ReviewReply { .. }
+                | Query::ReviewApply { .. }
+                | Query::ReviewComment { .. }
+                | Query::ReviewDeleteDraft { .. } => {
                     return self.claude_review_act(query, responder);
                 }
                 Query::Lsp { .. } | Query::Symbols { .. } | Query::WorkspaceSymbols { .. } => {

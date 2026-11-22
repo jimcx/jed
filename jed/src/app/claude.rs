@@ -103,9 +103,11 @@ impl App {
             }
             Query::Review => Reply::data(self.claude_review()),
             Query::ReviewThreads { path, resolved } => self.claude_review_threads(path.as_deref(), *resolved),
-            Query::ReviewRefresh | Query::ReviewReply { .. } | Query::ReviewApply { .. } => {
-                Reply::error("a review action, not a read")
-            }
+            Query::ReviewRefresh
+            | Query::ReviewReply { .. }
+            | Query::ReviewApply { .. }
+            | Query::ReviewComment { .. }
+            | Query::ReviewDeleteDraft { .. } => Reply::error("a review action, not a read"),
             Query::Lsp { .. } | Query::Symbols { .. } | Query::WorkspaceSymbols { .. } => {
                 Reply::error("not a read from loaded state")
             }

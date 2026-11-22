@@ -122,6 +122,14 @@ impl World {
             .collect()
     }
 
+    fn write_requests(&self) -> Vec<crate::forge::fake::Request> {
+        self.server
+            .requests()
+            .into_iter()
+            .filter(|r| r.method != "GET")
+            .collect()
+    }
+
     fn disk(&self) -> String {
         fs::read_to_string(self.root.join("mod.txt")).unwrap()
     }
@@ -364,9 +372,23 @@ async fn claude_ide_read_only_hosts_refuse_the_write_tools_and_still_read() {
     assert!(w.writes().is_empty());
 }
 
-/// Every query and every tool: none writes to the forge, and the tool list has no submit.
+/// Whether a write is a request of the user's pending review's drafts on the fake Gitea (the
+/// only kind a Claude tool may cause): a `PENDING` review or a comment of one. A pending comment is
+/// edited and deleted through the issues comment URL, which `edit_comment` shares; the only other
+/// comment of this world, bob's `11`, is never to be touched.
+fn gitea_draft_write(r: &crate::forge::fake::Request) -> bool {
+    (r.method == "POST" && r.target.ends_with("/reviews") && r.body.contains("PENDING"))
+        || (r.target.contains("/reviews/") && r.target.contains("/comments"))
+        || (r.target.contains("/issues/comments/")
+            && !r.target.ends_with("/issues/comments/11")
+            && matches!(r.method.as_str(), "PATCH" | "DELETE"))
+}
+
+/// Every query and every tool: the only writes to the forge are drafts in the pending review (no
+/// submit, discard, post, reply, resolve, edit or delete of a comment), none with the setting off,
+/// and the tool list has no submit.
 #[tokio::test(flavor = "multi_thread")]
-async fn claude_ide_no_query_or_tool_writes_to_the_forge() {
+async fn claude_ide_no_query_or_tool_publishes() {
     // Exhaustive on purpose: a new query must be classified here.
     fn classified(q: &Query) {
         match q {
@@ -386,85 +408,134 @@ async fn claude_ide_no_query_or_tool_writes_to_the_forge() {
             | Query::ReviewThreads { .. }
             | Query::ReviewRefresh
             | Query::ReviewApply { .. }
+            | Query::ReviewComment { .. }
+            | Query::ReviewDeleteDraft { .. }
             | Query::ReviewReply { .. } => {}
         }
     }
-    let mut w = boot(false, true).await;
-    let path = w.root.join("mod.txt");
-    let mut queries = Vec::new();
-    for tool in crate::claude::tools() {
-        let schema = &tool["inputSchema"];
-        let mut args = serde_json::Map::new();
-        for r in schema["required"].as_array().unwrap() {
-            let name = r.as_str().unwrap();
-            let kind = schema["properties"][name]["type"].as_str().unwrap();
-            args.insert(
-                name.to_string(),
-                match (name, kind) {
-                    ("path", _) => json!(path.display().to_string()),
-                    ("body", _) => json!("A reply"),
-                    ("thread", _) => json!("11"),
-                    (_, "integer") => json!(1),
-                    _ => json!("x"),
-                },
-            );
+    for on in [true, false] {
+        let mut w = boot(false, true).await;
+        w.app.settings.review_drafts_on_forge = on;
+        let path = w.root.join("mod.txt");
+        let mut queries = Vec::new();
+        for tool in crate::claude::tools() {
+            let schema = &tool["inputSchema"];
+            let mut args = serde_json::Map::new();
+            for r in schema["required"].as_array().unwrap() {
+                let name = r.as_str().unwrap();
+                let kind = schema["properties"][name]["type"].as_str().unwrap();
+                args.insert(
+                    name.to_string(),
+                    match (name, kind) {
+                        ("path", _) if tool["name"] == "review_draft_comment" => json!("mod.txt"),
+                        ("path", _) => json!(path.display().to_string()),
+                        ("side", _) => json!("new"),
+                        ("body", _) => json!("A reply"),
+                        ("thread", _) => json!("11"),
+                        ("draft", _) => json!("no-such-draft"),
+                        (_, "integer") => json!(1),
+                        _ => json!("x"),
+                    },
+                );
+            }
+            let name = tool["name"].as_str().unwrap();
+            if name == "review_draft_comment" {
+                // Required only for a new comment (without `draft`).
+                for (k, v) in [
+                    ("path", json!("mod.txt")),
+                    ("side", json!("new")),
+                    ("start", json!(2)),
+                    ("end", json!(2)),
+                ] {
+                    args.insert(k.into(), v);
+                }
+            }
+            assert!(!name.contains("submit") && !name.contains("discard"), "{name}");
+            let q = crate::claude::tool_query(name, &Value::Object(args), &w.root)
+                .unwrap()
+                .unwrap();
+            classified(&q);
+            queries.push((name.to_string(), q));
         }
-        let name = tool["name"].as_str().unwrap();
-        let q = crate::claude::tool_query(name, &Value::Object(args), &w.root)
-            .unwrap()
-            .unwrap();
-        classified(&q);
-        queries.push((name.to_string(), q));
+        assert!(queries.len() >= 16);
+        for (name, q) in queries {
+            w.ask(q).await;
+            let writes = w.write_requests();
+            assert!(
+                writes.iter().all(gitea_draft_write),
+                "{name} published to the forge: {writes:?}"
+            );
+            assert!(on || writes.is_empty(), "{name} wrote with the setting off: {writes:?}");
+        }
+        // The apply saved the file; the reply (and the comment, which Gitea keeps in a pending
+        // review) are drafts.
+        assert_eq!(w.disk(), FIXED);
+        let rows = w.app.review.draft_rows();
+        assert!(rows.iter().any(|r| r.draft.by_claude && r.draft.reply_to.is_some()));
+        assert!(rows.iter().all(|r| r.draft.by_claude));
+        // Nothing was submitted: the drafts are all still there.
+        assert!(!rows.is_empty());
+        // Deleting Claude's real drafts (and replacing one's body) is still only draft writes.
+        let ids: Vec<String> = rows.iter().map(|r| r.draft.id.clone()).collect();
+        for id in ids {
+            w.ask(Query::ReviewDeleteDraft { draft: id }).await;
+            let writes = w.write_requests();
+            assert!(writes.iter().all(gitea_draft_write), "delete published: {writes:?}");
+            assert!(on || writes.is_empty(), "delete wrote with the setting off: {writes:?}");
+        }
+        assert!(w.app.settle(|a| a.review.draft_rows().is_empty()).await, "deleted");
     }
-    assert!(queries.len() >= 14);
-    for (name, q) in queries {
-        w.ask(q).await;
-        assert!(w.writes().is_empty(), "{name} wrote to the forge: {:?}", w.writes());
+}
+
+/// `mcp_read_only` refuses Claude's three draft tools with no side effect.
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_ide_read_only_refuses_the_draft_tools() {
+    let mut w = boot(true, true).await;
+    let comment = Query::ReviewComment {
+        path: Some("mod.txt".into()),
+        right: Some(true),
+        start: Some(2),
+        end: Some(2),
+        body: "x".into(),
+        draft: None,
+    };
+    for q in [comment, Query::ReviewDeleteDraft { draft: "d".into() }] {
+        let why = w.error(q).await;
+        assert!(why.contains("mcp_read_only"), "{why}");
     }
-    // The apply saved the file and the reply is a draft, still unsent.
-    assert_eq!(w.disk(), FIXED);
-    assert_eq!(w.app.review.draft_rows().len(), 1);
-    assert!(w.app.review.draft_rows()[0].draft.by_claude);
+    assert!(w.error(reply("11", "Hi", false)).await.contains("mcp_read_only"));
+    assert!(w.app.review.draft_rows().is_empty());
+    assert!(w.writes().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn claude_ide_a_claude_draft_stays_off_the_forge_while_the_user_saves_other_drafts() {
-    // review_drafts_on_forge is on here. Claude's draft (the real tool path) sends nothing when
-    // made, after a refresh, or while the user's own draft is saved and pushed.
+async fn claude_ide_a_claude_reply_draft_is_queued_with_the_setting_on_and_local_with_it_off() {
+    // On Gitea a reply can't be pending, so Claude's stays local only (a refusal recorded for it)
+    // and nothing is sent; with the setting off no job is even tried.
     let mut w = boot(false, true).await;
     assert!(w.app.settings.review_drafts_on_forge);
-    let idle = |w: &World| {
-        let d = &w.app.review.drafts;
-        assert!(d.inflight.is_none() && d.queue.is_empty(), "a draft job was attempted");
-    };
-    w.data(reply("11", "Claude secret reply", false)).await;
-    idle(&w);
-    assert!(w.writes().is_empty(), "{:?}", w.writes());
-    w.data(Query::ReviewRefresh).await;
-    idle(&w);
-    assert!(w.writes().is_empty(), "{:?}", w.writes());
-    open_file(&mut w.app, "mod.txt").await;
-    write::comment(&mut w.app, 1, 2, "The user own");
+    w.data(reply("11", "Claude reply", false)).await;
     assert!(
         w.app
             .settle(|a| a.review.drafts.inflight.is_none() && a.review.drafts.queue.is_empty())
             .await
     );
-    w.data(Query::ReviewRefresh).await;
-    let bodies: Vec<String> = w
-        .server
-        .requests()
+    assert!(w.writes().is_empty(), "{:?}", w.writes());
+    let claude = w
+        .app
+        .review
+        .draft_rows()
         .into_iter()
-        .filter(|r| r.method != "GET")
-        .map(|r| r.body)
-        .collect();
-    assert!(!bodies.is_empty(), "the user draft was sent");
-    assert!(bodies.iter().all(|b| !b.contains("Claude secret reply")), "{bodies:?}");
-    let rows = w.app.review.draft_rows();
-    let claude = rows.iter().find(|r| r.draft.by_claude).unwrap();
-    assert!(claude.draft.forge.is_none());
-    // No job was ever tried for it: no refusal or failure is recorded for it either.
+        .find(|r| r.draft.by_claude)
+        .unwrap()
+        .draft
+        .clone();
+    assert!(claude.forge.is_none());
+    assert!(w.app.review.drafts.local_why.contains_key(&claude.id));
+    let mut w = boot(false, true).await;
+    w.app.settings.review_drafts_on_forge = false;
+    w.data(reply("11", "Claude reply", false)).await;
     let d = &w.app.review.drafts;
-    assert!(!d.local_why.contains_key(&claude.draft.id), "{:?}", d.local_why);
-    assert!(!d.errors.contains_key(&claude.draft.id), "{:?}", d.errors);
+    assert!(d.inflight.is_none() && d.queue.is_empty());
+    assert!(w.writes().is_empty());
 }

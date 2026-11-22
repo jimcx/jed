@@ -187,6 +187,24 @@ pub enum Query {
         #[serde(default)]
         resolve: bool,
     },
+    /// A line comment as a draft of the pending review (nothing is published); with `draft`,
+    /// replaces the body of one of Claude's own drafts. `right`: the new side.
+    ReviewComment {
+        /// Where the comment goes: all four are given for a new draft, none needed with `draft`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        right: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<u32>,
+        body: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        draft: Option<String>,
+    },
+    /// Deletes one of Claude's own drafts (and its copy in the forge's pending review).
+    ReviewDeleteDraft { draft: String },
     /// Open a file in the active group, as quick open does.
     Open {
         path: PathBuf,

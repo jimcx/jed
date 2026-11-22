@@ -675,3 +675,387 @@ async fn review_pending_replies_b_comment_now_is_refused_for_a_held_back_draft()
     assert_eq!(r.writes().len(), before, "no forge write");
     assert_eq!(drafts(&r.app).len(), 1, "the draft is kept");
 }
+
+// Subtask c (`review_pending_replies_c_*`): Claude's drafts (line comments and replies) go to
+// the pending review when made, are listed there tagged `claude`, and can be replaced and deleted
+// by Claude; nothing Claude does submits, discards or posts.
+
+use crate::forge::fake::Request;
+use crate::ipc::Query;
+
+/// Asks `q` through the Claude IPC path; the answer.
+async fn ask(app: &mut App, q: Query) -> crate::ipc::Reply {
+    let rx = std::cell::RefCell::new(app.test_claude_ask(q));
+    let out = std::cell::RefCell::new(None);
+    assert!(
+        app.settle(|_| {
+            if let Ok(r) = rx.borrow_mut().try_recv() {
+                *out.borrow_mut() = Some(r);
+            }
+            out.borrow().is_some()
+        })
+        .await,
+        "no answer"
+    );
+    out.into_inner().unwrap()
+}
+
+fn comment_q(body: &str, start: u32, end: u32, draft: Option<&str>) -> Query {
+    Query::ReviewComment {
+        path: Some("mod.txt".into()),
+        right: Some(true),
+        start: Some(start),
+        end: Some(end),
+        body: body.into(),
+        draft: draft.map(String::from),
+    }
+}
+
+/// A Claude line draft: its id.
+async fn claude_comment(r: &mut Rig, body: &str, start: u32, end: u32) -> String {
+    let a = ask(&mut r.app, comment_q(body, start, end, None)).await;
+    assert_eq!(a.error, None, "{:?}", r.f);
+    quiet(&mut r.app).await;
+    a.data.unwrap()["draft_id"].as_str().unwrap().to_string()
+}
+
+fn claude_drafts(app: &App) -> Vec<Draft> {
+    drafts(app).into_iter().filter(|d| d.by_claude).collect()
+}
+
+/// Whether `w` is a request that only touches the pending review's drafts.
+fn draft_write(f: F, w: &Request) -> bool {
+    match f {
+        F::GitHub => {
+            let review = w.target.ends_with("/pulls/7/reviews") && w.method == "POST" && !w.body.contains("\"event\"");
+            let gql = w.target == "/api/graphql"
+                && (w.body.contains("addPullRequestReviewThread(")
+                    || w.body.contains("updatePullRequestReviewComment")
+                    || w.body.contains("deletePullRequestReviewComment")
+                    || (w.body.contains("addPullRequestReviewThreadReply") && w.body.contains("pullRequestReviewId")));
+            review || gql
+        }
+        F::GitLab => w.target.contains("/draft_notes"),
+        F::Gitea => {
+            (w.method == "POST" && w.target.ends_with("/reviews") && w.body.contains("PENDING"))
+                || (w.target.contains("/reviews/") && w.target.contains("/comments") && w.method != "GET")
+                // A pending comment is edited and deleted by its id (`EditDraft` / `DeleteDraft`).
+                || (w.target.contains("/issues/comments/") && matches!(w.method.as_str(), "PATCH" | "DELETE"))
+        }
+    }
+}
+
+fn only_draft_writes(r: &Rig) {
+    for w in r.writes() {
+        assert!(
+            draft_write(r.f, &w),
+            "{:?}: not a pending-review draft request: {} {} {}",
+            r.f,
+            w.method,
+            w.target,
+            w.body
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_pending_replies_c_a_claude_line_draft_is_in_the_pending_review_on_each_fake() {
+    for f in [F::GitHub, F::GitLab, F::Gitea] {
+        let mut r = rig(f, false).await;
+        let id = claude_comment(&mut r, "Claude: why change this?", 2, 2).await;
+        let d = claude_drafts(&r.app);
+        assert_eq!(d.len(), 1, "{f:?}");
+        assert_eq!(d[0].id, id);
+        assert_eq!(d[0].lines, vec!["m2 changed".to_string()], "{f:?}: the text for drift");
+        assert!(
+            d[0].forge.is_some(),
+            "{f:?}: on the forge: {:?}",
+            r.app.review.drafts.local_why
+        );
+        assert!(!r.writes().is_empty(), "{f:?}");
+        only_draft_writes(&r);
+        let t = text(&mut r.app);
+        assert!(
+            t.contains("claude") && t.contains("Claude: why change this?"),
+            "{f:?}\n{t}"
+        );
+        // get_review says who wrote it and where it is.
+        let a = ask(&mut r.app, Query::Review).await;
+        let rows = a.data.unwrap()["review"]["pending_drafts"].clone();
+        assert_eq!(rows[0]["author"], "claude", "{f:?}");
+        assert_eq!(rows[0]["state"], "on_forge", "{f:?}");
+        assert_eq!(rows[0]["id"], id.as_str());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_pending_replies_c_the_first_claude_draft_starts_the_review_and_later_ones_join_it() {
+    for f in [F::GitHub, F::GitLab, F::Gitea] {
+        let mut r = rig(f, false).await;
+        claude_comment(&mut r, "First", 2, 2).await;
+        claude_comment(&mut r, "Second", 3, 3).await;
+        let d = claude_drafts(&r.app);
+        assert_eq!(d.len(), 2, "{f:?}");
+        assert!(
+            d.iter().all(|d| d.forge.is_some()),
+            "{f:?}: {:?}",
+            r.app.review.drafts.local_why
+        );
+        // GitLab's draft notes need no review start. The Gitea fake lists no pending review between
+        // the two drafts (a real Gitea does), so there only the drafts' presence is checked.
+        if f == F::GitHub {
+            let starts = sent(&r.server, "POST", "/pulls/7/reviews").len();
+            assert_eq!(starts, 1, "{f:?}: one pending review: {:?}", r.writes());
+        }
+        if f == F::GitLab {
+            assert_eq!(sent(&r.server, "POST", "/draft_notes").len(), 2);
+        } else if f == F::GitHub {
+            let ids: std::collections::HashSet<_> =
+                d.iter().map(|d| d.forge.as_ref().unwrap().review_id.clone()).collect();
+            assert_eq!(ids.len(), 1, "{f:?}: the same review");
+        }
+        only_draft_writes(&r);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_pending_replies_c_claude_replaces_and_deletes_its_own_draft_on_the_forge() {
+    for f in [F::GitHub, F::GitLab, F::Gitea] {
+        let mut r = rig(f, false).await;
+        if f == F::GitLab {
+            r.server.set(
+                &format!(
+                    "PUT {}/merge_requests/7/draft_notes/31",
+                    crate::mr_review_tests::gitlab::API
+                ),
+                Reply::json("{}"),
+            );
+        }
+        let id = claude_comment(&mut r, "Old", 2, 2).await;
+        if f == F::Gitea {
+            let cid = claude_drafts(&r.app)[0].forge.as_ref().unwrap().comment_id.clone();
+            let url = format!("/api/v1/repos/alice/project/issues/comments/{cid}");
+            r.server.set(&format!("PATCH {url}"), Reply::json("{}"));
+            r.server.set(&format!("DELETE {url}"), Reply::status(204));
+        }
+        let n = r.writes().len();
+        let mut q = comment_q("New text", 2, 2, Some(&id));
+        if let Query::ReviewComment {
+            path,
+            right,
+            start,
+            end,
+            ..
+        } = &mut q
+        {
+            (*path, *right, *start, *end) = (None, None, None, None); // only the body and id are needed
+        }
+        let a = ask(&mut r.app, q).await;
+        assert_eq!(a.error, None, "{f:?}");
+        quiet(&mut r.app).await;
+        let d = claude_drafts(&r.app);
+        assert_eq!(
+            d.len(),
+            1,
+            "{f:?}: {:?} {:?}",
+            r.app.review.drafts.local_why,
+            r.app.review.drafts.errors
+        );
+        assert_eq!(d[0].body, "New text", "{f:?}");
+        assert!(r.writes().len() > n, "{f:?}: the edit reached the forge");
+        assert!(r.writes().iter().skip(n).any(|w| w.body.contains("New text")), "{f:?}");
+        let n = r.writes().len();
+        let a = ask(&mut r.app, Query::ReviewDeleteDraft { draft: id.clone() }).await;
+        assert_eq!(a.error, None, "{f:?}");
+        quiet(&mut r.app).await;
+        assert!(claude_drafts(&r.app).is_empty(), "{f:?}");
+        assert!(r.writes().len() > n, "{f:?}: the delete reached the forge");
+        only_draft_writes(&r);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_pending_replies_c_claude_cannot_replace_or_delete_the_users_draft() {
+    let mut r = rig(F::GitHub, false).await;
+    select(&mut r.app, true, 1, 1);
+    r.app.test_execute(Command::ReviewComment);
+    r.app.type_text("Mine");
+    r.app.press_bound(Command::ReviewSaveComment);
+    quiet(&mut r.app).await;
+    let id = drafts(&r.app)[0].id.clone();
+    let n = r.writes().len();
+    let a = ask(&mut r.app, Query::ReviewDeleteDraft { draft: id.clone() }).await;
+    assert!(a.error.unwrap_or_default().contains("only your own drafts"));
+    let a = ask(&mut r.app, comment_q("Hijack", 2, 2, Some(&id))).await;
+    assert!(a.error.is_some());
+    let a = ask(&mut r.app, Query::ReviewDeleteDraft { draft: "nope".into() }).await;
+    assert!(a.error.is_some());
+    quiet(&mut r.app).await;
+    assert_eq!(drafts(&r.app)[0].body, "Mine");
+    assert_eq!(r.writes().len(), n, "nothing sent");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_pending_replies_c_a_claude_reply_is_pending_on_github_and_gitlab_and_local_on_gitea() {
+    for f in [F::GitHub, F::GitLab, F::Gitea] {
+        let mut r = rig(f, false).await;
+        reply_routes(&r);
+        let q = Query::ReviewReply {
+            thread: thread_id(f).into(),
+            body: "Claude fixed it".into(),
+            resolve: false,
+        };
+        let a = ask(&mut r.app, q).await;
+        assert_eq!(a.error, None, "{f:?}");
+        quiet(&mut r.app).await;
+        let d = claude_drafts(&r.app);
+        assert_eq!(d.len(), 1, "{f:?}");
+        assert!(d[0].reply_to.is_some());
+        if f == F::Gitea {
+            assert!(d[0].forge.is_none(), "Gitea: local only");
+            assert!(r.writes().is_empty(), "{:?}", r.writes());
+            let a = ask(&mut r.app, Query::Review).await;
+            let rows = a.data.unwrap()["review"]["pending_drafts"].clone();
+            assert_eq!(rows[0]["state"], "local_only");
+        } else {
+            assert!(d[0].forge.is_some(), "{f:?}: {:?}", r.app.review.drafts.local_why);
+            only_draft_writes(&r);
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_pending_replies_c_with_the_setting_off_claudes_drafts_stay_local() {
+    for f in [F::GitHub, F::GitLab, F::Gitea] {
+        let mut r = rig(f, false).await;
+        r.app.settings.review_drafts_on_forge = false;
+        let id = claude_comment(&mut r, "Local", 2, 2).await;
+        ask(
+            &mut r.app,
+            Query::ReviewReply {
+                thread: thread_id(f).into(),
+                body: "Local reply".into(),
+                resolve: false,
+            },
+        )
+        .await;
+        let d = claude_drafts(&r.app);
+        assert_eq!(d.len(), 2, "{f:?}");
+        assert!(d.iter().all(|d| d.forge.is_none()));
+        let a = ask(&mut r.app, Query::ReviewDeleteDraft { draft: id }).await;
+        assert_eq!(a.error, None);
+        assert_eq!(claude_drafts(&r.app).len(), 1);
+        assert!(r.writes().is_empty(), "{f:?}: {:?}", r.writes());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_pending_replies_c_a_comment_must_be_on_lines_of_that_side() {
+    let mut r = rig(F::Gitea, false).await;
+    let a = ask(&mut r.app, comment_q("x", 50, 50, None)).await;
+    assert!(a.error.unwrap_or_default().contains("do not exist"), "past the end");
+    let a = ask(&mut r.app, comment_q("", 2, 2, None)).await;
+    assert!(a.error.is_some(), "empty");
+    let q = Query::ReviewComment {
+        path: Some("nope.txt".into()),
+        right: Some(true),
+        start: Some(1),
+        end: Some(1),
+        body: "x".into(),
+        draft: None,
+    };
+    assert!(
+        ask(&mut r.app, q).await.error.is_some(),
+        "not a file of the merge request"
+    );
+    let q = Query::ReviewComment {
+        path: None,
+        right: None,
+        start: None,
+        end: None,
+        body: "x".into(),
+        draft: None,
+    };
+    let why = ask(&mut r.app, q).await.error.unwrap_or_default();
+    assert!(why.contains("required for a new comment"), "{why}");
+    assert!(claude_drafts(&r.app).is_empty());
+    assert!(r.writes().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_pending_replies_c_a_users_reply_and_claudes_comment_are_submitted_with_the_review_in_one_step() {
+    for f in [F::GitHub, F::GitLab] {
+        let mut r = rig(f, false).await;
+        reply_routes(&r);
+        reply_saved(&mut r, "User reply").await;
+        claude_comment(&mut r, "Claude comment", 2, 2).await;
+        assert!(drafts(&r.app).iter().all(|d| d.forge.is_some()), "{f:?}");
+        let before = r.writes().len();
+        r.gone();
+        submit(&mut r.app, Command::ReviewSubmitComment, "");
+        submitted(&mut r.app).await;
+        let after: Vec<_> = r.writes().into_iter().skip(before).collect();
+        match f {
+            F::GitHub => {
+                assert!(
+                    after.iter().any(|w| w.target.ends_with("/reviews/77/events")),
+                    "{after:?}"
+                );
+                assert!(
+                    after.iter().all(|w| !w.body.contains("addPullRequestReview")),
+                    "no draft is added again"
+                );
+            }
+            _ => assert!(after.iter().any(|w| w.target.contains("publish")), "{after:?}"),
+        }
+        assert!(drafts(&r.app).is_empty(), "{f:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_pending_replies_c_claude_cannot_overwrite_the_users_reply_draft() {
+    for f in [F::GitHub, F::GitLab, F::Gitea] {
+        let mut r = rig(f, false).await;
+        reply_routes(&r);
+        reply_saved(&mut r, "My own reply").await;
+        let n = r.writes().len();
+        let a = ask(
+            &mut r.app,
+            Query::ReviewReply {
+                thread: thread_id(f).into(),
+                body: "Claude's take".into(),
+                resolve: true,
+            },
+        )
+        .await;
+        assert!(a.error.unwrap_or_default().contains("own reply draft"), "{f:?}");
+        quiet(&mut r.app).await;
+        let d = reply_drafts(&r.app);
+        assert_eq!(d.len(), 1, "{f:?}");
+        assert_eq!(
+            (d[0].body.as_str(), d[0].by_claude, d[0].resolve),
+            ("My own reply", false, false)
+        );
+        assert_eq!(r.writes().len(), n, "{f:?}: nothing sent");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_pending_replies_c_github_refuses_a_claude_comment_outside_the_diff() {
+    let mut r = rig(F::GitHub, false).await;
+    let n = r.writes().len();
+    // Line 1 of renamed.txt is outside every hunk of the GitHub fake's diff.
+    let q = Query::ReviewComment {
+        path: Some("renamed.txt".into()),
+        right: Some(true),
+        start: Some(1),
+        end: Some(1),
+        body: "outside".into(),
+        draft: None,
+    };
+    let why = ask(&mut r.app, q).await.error.unwrap_or_default();
+    assert!(why.contains(crate::review_drafts::NOT_IN_DIFF), "{why}");
+    quiet(&mut r.app).await;
+    assert!(drafts(&r.app).is_empty(), "no draft stored");
+    assert_eq!(r.writes().len(), n, "no write: {:?}", r.writes());
+}

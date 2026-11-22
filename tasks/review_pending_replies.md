@@ -1,11 +1,17 @@
 ---
 id: review_pending_replies
 name: Replies in the pending review
-summary: the comment box adds a reply to the pending review by default (Comment Now, in the box, posts at once, for replies and new line comments), and Claude's review tools can start and add to the pending review but never submit it
-status: in-progress
+summary: the comment box adds a reply to the pending review by default, Comment Now in the box posts a reply or line comment at once, and Claude's drafts join the pending review (never published by Claude)
+status: done
 priority: 0
 dependencies: [review_forge_drafts, claude_ide]
 ---
+
+✅ Done.
+- What it changed: the reply box saves a reply draft (`ComposerKind::Reply` → `set_reply` → `draft_saved`; Gitea keeps it local and posts it after the submit). `[Comment Now]` (`ComposerButton::Now`, `ReviewCommentNow`, `composer_now_offered`) posts a reply (`Job::Reply { draft }`) or a line comment (`Forge::post_comment`, `Job::PostComment`) at once. Posting from a reopened draft drops that draft. Claude's drafts are queued like the user's: new tools `review_draft_comment` (`Query::ReviewComment`, lines read off-thread, `ReviewEvent::ClaudeLines`) and `review_delete_draft`. `get_review` gives each draft's `author` and `state`. The rule is now **Claude never publishes** (docs/dev/conventions.md), guarded by `claude_ide_no_query_or_tool_publishes`.
+- Also: Claude's `review_draft_reply` refuses to overwrite the user's reply draft on a thread (it used to replace its text, and now would have edited the user's pending comment). The buttons row drops `[Insert Suggestion]`, then `[Cancel Esc]`, when narrow. `review_draft_comment` takes absolute or repo-relative paths, and only `body` + `draft` to replace a body.
+- Deferred: nothing.
+- Still to check by hand: the list below, plus the buttons row at narrow widths in a real terminal, GitHub's 422 text and Gitea's refusal for Comment Now while a pending review exists. On Gitea, check that a second Claude draft joins the first one's pending review: the fake can't show it.
 
 Today only a new line comment becomes a draft. The reply box (Code Review: Reply) has one button, `[Comment Ctrl+Enter]`, which posts the reply at once (`ComposerKind::Reply`, header "Reply (posted at once)"). The only reply drafts are Claude's (`review_draft_reply`, `Draft::reply`) and ones made on the website. A new line comment has no way to post at once (review_forge_drafts deferred GitHub's "Add single comment"). Claude's drafts stay local (`by_claude`, never queued) until the user submits. This task makes the review the default everywhere a comment is written on the diff:
 - **Replies are drafts by default.** The reply box's main button saves the reply into the pending review.
@@ -32,7 +38,7 @@ Three subtasks in order, one commit each.
         - `[Comment Now]` on a new line comment box queues `Job::PostComment`. On success the thread appears in the diff after the refresh that follows, as a reply's does. On failure the box stays open with its text and the error is shown. The same held-back rules as Submit (GitHub's `NOT_IN_DIFF`) refuse it with the reason before any request.
         - Tests per adapter against the fake (anchor, side, ranges, GitLab's positions); through the app: Comment Now posts one comment and the pending review is untouched (no submit, no add); a refusal keeps the box.
         - Done: `Forge::post_comment(..) -> Result<()>` (not `Comment`: the thread shows after the refresh, as a reply's does). GitHub `POST …/pulls/{n}/comments` is refused with a 422 while the user has a pending review (mapped to a plain message); GitLab posts a discussion with the draft notes' `position`, beside a pending review; Gitea has no single-comment route and a `COMMENT` review would publish the pending one, so the adapter reads the pending review first and refuses without writing. `composer_now_offered` hides `[Comment Now]` on a line box where a pending review is known (GitHub, Gitea); unknown, it posts and shows the refusal. `App::line_now_job` builds `Job::PostComment { .., draft }` with the head-banner, `NOT_IN_DIFF` and held-back refusals before any request; success drops an edited draft. Research recorded in [mr_review](mr_review.md) and the adapters' `//!`.
-    - review_pending_replies-c: Claude starts and adds to the review, never submits it. Then the done-when.
+    - ✅ review_pending_replies-c: Claude starts and adds to the review, never submits it. Then the done-when.
         - New tool `review_draft_comment` (`path`, `side` old/new, `start`, `end` lines, `body`) → `Query::ReviewComment`: a line draft with `by_claude` set by the handler alone, checked like the user's (lines must exist on that side of the review diff, GitHub's not-in-diff refusal returned as the tool's error, the lines' text recorded for drift). Optional `draft` id to replace one of Claude's own drafts' body.
         - New tool `review_delete_draft` (`draft` id from `get_review`) → deletes one of Claude's own drafts (local and on the forge). Refused for the user's drafts.
         - With `review_drafts_on_forge` on, a `by_claude` draft (line or reply) is queued when made: `draft_saved` / `draft_job` no longer skip them, and the first one starts the pending review. Replacing or deleting one queues `EditDraft` / `DeleteDraft`. Failures leave it `local only` as for the user's. PENDING tags them `claude · on GitHub`. `by_claude` stays local state, kept across reconcile by forge id (the forge shows them as the user's own pending comments). `get_review` lists each draft's id, author (`claude` / `you`) and `on_forge` / `local_only` state.

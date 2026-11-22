@@ -800,6 +800,18 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_keeps_claudes_tag_on_a_draft_the_forge_shows_as_the_users() {
+        let mut store = DraftStore::default();
+        let mut d = on_forge("1", "old");
+        d.by_claude = true;
+        store.add("k", d);
+        let p = pending(vec![pending_comment("1", "edited on the web", 1)], &[("1", Some("x"))]);
+        store.reconcile("k", &p, &[], &|_| false);
+        let d = &store.get("k")[0];
+        assert_eq!((d.body.as_str(), d.by_claude), ("edited on the web", true));
+    }
+
+    #[test]
     fn reconcile_leaves_a_busy_draft_alone_and_drops_everything_when_nothing_is_pending() {
         let mut store = DraftStore::default();
         let mut busy = on_forge("1", "mine, being edited");

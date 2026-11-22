@@ -49,6 +49,42 @@ const MAX_REPLY: usize = 20_000;
 /// Why `mcp_read_only` hosts refuse the write tools.
 pub(super) const READ_ONLY: &str = "code review is read-only for Claude (mcp_read_only in forges.toml)";
 
+/// Why a draft can't be changed by Claude.
+const NOT_YOURS: &str =
+    "no draft of yours with that id: only your own drafts (author claude in get_review) can be changed";
+/// Most lines one comment may span.
+const MAX_COMMENT_LINES: u32 = 500;
+
+/// A `review_draft_comment` whose lines were read off-thread (`ReviewEvent::ClaudeLines`).
+pub(super) struct ClaudeLines {
+    responder: Responder,
+    key: String,
+    draft: Draft,
+    lines: Result<Vec<String>, String>,
+}
+
+/// Blocking: lines `start..=end` (1-based) of `path` at `commit`.
+fn read_lines(repo: &crate::git::Repo, commit: &str, path: &str, start: u32, end: u32) -> Result<Vec<String>, String> {
+    let git = repo.open().map_err(|e| format!("can't open the repository: {e}"))?;
+    let c = git2::Oid::from_str(commit)
+        .ok()
+        .and_then(|o| git.find_commit(o).ok())
+        .ok_or("the commit is not in the local clone: run git fetch, then review_refresh")?;
+    let blob = crate::review_anchor::blob_at(&git, &c, path).ok_or("the file is not at that commit on that side")?;
+    let text = String::from_utf8_lossy(&blob);
+    let all: Vec<&str> = text.lines().collect();
+    if end as usize > all.len() {
+        return Err(format!(
+            "lines {start}-{end} do not exist on that side (it has {} lines)",
+            all.len()
+        ));
+    }
+    Ok(all[start as usize - 1..end as usize]
+        .iter()
+        .map(|l| l.to_string())
+        .collect())
+}
+
 /// An apply waiting for its answer (`App::claude_apply`).
 #[derive(Debug)]
 pub(super) struct Apply {
@@ -177,7 +213,10 @@ impl App {
                     "body": clip_head(&d.body, MAX_BODY).0,
                     "reply_to": d.reply_to,
                     "resolve": d.resolve,
+                    "author": if d.by_claude { "claude" } else { "you" },
                     "by_claude": d.by_claude,
+                    "state": self.review_draft_state(&d.id).0,
+                    "local_why": self.review_draft_state(&d.id).1,
                     "held_back": row.held,
                 })
             })
@@ -251,6 +290,22 @@ impl App {
                 responder.answer(self.claude_draft_reply(thread, body, *resolve))
             }
             Query::ReviewApply { thread } => self.claude_apply_start(thread, responder),
+            Query::ReviewComment {
+                path,
+                right,
+                start,
+                end,
+                body,
+                draft,
+            } => self.claude_comment_start(
+                path.as_deref(),
+                *right,
+                (*start, *end),
+                body,
+                draft.as_deref(),
+                responder,
+            ),
+            Query::ReviewDeleteDraft { draft } => responder.answer(self.claude_delete_draft(draft)),
             _ => responder.answer(Reply::error("not a review action")),
         }
     }
@@ -288,10 +343,16 @@ impl App {
         let Some(store) = self.review.drafts.store.as_mut() else {
             return Reply::error("jed has not read the saved drafts yet: try again in a moment");
         };
+        if store.reply_for(&key, thread).is_some_and(|d| !d.by_claude) {
+            return Reply::error(
+                "the user has their own reply draft on this thread: Claude can't change it (author you in get_review)",
+            );
+        }
         let id = draft.id.clone();
         let replaced = store.set_reply(&key, draft);
         let id = store.reply_for(&key, thread).map_or(id, |d| d.id.clone());
         self.save_drafts();
+        self.draft_saved(&id);
         self.review_blocks_changed();
         let pending = self.review.draft_count();
         self.notify(Level::Info, format!("Claude drafted a reply ({pending} pending)"));
@@ -301,8 +362,224 @@ impl App {
             "replaced": replaced,
             "resolve": resolve,
             "pending": pending,
-            "note": "not posted: the user submits the review in jed (Code Review: Submit Review)",
+            "note": "a draft in the user's pending review: not published. You can not submit it: tell the user to submit the review in jed (Code Review: Submit Review)",
         }))
+    }
+
+    /// The guards every draft of Claude's passes: a loaded merge request, no submit in flight,
+    /// the saved drafts read. The drafts' key.
+    fn claude_drafts_ready(&self) -> Result<String, Reply> {
+        let Some(key) = self.review.drafts_key() else {
+            return Err(Reply::error("no merge request loaded: call get_review for why"));
+        };
+        if self.review.writing {
+            return Err(Reply::error("a submit is in progress in jed: try again in a moment"));
+        }
+        if self.review.drafts.store.is_none() {
+            return Err(Reply::error(
+                "jed has not read the saved drafts yet: try again in a moment",
+            ));
+        }
+        Ok(key)
+    }
+
+    /// `review_draft_comment`: a line draft of Claude's. The lines' text (for drift) is read
+    /// off-thread at the commit the lines are counted in; `responder` is answered by
+    /// `claude_comment_read`. With `replace`, the body of one of Claude's own drafts is replaced.
+    #[allow(clippy::too_many_arguments)]
+    fn claude_comment_start(
+        &mut self,
+        path: Option<&str>,
+        right: Option<bool>,
+        (start, end): (Option<u32>, Option<u32>),
+        body: &str,
+        replace: Option<&str>,
+        responder: Responder,
+    ) {
+        let reply = |responder: Responder, r: Reply| responder.answer(r);
+        let body = body.trim();
+        if body.is_empty() {
+            return reply(responder, Reply::error("the comment is empty"));
+        }
+        if body.len() > MAX_REPLY {
+            return reply(responder, Reply::error("the comment is too long"));
+        }
+        let key = match self.claude_drafts_ready() {
+            Ok(k) => k,
+            Err(e) => return reply(responder, e),
+        };
+        if let Some(id) = replace {
+            let own = self
+                .review
+                .drafts
+                .store
+                .as_ref()
+                .and_then(|s| s.find(&key, id))
+                .is_some_and(|d| d.by_claude && d.reply_to.is_none());
+            if !own {
+                return reply(responder, Reply::error(NOT_YOURS));
+            }
+            if let Some(s) = self.review.drafts.store.as_mut() {
+                s.set_body(&key, id, body.to_string());
+            }
+            self.save_drafts();
+            self.draft_saved(id);
+            self.review_blocks_changed();
+            return reply(responder, self.claude_draft_reply_json(id, true));
+        }
+        let (Some(path), Some(right), Some(start), Some(end)) = (path, right, start, end) else {
+            return reply(
+                responder,
+                Reply::error("`path`, `side`, `start` and `end` are required for a new comment"),
+            );
+        };
+        if end < start || end - start >= MAX_COMMENT_LINES {
+            return reply(
+                responder,
+                Reply::error("`end` must be `start` or later, within 500 lines"),
+            );
+        }
+        let Some(review) = self.review.review() else {
+            return reply(responder, Reply::error("no merge request loaded"));
+        };
+        let path = path.replace('\\', "/");
+        if !review
+            .files
+            .iter()
+            .any(|f| f.path == path || f.old_path.as_deref() == Some(&path))
+        {
+            return reply(
+                responder,
+                Reply::error(format!(
+                    "{path} is not a file of the merge request: use a path from get_review"
+                )),
+            );
+        }
+        let commit = if right {
+            review.mr.head.sha.clone()
+        } else {
+            match &review.merge_base {
+                Some(b) => b.clone(),
+                None => {
+                    return reply(
+                        responder,
+                        Reply::error("the base commit is not known: call review_refresh"),
+                    );
+                }
+            }
+        };
+        let mut draft = Draft::new(
+            path.clone(),
+            right,
+            start,
+            end,
+            commit.clone(),
+            Vec::new(),
+            body.to_string(),
+        );
+        draft.by_claude = true;
+        if !draft.outside_ok(review.kind, &review.hunks) {
+            return reply(responder, Reply::error(crate::review_drafts::NOT_IN_DIFF));
+        }
+        let Some(repo) = self.git.status.as_ref().map(|s| s.repo.clone()) else {
+            return reply(responder, Reply::error("no git repository"));
+        };
+        if tokio::runtime::Handle::try_current().is_err() {
+            return reply(responder, Reply::error("jed is not running"));
+        }
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let lines = read_lines(&repo, &commit, &path, start, end);
+            let _ = tx.send(super::AppEvent::Review(super::review::ReviewEvent::ClaudeLines(
+                ClaudeLines {
+                    responder,
+                    key,
+                    draft,
+                    lines,
+                },
+            )));
+        });
+    }
+
+    /// The lines of a `review_draft_comment` were read: the draft is stored and queued.
+    pub(super) fn claude_comment_read(&mut self, read: ClaudeLines) {
+        let ClaudeLines {
+            responder,
+            key,
+            mut draft,
+            lines,
+        } = read;
+        let lines = match lines {
+            Ok(l) => l,
+            Err(e) => return responder.answer(Reply::error(e)),
+        };
+        let key_now = match self.claude_drafts_ready() {
+            Ok(k) if k == key => k,
+            Ok(_) => return responder.answer(Reply::error("the merge request changed: try again")),
+            Err(e) => return responder.answer(e),
+        };
+        draft.lines = lines;
+        let id = draft.id.clone();
+        if let Some(s) = self.review.drafts.store.as_mut() {
+            s.add(&key_now, draft);
+        }
+        self.save_drafts();
+        self.draft_saved(&id);
+        self.review_blocks_changed();
+        let pending = self.review.draft_count();
+        self.notify(Level::Info, format!("Claude drafted a comment ({pending} pending)"));
+        responder.answer(self.claude_draft_reply_json(&id, false));
+    }
+
+    /// The tool result of a stored draft.
+    fn claude_draft_reply_json(&self, id: &str, replaced: bool) -> Reply {
+        Reply::data(json!({
+            "drafted": true,
+            "draft_id": id,
+            "replaced": replaced,
+            "pending": self.review.draft_count(),
+            "on_forge": self.review_draft_state(id).0 == "on_forge",
+            "note": "a draft in the user's pending review: not published. You can not submit it: tell the user to submit the review in jed (Code Review: Submit Review)",
+        }))
+    }
+
+    /// `review_delete_draft`: one of Claude's own drafts, here and on the forge.
+    fn claude_delete_draft(&mut self, id: &str) -> Reply {
+        let key = match self.claude_drafts_ready() {
+            Ok(k) => k,
+            Err(e) => return e,
+        };
+        let own = self
+            .review
+            .drafts
+            .store
+            .as_ref()
+            .and_then(|s| s.find(&key, id))
+            .is_some_and(|d| d.by_claude);
+        if !own {
+            return Reply::error(NOT_YOURS);
+        }
+        self.draft_deleted(id);
+        Reply::data(json!({"deleted": true, "pending": self.review.draft_count()}))
+    }
+
+    /// Tests: asks `query` as a Claude tool call would (through the IPC request path).
+    #[cfg(test)]
+    pub fn test_claude_ask(&mut self, query: Query) -> tokio::sync::oneshot::Receiver<Reply> {
+        let (responder, rx) = Responder::pair();
+        self.ipc_request(crate::ipc::Request::query(query, None), responder);
+        rx
+    }
+
+    /// `("on_forge" | "local_only", why)` of draft `id`.
+    fn review_draft_state(&self, id: &str) -> (&'static str, Option<String>) {
+        let on = self
+            .review
+            .drafts_key()
+            .and_then(|k| self.review.drafts.store.as_ref()?.find(&k, id))
+            .is_some_and(|d| d.forge.is_some());
+        let why = self.review.drafts.local_why.get(id).cloned();
+        (if on { "on_forge" } else { "local_only" }, why)
     }
 
     fn claude_apply_start(&mut self, thread: &str, responder: Responder) {

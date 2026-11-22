@@ -273,7 +273,7 @@ pub fn tools() -> Vec<Value> {
             "get_review",
             "The code review of the checked-out branch's merge request, as jed last loaded it (no forge call): number, title, \
              URL, branches, state, unresolved count, whether local is ahead / behind / diverged, the files with +/-, the user's \
-             pending drafts (yours are marked by_claude), when it was fetched, and why there is none. Start here to deal with \
+             pending drafts (each with its id, author claude / you, and state on_forge / local_only), when it was fetched, and why there is none. Start here to deal with \
              review feedback. `read_only: true` means the user forbids the write tools below (mcp_read_only in forges.toml).",
             json!({}),
             &[],
@@ -305,8 +305,9 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "review_draft_reply",
-            "Queue a reply to a review thread as a draft in jed's PENDING list, tagged claude (optionally also resolving the \
-             thread). It is NOT posted: only the user's own Submit Review in jed sends it. One draft per thread: a second call \
+            "Add a reply to a review thread as a draft, tagged claude, in jed's PENDING list and the user's pending review \
+             on the forge (optionally also resolving the thread). It is NOT published: only the user's own Submit Review in \
+             jed sends it, and you can not submit. One draft per thread: a second call \
              replaces it. Refused when the review is read-only for you.",
             json!({
                 "thread": {"type": "string", "description": "thread id, from get_review_threads"},
@@ -315,7 +316,54 @@ pub fn tools() -> Vec<Value> {
             }),
             &["thread", "body"],
         ),
+        tool(
+            "review_draft_comment",
+            "Add a line comment to the review as a draft, tagged claude. It goes into the user's pending review on the \
+             forge (visible only to them, as their own, until they submit it) and into jed's PENDING list; you can NOT \
+             submit, so tell the user to submit the review in jed (Code Review: Submit Review). The lines must exist on that \
+             side of the diff (GitHub also needs them inside a hunk). With `draft` (an id from get_review) it replaces the \
+             body of one of your own drafts instead (then only `body` and `draft` are needed). `path`, `side`, `start` and \
+             `end` are required for a new comment, and `path` may be absolute under the workspace. Refused when the review \
+             is read-only for you.",
+            json!({
+                "path": {"type": "string", "description": "file, relative to the repository (or absolute under it); required unless `draft` is given"},
+                "side": {"type": "string", "enum": ["old", "new"], "description": "new: the merge request's version; old: the base; required unless `draft` is given"},
+                "start": {"type": "integer", "description": "first line, 1-based on that side; required unless `draft` is given"},
+                "end": {"type": "integer", "description": "last line (equal to start for one line); required unless `draft` is given"},
+                "body": {"type": "string", "description": "the comment text"},
+                "draft": {"type": "string", "description": "id of your own draft to replace the body of"},
+            }),
+            &["body"],
+        ),
+        tool(
+            "review_delete_draft",
+            "Delete one of your own drafts (from get_review, author claude), also from the user's pending review on the forge. \
+             Refused for the user's drafts and when the review is read-only for you. You can not submit or discard the review.",
+            json!({"draft": {"type": "string", "description": "draft id, from get_review"}}),
+            &["draft"],
+        ),
     ]
+}
+
+fn arg_line_opt(args: &Value, key: &str) -> Result<Option<u32>, String> {
+    let Some(n) = arg_u64(args, key)? else { return Ok(None) };
+    u32::try_from(n)
+        .ok()
+        .filter(|&n| n >= 1)
+        .map(Some)
+        .ok_or_else(|| format!("`{key}` is a 1-based line number"))
+}
+
+/// A path as the review names files: relative to the repository. An absolute path under `cwd`
+/// (the workspace) is made relative; a relative one is kept.
+fn repo_path(p: &str, cwd: &Path) -> String {
+    let path = Path::new(p);
+    let rel = if path.is_absolute() {
+        path.strip_prefix(cwd).unwrap_or(path)
+    } else {
+        path
+    };
+    rel.to_string_lossy().replace('\\', "/")
 }
 
 fn arg_u64(args: &Value, key: &str) -> Result<Option<u64>, String> {
@@ -434,6 +482,33 @@ pub(crate) fn tool_query(name: &str, args: &Value, cwd: &Path) -> Option<Result<
                 thread: arg_str(args, "thread")?.ok_or("`thread` is required")?.to_string(),
                 body: arg_str(args, "body")?.ok_or("`body` is required")?.to_string(),
                 resolve: arg_bool(args, "resolve")?.unwrap_or(false),
+            },
+            "review_draft_comment" => {
+                if arg_str(args, "draft")?.is_none() {
+                    for key in ["path", "side", "start", "end"] {
+                        if args.get(key).is_none_or(Value::is_null) {
+                            return Err(format!(
+                                "`{key}` is required for a new comment (only `draft` replaces a body without it)"
+                            ));
+                        }
+                    }
+                }
+                Query::ReviewComment {
+                    path: arg_str(args, "path")?.map(|p| repo_path(p, cwd)),
+                    right: match arg_str(args, "side")? {
+                        Some("new") => Some(true),
+                        Some("old") => Some(false),
+                        Some(_) => return Err("`side` must be \"old\" or \"new\"".into()),
+                        None => None,
+                    },
+                    start: arg_line_opt(args, "start")?,
+                    end: arg_line_opt(args, "end")?,
+                    body: arg_str(args, "body")?.ok_or("`body` is required")?.to_string(),
+                    draft: arg_str(args, "draft")?.map(String::from),
+                }
+            }
+            "review_delete_draft" => Query::ReviewDeleteDraft {
+                draft: arg_str(args, "draft")?.ok_or("`draft` is required")?.to_string(),
             },
             _ => return Ok(None),
         }))
@@ -620,8 +695,9 @@ fn session_start(jed: &mut dyn Jed) -> Result<String, String> {
     out.push_str(
         "The jed MCP tools show the editor's state (active file, selection, diagnostics, open tabs) and the \
          other terminals' commands and output, and open files in the editor. The review tools (get_review, \
-         get_review_threads, review_apply_suggestion, review_draft_reply) deal with a merge request's feedback: fix the code \
-         yourself; replies are only drafts the user submits in jed. The language server tools (find_definition, \
+         get_review_threads, review_apply_suggestion, review_draft_reply, review_draft_comment, review_delete_draft) deal \
+         with a merge request's feedback: fix the code yourself; your replies and comments are drafts in the user's \
+         pending review on the forge, and you can not submit it: tell the user to submit the review in jed. The language server tools (find_definition, \
          find_references, get_hover, get_document_symbols, find_workspace_symbols) ask jed's running servers: \
          prefer them to grep for where a symbol is defined or used.\n",
     );
@@ -891,7 +967,9 @@ pub(crate) mod tests {
                 "get_review_threads",
                 "review_refresh",
                 "review_apply_suggestion",
-                "review_draft_reply"
+                "review_draft_reply",
+                "review_draft_comment",
+                "review_delete_draft"
             ]
         );
         assert_eq!(out[3]["error"]["code"], -32601);
@@ -1183,6 +1261,54 @@ pub(crate) mod tests {
                 resolve: true
             }
         );
+        assert_eq!(
+            q(
+                "review_draft_comment",
+                json!({"path": "a.rs", "side": "old", "start": 3, "end": 4, "body": "Why?", "draft": "d1"})
+            ),
+            Query::ReviewComment {
+                path: Some("a.rs".into()),
+                right: Some(false),
+                start: Some(3),
+                end: Some(4),
+                body: "Why?".into(),
+                draft: Some("d1".into())
+            }
+        );
+        // A replacement needs only the body and the id.
+        assert_eq!(
+            q("review_draft_comment", json!({"body": "New", "draft": "d1"})),
+            Query::ReviewComment {
+                path: None,
+                right: None,
+                start: None,
+                end: None,
+                body: "New".into(),
+                draft: Some("d1".into())
+            }
+        );
+        // An absolute path under the workspace is made relative; a relative one is kept.
+        for p in ["/w/src/a.rs", "src/a.rs"] {
+            let Query::ReviewComment { path, .. } = q(
+                "review_draft_comment",
+                json!({"path": p, "side": "new", "start": 1, "end": 1, "body": "x"}),
+            ) else {
+                panic!()
+            };
+            assert_eq!(path.as_deref(), Some("src/a.rs"), "{p}");
+        }
+        assert_eq!(
+            q("review_delete_draft", json!({"draft": "d1"})),
+            Query::ReviewDeleteDraft { draft: "d1".into() }
+        );
+        for bad in [
+            json!({"path": "a.rs", "side": "left", "start": 1, "end": 1, "body": "x"}),
+            json!({"path": "a.rs", "side": "new", "start": 0, "end": 1, "body": "x"}),
+            json!({"path": "a.rs", "side": "new", "start": 1, "body": "x"}),
+            json!({"side": "new", "start": 1, "end": 1, "body": "x"}),
+        ] {
+            assert!(tool_query("review_draft_comment", &bad, cwd).unwrap().is_err());
+        }
         assert!(
             tool_query("review_draft_reply", &json!({"thread": "1"}), cwd)
                 .unwrap()
