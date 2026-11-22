@@ -14,6 +14,9 @@
 //!   comments are added, edited and deleted through GraphQL by node id, and the review's id is
 //!   kept as `databaseId:nodeId` (REST wants one, GraphQL the other). A thread added to it is
 //!   anchored on the review's commit.
+//! - A single line comment at once (review_pending_replies-b) is `POST …/pulls/{n}/comments`; it
+//!   is refused with a 422 while the user has a pending review (one per user and pull request),
+//!   so the adapter says so and the app doesn't offer it then.
 //! - The merge base comes from the compare endpoint (`merge_base_commit`).
 
 use serde::Deserialize;
@@ -21,9 +24,9 @@ use serde_json::{Value, json};
 
 use super::http::{Client, clean_line, clean_text, encode_path, encode_segment};
 use super::{
-    Anchor, Approval, ApprovalState, BranchRef, Comment, DraftRef, DraftReview, Forge, ForgeError, MergeRequest,
-    MrComments, MrState, NewDraft, PendingComment, PendingReview, ReplyTo, RepoRef, Result, ReviewEvent, Side,
-    SubmitOutcome, Thread, Verdict, WITHDRAW_MESSAGE, latest_approvals_with_ids, review_body,
+    Anchor, Approval, ApprovalState, BranchRef, Comment, DraftComment, DraftRef, DraftReview, Forge, ForgeError,
+    MergeRequest, MrComments, MrState, NewDraft, PendingComment, PendingReview, ReplyTo, RepoRef, Result, ReviewEvent,
+    Side, SubmitOutcome, Thread, Verdict, WITHDRAW_MESSAGE, latest_approvals_with_ids, review_body,
 };
 
 /// Stop a GraphQL connection after this many pages of 100 (a malicious server can't loop us).
@@ -759,6 +762,45 @@ impl Forge for GitHub {
             .map(|_| ())
     }
 
+    /// `POST …/pulls/{n}/comments` (`commit_id`, `path`, `line`, `side`, and `start_line` /
+    /// `start_side` for a range): one comment, posted at once. While the user has a pending
+    /// review GitHub answers 422 ("one pending review per pull request": the comment would have
+    /// to join it), which is turned into a message that says so.
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn post_comment(&self, repo: &RepoRef, number: u64, head_sha: &str, c: &DraftComment) -> Result<()> {
+        let a = &c.anchor;
+        let mut body = json!({
+            "commit_id": head_sha,
+            "path": a.path,
+            "body": c.body,
+            "line": a.end_line,
+            "side": side_name(a.side),
+        });
+        if a.start_line < a.end_line {
+            body["start_line"] = json!(a.start_line);
+            body["start_side"] = json!(side_name(a.side));
+        }
+        match self
+            .client
+            .post(&format!("{}/{number}/comments", Self::pulls(repo)), &body.to_string())
+        {
+            Err(ForgeError::Status { status: 422, message }) => {
+                // The refusal for a pending review is a 422 like a line outside the diff: say
+                // what it is when the message does, else add the possibility.
+                let hint = "GitHub can't post a single comment while you have a pending review; add it to the review or submit that first";
+                Err(ForgeError::Config(
+                    if message.to_lowercase().contains("pending review") {
+                        hint.into()
+                    } else {
+                        format!("server answered 422: {message} (a pending review of yours also causes this: {hint})")
+                    },
+                ))
+            }
+            r => r.map(|_| ()),
+        }
+    }
+
     /// By thread node id (GraphQL): the REST reply call needs a comment id, which a thread id is not.
     ///
     /// Blocking: call from spawn_blocking.
@@ -1417,6 +1459,52 @@ mod tests {
         let v: Value = serde_json::from_str(&seen[2].body).unwrap();
         assert!(v["variables"]["startLine"].is_null() && v["variables"]["startSide"].is_null());
         assert_eq!(v["variables"]["side"], "RIGHT");
+    }
+
+    #[test]
+    fn a_single_comment_posts_at_its_anchor_and_a_pending_review_refuses_it() {
+        let (server, gh, repo) = setup(vec![(
+            "POST /api/v3/repos/o/r/pulls/7/comments",
+            Reply::json(r#"{"id":1}"#),
+        )]);
+        gh.post_comment(&repo, 7, "h0", &draft(Side::Left, 5, 9, "fix"))
+            .unwrap();
+        gh.post_comment(&repo, 7, "h0", &draft(Side::Right, 4, 4, "x")).unwrap();
+        let seen = server.requests();
+        let a: Value = serde_json::from_str(&seen[0].body).unwrap();
+        assert_eq!(
+            a,
+            json!({"commit_id":"h0","path":"src/a.rs","body":"fix","line":9,"side":"LEFT","start_line":5,"start_side":"LEFT"})
+        );
+        let b: Value = serde_json::from_str(&seen[1].body).unwrap();
+        assert_eq!(b["side"], "RIGHT");
+        assert!(b.get("start_line").is_none() && b.get("start_side").is_none());
+        server.set(
+            "POST /api/v3/repos/o/r/pulls/7/comments",
+            Reply::status(422).with_body(
+                r#"{"message":"Unprocessable Entity: User can only have one pending review per pull request"}"#,
+            ),
+        );
+        let err = gh
+            .post_comment(&repo, 7, "h0", &draft(Side::Right, 4, 4, "x"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("pending review") && err.contains("GitHub"), "{err}");
+        assert!(
+            !err.contains("server answered 422"),
+            "said plainly, not as a guess: {err}"
+        );
+        // Any other 422 keeps the server's words and adds the pending review as a possibility.
+        server.set(
+            "POST /api/v3/repos/o/r/pulls/7/comments",
+            Reply::status(422).with_body(r#"{"message":"Validation Failed"}"#),
+        );
+        let err = gh
+            .post_comment(&repo, 7, "h0", &draft(Side::Right, 4, 4, "x"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("server answered 422: Validation Failed"), "{err}");
+        assert!(err.contains("a pending review of yours also causes this"), "{err}");
     }
 
     #[test]

@@ -140,7 +140,7 @@ impl Composer {
         self.buf.rope.to_string()
     }
 
-    pub fn block(&self, submit: review_blocks::SubmitLabel) -> ThreadBlock {
+    pub fn block(&self, submit: review_blocks::SubmitLabel, now: bool) -> ThreadBlock {
         use review_blocks::SubmitLabel as L;
         let verb = match (&self.kind, self.editing.is_some()) {
             (ComposerKind::Reply { .. }, _) => match submit {
@@ -163,7 +163,7 @@ impl Composer {
             role: Role::Composer {
                 caret: self.view.selections.primary().head.0,
                 submit,
-                now: matches!(self.kind, ComposerKind::Reply { .. }),
+                now,
             },
             id: "composer".into(),
             right: self.right,
@@ -526,12 +526,36 @@ impl App {
         self.notify(Level::Info, format!("Draft saved ({n} pending)"));
     }
 
-    /// "Code Review: Comment Now": a reply box's text is posted at once, not added to the review.
+    /// "Code Review: Comment Now": a reply or line box's text is posted at once, not added to
+    /// the review.
     pub(super) fn composer_now(&mut self) {
         match self.composer.as_ref().map(|c| &c.kind) {
             Some(ComposerKind::Reply { .. }) => self.composer_post(),
-            Some(_) => self.notify(Level::Info, "Comment Now is for a reply box".into()),
+            Some(ComposerKind::Draft) if self.composer.as_ref().is_some_and(|c| self.composer_now_offered(c)) => {
+                self.composer_post()
+            }
+            Some(ComposerKind::Draft) => self.notify(
+                Level::Info,
+                "This forge can't post a single comment while you have a pending review".into(),
+            ),
+            Some(_) => self.notify(Level::Info, "Comment Now is for a reply or line comment box".into()),
             None => self.notify(Level::Info, "No comment is open".into()),
+        }
+    }
+
+    /// Whether the box has a `[Comment Now]` button: a reply always; a line comment unless the
+    /// forge would publish or refuse it because a pending review exists (GitHub, Gitea; GitLab's
+    /// discussions are independent of its draft notes).
+    pub(super) fn composer_now_offered(&self, c: &Composer) -> bool {
+        match c.kind {
+            ComposerKind::Reply { .. } => true,
+            ComposerKind::Draft => {
+                self.review
+                    .review()
+                    .is_some_and(|r| r.kind == crate::forge::Kind::GitLab)
+                    || self.pending_review_id().is_none()
+            }
+            _ => false,
         }
     }
 
@@ -571,7 +595,7 @@ impl App {
             }
             self.composer_changed();
         } else if rel == rows + 1 {
-            let now = matches!(c.kind, ComposerKind::Reply { .. });
+            let now = self.composer_now_offered(c);
             for (cols, button) in review_blocks::composer_button_cols(label, now, b.rect.width as usize) {
                 if cols.contains(&x) {
                     match button {

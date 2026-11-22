@@ -7,7 +7,9 @@
 //!   its first comment's id is the thread id (the id the resolve call takes).
 //! - The merge base is `merge_base` of the pull request.
 //! - Pending reviews (review_forge_drafts-a): `POST …/reviews` with `event: PENDING` adds to the
-//!   user's existing pending review; there is no way to put a reply into one (the adapter
+//!   user's existing pending review; a single comment at once (review_pending_replies-b) is a
+//!   `COMMENT` review with that comment, refused while a pending review exists (the new review
+//!   would publish its comments); there is no way to put a reply into one (the adapter
 //!   refuses). Needs Gitea 1.14 or newer (unverified).
 
 use std::collections::HashMap;
@@ -16,9 +18,9 @@ use serde::Deserialize;
 
 use super::http::{Client, clean_line, clean_text, encode_path, encode_segment};
 use super::{
-    Anchor, Approval, ApprovalState, BranchRef, Comment, DraftRef, DraftReview, Forge, ForgeError, MergeRequest,
-    MrComments, MrState, NewDraft, PendingComment, PendingReview, RepoRef, Result, ReviewEvent, Side, SubmitOutcome,
-    Thread, Verdict, WITHDRAW_MESSAGE, latest_approvals_with_ids, review_body,
+    Anchor, Approval, ApprovalState, BranchRef, Comment, DraftComment, DraftRef, DraftReview, Forge, ForgeError,
+    MergeRequest, MrComments, MrState, NewDraft, PendingComment, PendingReview, RepoRef, Result, ReviewEvent, Side,
+    SubmitOutcome, Thread, Verdict, WITHDRAW_MESSAGE, latest_approvals_with_ids, review_body,
 };
 
 pub struct Gitea {
@@ -551,6 +553,32 @@ impl Forge for Gitea {
         })
     }
 
+    /// A `COMMENT` review holding the one comment (`POST …/reviews`, as `submit_review` with one
+    /// comment). Gitea's API has no single-comment route, and a review created while the user has
+    /// a pending one takes that review's comments with it (`CreatePullReview` creates its
+    /// comments as pending, then `SubmitReview` publishes every pending comment of the user), so
+    /// with a pending review the call is refused before any write.
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn post_comment(&self, repo: &RepoRef, number: u64, head_sha: &str, c: &DraftComment) -> Result<()> {
+        let user = self.current_user()?;
+        if self.pending_review(repo, number, &user)?.is_some() {
+            return Err(ForgeError::Config(
+                "Gitea would publish your pending review with a single comment; submit or discard it first".into(),
+            ));
+        }
+        let review = DraftReview {
+            event: ReviewEvent::Comment,
+            body: String::new(),
+            comments: vec![c.clone()],
+        };
+        let out = self.submit_review(repo, number, head_sha, &review);
+        match out.error {
+            Some(e) => Err(ForgeError::Config(e)),
+            None => Ok(()),
+        }
+    }
+
     /// A review comment is an issue comment: `PATCH …/issues/comments/{id}`, range marker kept.
     ///
     /// Blocking: call from spawn_blocking.
@@ -879,6 +907,37 @@ mod tests {
         assert!(p.comments.iter().all(|c| c.reply_to.is_none()));
         assert_eq!(server.requests().len(), 2);
         assert!(gitea.pending_review(&repo, 7, "nobody").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_single_comment_is_a_comment_review_and_refused_while_a_review_is_pending() {
+        let (server, gitea, repo) = setup(vec![
+            ("GET /api/v1/user", Reply::json(r#"{"login":"me"}"#)),
+            (
+                "GET /api/v1/repos/o/r/pulls/7/reviews",
+                Reply::json(r#"[{"id":6,"user":{"login":"me"},"state":"APPROVED","body":""}]"#),
+            ),
+            ("POST /api/v1/repos/o/r/pulls/7/reviews", Reply::json(r#"{"id":9}"#)),
+            ("GET /api/v1/repos/o/r/pulls/7/reviews/5/comments", Reply::json("[]")),
+        ]);
+        let c = draft("a.rs", Side::Left, 4, 6, "fix");
+        gitea.post_comment(&repo, 7, "h0", &c).unwrap();
+        let post = server.requests().into_iter().find(|r| r.method == "POST").unwrap();
+        let sent: serde_json::Value = serde_json::from_str(&post.body).unwrap();
+        assert_eq!(
+            (sent["event"].as_str(), sent["commit_id"].as_str()),
+            (Some("COMMENT"), Some("h0"))
+        );
+        assert_eq!(sent["body"], "");
+        assert_eq!(
+            sent["comments"],
+            serde_json::json!([{"path":"a.rs","body":"fix\n\n<!-- jed:range=4-6 -->","new_position":0,"old_position":6}])
+        );
+        // A pending review would be published with it: refused, nothing written.
+        server.set("GET /api/v1/repos/o/r/pulls/7/reviews", Reply::json(PENDING_REVIEWS));
+        let err = gitea.post_comment(&repo, 7, "h0", &c).unwrap_err().to_string();
+        assert!(err.contains("pending review"), "{err}");
+        assert_eq!(server.requests().iter().filter(|r| r.method == "POST").count(), 1);
     }
 
     #[test]

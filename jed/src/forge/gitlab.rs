@@ -18,15 +18,18 @@
 //!   them, `add_draft` / `edit_draft` / `delete_draft` write one note each (a reply is a draft
 //!   note with `in_reply_to_discussion_id` and `resolve_discussion`), `submit_pending` is the
 //!   publish and `discard_pending` deletes them one by one.
+//! - A single line comment at once (review_pending_replies-b) is a discussion
+//!   (`POST …/discussions` with `body` and the same `position` as a draft note), independent of
+//!   the draft notes: it works with a pending review and leaves it alone.
 
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::http::{Client, clean_line, clean_text, encode_segment};
 use super::{
-    Anchor, Approval, ApprovalState, BranchRef, Comment, DraftRef, DraftReview, Forge, ForgeError, MergeRequest,
-    MrComments, MrState, NewDraft, PendingComment, PendingReview, ReplyTo, RepoRef, Result, ReviewEvent, Side,
-    SubmitOutcome, Thread, Verdict, latest_approvals,
+    Anchor, Approval, ApprovalState, BranchRef, Comment, DraftComment, DraftRef, DraftReview, Forge, ForgeError,
+    MergeRequest, MrComments, MrState, NewDraft, PendingComment, PendingReview, ReplyTo, RepoRef, Result, ReviewEvent,
+    Side, SubmitOutcome, Thread, Verdict, latest_approvals,
 };
 
 /// Why a change request can't be withdrawn (the app says it before asking, the adapter again).
@@ -909,6 +912,29 @@ impl Forge for GitLab {
             }
         }
         first.map_or(Ok(()), Err)
+    }
+
+    /// `POST …/discussions` with `body` (suggestion fences spelled as in a draft note) and a
+    /// `position` built as `add_draft`'s.
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn post_comment(&self, repo: &RepoRef, number: u64, head_sha: &str, c: &DraftComment) -> Result<()> {
+        let mr_path = Self::mr_path(repo, number);
+        let mr: Mr = self.client.get_json(&mr_path)?;
+        let refs = mr.diff_refs.unwrap_or_default();
+        let at = if head_sha.is_empty() {
+            mr.sha.clone().or_else(|| refs.head_sha.clone()).unwrap_or_default()
+        } else {
+            head_sha.to_string()
+        };
+        let renames = self.renames(repo, number).unwrap_or_default();
+        let body = json!({
+            "body": gitlab_body(&c.body, &c.anchor),
+            "position": position(&c.anchor, c.other, &refs, &at, &renames),
+        });
+        self.client
+            .post(&format!("{mr_path}/discussions"), &body.to_string())
+            .map(|_| ())
     }
 
     /// Blocking: call from spawn_blocking.
@@ -1849,6 +1875,59 @@ mod tests {
         // A deleted line is on the old side.
         let left = line_draft(3, 3, Side::Left, "gone");
         gl.add_draft(&repo, 7, "h0", None, &left).unwrap();
+        let post = server
+            .requests()
+            .into_iter()
+            .filter(|r| r.method == "POST")
+            .nth(1)
+            .unwrap();
+        let v: Value = serde_json::from_str(&post.body).unwrap();
+        assert_eq!(v["position"]["old_line"], 3);
+        assert!(v["position"]["new_line"].is_null() && v["position"]["line_range"].is_null());
+    }
+
+    #[test]
+    fn a_single_comment_is_a_discussion_with_the_drafts_position_and_no_draft_note() {
+        let (server, gl, repo) = setup(vec![
+            (&route("/merge_requests/7"), Reply::json(MR)),
+            (
+                &route("/merge_requests/7/diffs?per_page=100&page=1"),
+                Reply::json(r#"[{"old_path":"old.rs","new_path":"a.rs","renamed_file":true,"diff":""}]"#),
+            ),
+            (
+                &format!("POST {}", route("/merge_requests/7/discussions")),
+                Reply::json(r#"{"id":"abc"}"#),
+            ),
+        ]);
+        let crate::forge::NewDraft::Line(mut c) = line_draft(5, 9, Side::Right, "```suggestion\nx\n```") else {
+            unreachable!()
+        };
+        // A context line: both numbers.
+        c.other = (Some(4), Some(8));
+        gl.post_comment(&repo, 7, "h0", &c).unwrap();
+        let posts: Vec<_> = server.requests().into_iter().filter(|r| r.method == "POST").collect();
+        assert_eq!(posts.len(), 1, "one request, and no draft note");
+        assert!(
+            posts[0].target.ends_with("/merge_requests/7/discussions"),
+            "{}",
+            posts[0].target
+        );
+        let v: Value = serde_json::from_str(&posts[0].body).unwrap();
+        assert_eq!(v["body"], "```suggestion:-4+0\nx\n```");
+        let p = &v["position"];
+        assert_eq!(
+            (p["old_path"].as_str(), p["new_path"].as_str()),
+            (Some("old.rs"), Some("a.rs"))
+        );
+        assert_eq!((p["new_line"].as_u64(), p["old_line"].as_u64()), (Some(9), Some(8)));
+        assert_eq!(p["head_sha"], "h0");
+        assert_eq!(p["line_range"]["start"]["new_line"], 5);
+        assert_eq!(p["line_range"]["start"]["old_line"], 4);
+        // A deleted line is on the old side.
+        let crate::forge::NewDraft::Line(left) = line_draft(3, 3, Side::Left, "gone") else {
+            unreachable!()
+        };
+        gl.post_comment(&repo, 7, "h0", &left).unwrap();
         let post = server
             .requests()
             .into_iter()

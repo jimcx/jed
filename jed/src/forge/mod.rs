@@ -439,6 +439,12 @@ pub trait Forge: Send + Sync {
     ) -> Result<()>;
     /// Deletes the pending review with all its comments.
     fn discard_pending(&self, repo: &RepoRef, number: u64, review_id: &str) -> Result<()>;
+    /// Posts one comment on lines at once (the review's "Add single comment"), without
+    /// publishing or joining the user's pending review. An error where the forge can't while
+    /// one exists (GitHub refuses the request, Gitea would publish the pending review with it;
+    /// the message says so). `head_sha` as in `submit_review`. Nothing is returned: the comment
+    /// shows after the refresh that follows, as a reply does.
+    fn post_comment(&self, repo: &RepoRef, number: u64, head_sha: &str, comment: &DraftComment) -> Result<()>;
     /// Replies in the thread (`thread_id` is `Thread::id`); posted at once. `lines`: the
     /// thread's first and last line (GitLab spells a plain suggestion fence out with them).
     fn reply(&self, repo: &RepoRef, number: u64, thread_id: &str, body: &str, lines: (u32, u32)) -> Result<()>;

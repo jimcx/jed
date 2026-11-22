@@ -55,6 +55,14 @@ pub enum Job {
         /// The reply draft the box was opened from: removed once the reply is posted.
         draft: Option<String>,
     },
+    /// One line comment posted at once (Comment Now), without touching the pending review.
+    PostComment {
+        number: u64,
+        head_sha: String,
+        comment: forge::DraftComment,
+        /// The line draft the box was opened from: removed once the comment is posted.
+        draft: Option<String>,
+    },
     Resolve {
         thread_id: String,
         resolved: bool,
@@ -140,6 +148,7 @@ impl Job {
             Job::Submit { .. } | Job::SubmitPending { .. } => "Review submitted",
             Job::DiscardPending { .. } => "Pending review discarded",
             Job::Reply { .. } => "Reply posted",
+            Job::PostComment { .. } => "Comment posted",
             Job::Resolve { resolved: true, .. } => "Thread resolved",
             Job::Resolve { .. } => "Thread reopened",
             Job::Edit { .. } => "Comment edited",
@@ -159,6 +168,7 @@ impl Job {
             Job::Submit { .. } | Job::SubmitPending { .. } => "submitting the review",
             Job::DiscardPending { .. } => "discarding the pending review",
             Job::Reply { .. } => "replying",
+            Job::PostComment { .. } => "commenting",
             Job::Resolve { .. } => "resolving",
             Job::Edit { .. } => "editing the comment",
             Job::Delete { .. } | Job::DeleteConversation { .. } => "deleting the comment",
@@ -486,6 +496,12 @@ pub fn run(req: Request, job: Job) -> Done {
             lines,
             ..
         } => api.reply(repo, *number, thread_id, body, *lines),
+        Job::PostComment {
+            number,
+            head_sha,
+            comment,
+            ..
+        } => api.post_comment(repo, *number, head_sha, comment),
         Job::Resolve { thread_id, resolved } => api.set_resolved(repo, thread_id, *resolved),
         Job::Edit {
             comment_id,

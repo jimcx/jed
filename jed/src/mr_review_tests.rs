@@ -2006,7 +2006,10 @@ mod drafts {
         assert!(l.iter().any(|x| x.contains("┌ Comment on lines 2–3 ─")), "{l:#?}");
         assert!(l.iter().any(|x| x.contains("│ Why?")), "{l:#?}");
         assert!(l.iter().any(|x| x.contains("│ Really")), "{l:#?}");
-        assert!(l.iter().any(|x| x.contains("[Save Draft Ctrl+Enter] [Cancel Esc]")));
+        assert!(
+            l.iter()
+                .any(|x| x.contains("[Save Draft Ctrl+Enter] [Comment Now] [Cancel Esc]"))
+        );
         // The box sits right under the last selected line, and grows with its text.
         let (m3, head) = (row_of(&l, "m3"), row_of(&l, "Comment on lines"));
         assert_eq!(head, m3 + 1, "{l:#?}");

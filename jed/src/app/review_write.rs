@@ -14,12 +14,13 @@ use super::review_comment::{Composer, ComposerKind};
 use super::{App, AppEvent, Level};
 use crate::buffer::Buffer;
 use crate::edit;
-use crate::forge::{self, DraftComment, DraftReview, Side};
+use crate::forge::{self, DraftComment, DraftReview, NewDraft, Side};
 use crate::layout::{BlockHit, GroupId};
 use crate::logs::Tool;
 use crate::review::ThreadRow;
 use crate::review_anchor::Placement;
 use crate::review_blocks::{self, ThreadButton};
+use crate::review_drafts::Draft;
 use crate::review_write::{self, Done, Job, Request};
 use crate::view::View;
 
@@ -124,13 +125,17 @@ impl App {
                 self.review.writing = false;
                 if matches!(
                     job,
-                    Job::Reply { .. } | Job::Edit { .. } | Job::Comment { .. } | Job::EditConversation { .. }
+                    Job::Reply { .. }
+                        | Job::PostComment { .. }
+                        | Job::Edit { .. }
+                        | Job::Comment { .. }
+                        | Job::EditConversation { .. }
                 ) {
                     self.composer = None;
                     self.review_blocks_changed();
                 }
                 self.notify(Level::Info, job.done_text().into());
-                if let Job::Reply { draft: Some(id), .. } = &job {
+                if let Job::Reply { draft: Some(id), .. } | Job::PostComment { draft: Some(id), .. } = &job {
                     // Posted now, so its draft would post it again at Submit.
                     self.draft_deleted(id);
                 }
@@ -800,9 +805,56 @@ impl App {
                 comment_id: comment_id.clone(),
                 body,
             },
-            ComposerKind::Draft => return,
+            ComposerKind::Draft => match self.line_now_job(number, body) {
+                Ok(job) => job,
+                Err(why) => return self.notify(Level::Error, why),
+            },
         };
         self.review_write(job);
+    }
+
+    /// Comment Now on a line box: the job posting its text at once, or why it can't be (the
+    /// rules of Submit: GitHub's lines outside the diff, a draft held back). The box's text is
+    /// not stored as a draft; an edited draft is dropped once the post succeeds.
+    fn line_now_job(&self, number: u64, body: String) -> Result<Job, String> {
+        let (Some(c), Some(review)) = (&self.composer, self.review.review()) else {
+            return Err("The merge request is not loaded".into());
+        };
+        let local = self.git.status.as_ref().and_then(|s| s.head_id.as_deref());
+        if let Some(banner) = review.head_banner(local) {
+            return Err(format!("Can't post: {banner}"));
+        }
+        if c.outside {
+            return Err(format!("Can't post it: {}", crate::review_drafts::NOT_IN_DIFF));
+        }
+        if let Some(id) = &c.editing
+            && let Some(why) = self
+                .review
+                .draft_rows()
+                .iter()
+                .find(|r| &r.draft.id == id)
+                .and_then(|r| r.held)
+        {
+            return Err(format!("Can't post it: {why}"));
+        }
+        let d = Draft::new(
+            c.path.clone(),
+            c.right,
+            c.start,
+            c.end,
+            c.commit.clone(),
+            c.lines.clone(),
+            body,
+        );
+        let NewDraft::Line(comment) = super::review_forge::new_draft(&d, &review.hunks) else {
+            return Err("Not a line comment".into());
+        };
+        Ok(Job::PostComment {
+            number,
+            head_sha: review.mr.head.sha.clone(),
+            comment,
+            draft: c.editing.clone(),
+        })
     }
 
     /// A click on a forge thread's block `b` of group `g` at screen `(col, row)`: a button on its
