@@ -7,6 +7,8 @@ mod apple_langs_tests;
 mod assets;
 mod backup;
 mod blame;
+#[cfg(test)]
+mod blame_stream_tests;
 mod brackets;
 mod buffer;
 mod bundle;

@@ -70,7 +70,7 @@ impl StreamProbe {
         self.released.notify_all();
     }
 
-    fn wait_if_held(&self) {
+    pub(super) fn wait_if_held(&self) {
         let mut held = self.held.lock().unwrap();
         while *held {
             held = self.released.wait(held).unwrap();

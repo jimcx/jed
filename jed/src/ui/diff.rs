@@ -928,6 +928,7 @@ fn blame_label(d: &DiffTab, buf: &Buffer) -> Option<(String, Option<git2::Oid>)>
     let id = match shown {
         blame::Line::Committed(c) => Some(c.id),
         blame::Line::Uncommitted => None,
+        blame::Line::Pending => return None,
     };
     Some((blame::label(shown, crate::history::now_ms()), id))
 }

@@ -262,6 +262,8 @@ pub fn render(
             let id = match line {
                 blame::Line::Committed(c) => Some(c.id),
                 blame::Line::Uncommitted => None,
+                // No label until the commit is known.
+                blame::Line::Pending => return None,
             };
             Some((blame::label(line, crate::history::now_ms()), id))
         })

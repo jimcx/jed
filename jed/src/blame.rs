@@ -8,17 +8,19 @@
 //! line, mapped through every change set applied (as quick diff's marks), so the cursor line's
 //! commit is a binary search and moving the cursor costs nothing.
 //!
-//! [`compute`] runs off the UI thread in two steps: `git blame` of the file at HEAD
-//! (`Repository::blame_file`, the slow part: it walks history), kept as a [`Base`] with the HEAD
-//! text and reused while HEAD and the path stay the same; then the buffer's text against that
-//! HEAD text (a context-0 line diff — what `Blame::blame_buffer` does), so lines changed since
-//! the last commit, unsaved edits included, are uncommitted. After an edit only the second step
-//! runs again. Files not in HEAD (untracked, only staged, no commits yet), binary files and
-//! files outside a repository have no blame.
+//! [`compute`] runs off the UI thread in two steps: HEAD's file (a [`Base`]: its text and, per
+//! line, the commit that last changed it once known), then the buffer's text against that HEAD
+//! text (a context-0 line diff — `hunks`), so lines changed since the last commit, unsaved
+//! edits included, are uncommitted. The commits come from a streaming job (`app/blame.rs`
+//! running `git::blame::stream`): its chunks fill the `Base` in as the walk settles lines, and
+//! each chunk makes the hunks computed again (the diff only; the walk is not restarted by edits).
+//! A line whose commit isn't known yet is [`Line::Pending`] and draws no label. A finished
+//! `Base` is kept for the same HEAD and path. Files not in HEAD (untracked, only staged, no
+//! commits yet), binary files and files outside a repository have no blame.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use git2::{ErrorCode, Oid};
@@ -27,6 +29,7 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::buffer::change::{Assoc, ChangeSet};
 use crate::buffer::pos::{self, ByteIdx};
+use crate::git::blame::{Settled, Walk};
 use crate::git::{Repo, diff};
 
 /// How long after an edit the blame is computed again.
@@ -52,11 +55,21 @@ pub struct Commit {
     pub summary: String,
 }
 
+/// Whose a run of lines is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Owner {
+    /// Changed since the last commit (saved or not).
+    Uncommitted,
+    /// Unchanged since HEAD, but the walk hasn't settled these lines yet.
+    Pending,
+    Commit(Arc<Commit>),
+}
+
 /// Lines from `start` (a line start) to the next hunk's start: one commit's, or uncommitted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hunk {
     pub start: ByteIdx,
-    pub commit: Option<Arc<Commit>>,
+    pub commit: Owner,
 }
 
 /// The cursor line's blame.
@@ -65,18 +78,66 @@ pub enum Line<'a> {
     Committed(&'a Commit),
     /// Changed since the last commit (saved or not).
     Uncommitted,
+    /// Not changed, but its commit isn't known yet (the walk is still running): no label.
+    Pending,
 }
 
-/// `git blame` of a file at HEAD: what each HEAD line's commit is, reused while HEAD and the
-/// path stay the same.
-#[derive(Debug, PartialEq, Eq)]
+/// A file at HEAD and what each of its lines' commit is, as far as the walk has got: reused
+/// while HEAD and the path stay the same.
+#[derive(Debug, Clone)]
 pub struct Base {
     pub head: Oid,
     pub path: PathBuf,
     /// The file's text at HEAD.
-    text: Vec<u8>,
-    /// Each run's first line (0-based, in `text`) and commit, in order.
-    lines: Vec<(usize, Arc<Commit>)>,
+    text: Arc<Vec<u8>>,
+    /// Each line's commit (0-based, in `text`); `None` until the walk settles it.
+    lines: Vec<Option<Arc<Commit>>>,
+    /// The walk is over: every line is settled.
+    pub done: bool,
+}
+
+impl Base {
+    /// A base of `text` with no line settled.
+    pub fn new(head: Oid, path: PathBuf, text: &[u8]) -> Base {
+        Base {
+            head,
+            path,
+            lines: vec![None; diff::lines(text).len()],
+            text: Arc::new(text.to_vec()),
+            done: false,
+        }
+    }
+
+    /// The walk settled these lines.
+    fn settle(&mut self, settled: &[Settled]) {
+        for s in settled {
+            let end = (s.line + s.count).min(self.lines.len());
+            for slot in self.lines.get_mut(s.line..end).unwrap_or_default() {
+                *slot = Some(s.commit.clone());
+            }
+        }
+    }
+}
+
+/// The running walk's handle on a buffer's blame: dropped (HEAD moved, the blame turned off, the
+/// path changed, the buffer closed), it tells the job to stop.
+#[derive(Debug)]
+struct Stream {
+    id: u64,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+/// A walk to run on `spawn_blocking` (`git::blame::stream`), sending its chunks tagged `id`.
+pub struct WalkStart {
+    pub walk: Box<Walk>,
+    pub id: u64,
+    pub cancel: Arc<AtomicBool>,
 }
 
 /// A buffer's blame and the state of its computation.
@@ -87,15 +148,22 @@ pub struct Blame {
     /// The end of the blamed text: a line starting there (the empty line after a final line
     /// break) has no blame.
     end: ByteIdx,
-    /// What the hunks were computed from (HEAD's blame).
+    /// HEAD's file and the commits of its lines known so far.
     base: Option<Arc<Base>>,
+    /// The walk filling `base` in, while it runs.
+    stream: Option<Stream>,
+    /// Chunks applied to `base`, and the count the hunks were computed with: unequal, the
+    /// hunks are computed again.
+    lines_rev: u64,
+    hunks_rev: u64,
+    streams: u64,
     /// The buffer revision the hunks were computed for; `None` before the first computation.
     computed: Option<u64>,
     /// HEAD may have moved since (a git status refresh): compute again (cheap when it didn't).
     head_stale: bool,
-    /// A computation is running: its generation, and the change sets applied since its
-    /// snapshot, to map its result through.
-    running: Option<(u64, Vec<Arc<ChangeSet>>)>,
+    /// A computation is running: its generation, the change sets applied since its snapshot,
+    /// to map its result through, and the `lines_rev` it saw.
+    running: Option<(u64, Vec<Arc<ChangeSet>>, u64)>,
     generation: u64,
 }
 
@@ -103,7 +171,7 @@ pub struct Blame {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Want {
     Nothing,
-    /// Never computed, or HEAD may have moved: at once.
+    /// Never computed, HEAD may have moved, or new commits are known: at once.
     Now,
     /// Edited since: after `DELAY`.
     Later,
@@ -118,10 +186,14 @@ pub struct Job {
     pub bom: bool,
     pub revision: u64,
     pub generation: u64,
-    /// The last HEAD blame, reused when HEAD and the path are the same.
+    /// The last HEAD file, reused when HEAD and the path are the same.
     pub base: Option<Arc<Base>>,
-    /// The current hunks are for `revision`: nothing to do if HEAD is the same.
+    /// A walk is filling `base` in (else an unfinished base is walked again).
+    pub walking: bool,
+    /// The current hunks are for `revision` and `base`: nothing to do if HEAD is the same.
     pub same_text: bool,
+    /// The new walk's time slice (tests make it short; `None`: the default).
+    pub slice: Option<Duration>,
 }
 
 /// A computation's result, for `revision` of the buffer.
@@ -136,13 +208,22 @@ pub struct Computed {
 pub enum Found {
     /// Not in HEAD (untracked, only staged, no commits yet) or binary: no blame.
     NotTracked,
-    /// HEAD and the text are the ones the hunks came from.
+    /// HEAD, the text and the known commits are the ones the hunks came from.
     Unchanged,
     Blamed {
-        base: Arc<Base>,
         hunks: Vec<Hunk>,
         end: ByteIdx,
+        /// HEAD isn't the base's: its file, and the walk to fill it in.
+        started: Option<(Arc<Base>, Box<Walk>)>,
     },
+}
+
+/// What a computation needs from the buffer.
+pub struct Begin {
+    pub generation: u64,
+    pub base: Option<Arc<Base>>,
+    pub walking: bool,
+    pub same_text: bool,
 }
 
 impl Blame {
@@ -150,6 +231,38 @@ impl Blame {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn running(&self) -> bool {
         self.running.is_some()
+    }
+
+    /// The walk is running (tests wait for it).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn walking(&self) -> bool {
+        self.stream.is_some()
+    }
+
+    /// The running walk's cancel flag (tests).
+    #[cfg(test)]
+    pub fn cancel_flag(&self) -> Option<Arc<AtomicBool>> {
+        self.stream.as_ref().map(|s| s.cancel.clone())
+    }
+
+    /// The base isn't finished (tests).
+    #[cfg(test)]
+    pub fn unfinished(&self) -> bool {
+        self.base.as_ref().is_some_and(|b| !b.done)
+    }
+
+    /// The chunks of the current walk taken so far (tests).
+    #[cfg(test)]
+    pub fn chunks_taken(&self) -> u64 {
+        self.lines_rev
+    }
+
+    /// The HEAD lines whose commit is known (tests).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn settled(&self) -> usize {
+        self.base
+            .as_ref()
+            .map_or(0, |b| b.lines.iter().filter(|l| l.is_some()).count())
     }
 
     /// The hunks (tests).
@@ -163,7 +276,7 @@ impl Blame {
         match self.computed {
             _ if self.running.is_some() => Want::Nothing,
             None => Want::Now,
-            Some(_) if self.head_stale => Want::Now,
+            Some(_) if self.head_stale || self.lines_rev != self.hunks_rev => Want::Now,
             Some(r) if r != revision => Want::Later,
             Some(_) => Want::Nothing,
         }
@@ -179,71 +292,124 @@ impl Blame {
     pub fn clear(&mut self, revision: u64) {
         self.hunks.clear();
         self.base = None;
+        self.stream = None;
         self.computed = Some(revision);
         self.head_stale = false;
     }
 
-    /// Forgets everything (the blame turned off): computed afresh when it's on again; a
-    /// running computation's result is dropped.
+    /// Forgets everything (the blame turned off) but a finished `Base`: computed afresh when
+    /// it's on again; a running computation's result is dropped, and the walk is stopped.
     pub fn reset(&mut self) {
+        let base = self.base.take().filter(|b| b.done);
         *self = Blame {
             generation: self.generation,
+            streams: self.streams,
+            base,
             ..Default::default()
         };
     }
 
-    /// A computation starts from the text at `revision`: its generation, the HEAD blame to
-    /// reuse and whether the hunks are already for this text.
-    pub fn begin(&mut self, revision: u64) -> (u64, Option<Arc<Base>>, bool) {
+    /// A computation starts from the text at `revision`.
+    pub fn begin(&mut self, revision: u64) -> Begin {
         self.generation += 1;
-        self.running = Some((self.generation, Vec::new()));
+        self.running = Some((self.generation, Vec::new(), self.lines_rev));
         self.head_stale = false;
-        (self.generation, self.base.clone(), self.computed == Some(revision))
+        Begin {
+            generation: self.generation,
+            base: self.base.clone(),
+            walking: self.stream.is_some(),
+            same_text: self.computed == Some(revision) && self.lines_rev == self.hunks_rev,
+        }
     }
 
     /// A computation ended: its hunks, mapped through the edits made since its snapshot,
-    /// replace the current ones. A result of an older generation (reset since) is dropped.
-    pub fn finish(&mut self, done: Computed) {
-        let sets = match self.running.take() {
-            Some((g, sets)) if g == done.generation => sets,
+    /// replace the current ones. A result of an older generation (reset since) is dropped. A
+    /// new HEAD file replaces the base and stops the old walk; the new walk is returned to run.
+    pub fn finish(&mut self, done: Computed) -> Option<WalkStart> {
+        let (sets, seen) = match self.running.take() {
+            Some((g, sets, seen)) if g == done.generation => (sets, seen),
             other => {
                 self.running = other;
-                return;
+                return None;
             }
         };
+        let mut start = None;
         match done.result {
             Ok(Found::NotTracked) => {
                 self.hunks.clear();
                 self.base = None;
+                self.stream = None;
                 self.computed = Some(done.revision);
             }
             Ok(Found::Unchanged) => self.computed = Some(done.revision),
             Ok(Found::Blamed {
-                base,
                 mut hunks,
                 mut end,
+                started,
             }) => {
                 for set in &sets {
                     end = map_hunks(&mut hunks, end, set);
                 }
                 self.hunks = hunks;
                 self.end = end;
-                self.base = Some(base);
                 self.computed = Some(done.revision);
+                self.hunks_rev = seen;
+                if let Some((base, walk)) = started {
+                    self.streams += 1;
+                    let cancel = Arc::new(AtomicBool::new(false));
+                    // Replacing the handle stops the old walk.
+                    self.stream = Some(Stream {
+                        id: self.streams,
+                        cancel: cancel.clone(),
+                    });
+                    self.base = Some(base);
+                    self.lines_rev = 0;
+                    self.hunks_rev = 0;
+                    start = Some(WalkStart {
+                        walk,
+                        id: self.streams,
+                        cancel,
+                    });
+                }
             }
             Err(e) => {
                 tracing::warn!("git blame failed: {e}");
                 self.hunks.clear();
                 self.base = None;
+                self.stream = None;
                 self.computed = Some(done.revision);
             }
         }
         // Edits since the snapshot: `want` sees a newer revision and computes again later.
+        start
+    }
+
+    /// The walk `id` settled lines (`Err`: it failed), and `done` when it is over. A chunk of
+    /// another walk (stopped since) is dropped. Returns whether it was taken.
+    pub fn chunk(&mut self, id: u64, settled: Result<&[Settled], &str>, done: bool) -> bool {
+        if self.stream.as_ref().is_none_or(|s| s.id != id) {
+            return false;
+        }
+        match settled {
+            Ok(settled) => {
+                if let Some(base) = &mut self.base {
+                    let base = Arc::make_mut(base);
+                    base.settle(settled);
+                    base.done |= done;
+                    self.lines_rev += 1;
+                }
+            }
+            Err(e) => tracing::warn!("git blame failed: {e}"),
+        }
+        if done || settled.is_err() {
+            self.stream = None;
+        }
+        true
     }
 
     /// Follows a change set applied to the buffer (`Buffer::apply`).
     pub fn map(&mut self, changes: &Arc<ChangeSet>) {
-        if let Some((_, sets)) = &mut self.running {
+        if let Some((_, sets, _)) = &mut self.running {
             sets.push(changes.clone());
         }
         self.end = map_hunks(&mut self.hunks, self.end, changes);
@@ -259,8 +425,9 @@ impl Blame {
         let i = self.hunks.partition_point(|h| h.start <= start);
         let h = &self.hunks[i.checked_sub(1)?];
         Some(match &h.commit {
-            Some(c) => Line::Committed(c),
-            None => Line::Uncommitted,
+            Owner::Commit(c) => Line::Committed(c),
+            Owner::Uncommitted => Line::Uncommitted,
+            Owner::Pending => Line::Pending,
         })
     }
 }
@@ -282,10 +449,12 @@ fn map_hunks(hunks: &mut [Hunk], end: ByteIdx, changes: &ChangeSet) -> ByteIdx {
 pub const HASH_LEN: usize = 7;
 
 /// The label drawn after the line: `7f3a2c1 Ann Smith, 3 days ago • Fix crash` (`You` for the
-/// repository's user), or `Uncommitted changes` (no hash, no time: unsaved edits have none).
+/// repository's user), `Uncommitted changes` (no hash, no time: unsaved edits have none).
 pub fn label(line: Line, now_ms: u64) -> String {
     match line {
         Line::Uncommitted => "Uncommitted changes".into(),
+        // No label until the commit is known.
+        Line::Pending => String::new(),
         Line::Committed(c) => {
             let who = if c.you { "You" } else { &c.author };
             let when = crate::history::ago(c.time.max(0) as u64 * 1000, now_ms);
@@ -352,63 +521,30 @@ fn find(job: &Job) -> Result<Found, git2::Error> {
         Err(e) if matches!(e.code(), ErrorCode::UnbornBranch | ErrorCode::NotFound) => return Ok(Found::NotTracked),
         Err(e) => return Err(e),
     };
-    let base = match &job.base {
-        Some(b) if b.head == head && b.path == job.path => {
+    let (base, started) = match &job.base {
+        Some(b) if b.head == head && b.path == job.path && (b.done || job.walking) => {
             if job.same_text {
                 return Ok(Found::Unchanged);
             }
-            b.clone()
+            (b.clone(), None)
         }
-        _ => match blame_head(&r, head, &job.path)? {
-            Some(b) => Arc::new(b),
-            None => return Ok(Found::NotTracked),
-        },
+        _ => {
+            let Some(walk) = Walk::new(&job.repo, &job.path)? else {
+                return Ok(Found::NotTracked);
+            };
+            let walk = match job.slice {
+                Some(slice) => walk.with_slice(slice),
+                None => walk,
+            };
+            let base = Arc::new(Base::new(walk.head(), job.path.clone(), walk.text()));
+            (base.clone(), Some((base, Box::new(walk))))
+        }
     };
     let ours = crate::buffer::file::encode(&job.rope, job.bom);
     match hunks(&base, &ours, if job.bom { 3 } else { 0 })? {
-        Some((hunks, end)) => Ok(Found::Blamed { base, hunks, end }),
+        Some((hunks, end)) => Ok(Found::Blamed { hunks, end, started }),
         None => Ok(Found::NotTracked),
     }
-}
-
-/// Blocking: `git blame` of `path` at `head`; `None` when the file isn't in that commit.
-pub(crate) fn blame_head(r: &git2::Repository, head: Oid, path: &std::path::Path) -> Result<Option<Base>, git2::Error> {
-    let tree = r.find_commit(head)?.tree()?;
-    let entry = match tree.get_path(path) {
-        Ok(e) => e,
-        Err(e) if e.code() == ErrorCode::NotFound => return Ok(None),
-        Err(e) => return Err(e),
-    };
-    let Ok(blob) = r.find_blob(entry.id()) else {
-        // A folder or a submodule.
-        return Ok(None);
-    };
-    let text = blob.content().to_vec();
-    let mut opts = git2::BlameOptions::new();
-    opts.newest_commit(head);
-    let blame = r.blame_file(path, Some(&mut opts))?;
-    let email = user_email(r);
-    let mut commits: HashMap<Oid, Arc<Commit>> = HashMap::new();
-    let mut lines = Vec::with_capacity(blame.len());
-    for h in blame.iter() {
-        let id = h.final_commit_id();
-        let commit = match commits.get(&id) {
-            Some(c) => c.clone(),
-            None => {
-                let commit = describe(r, id, email.as_deref())?;
-                commits.insert(id, commit.clone());
-                commit
-            }
-        };
-        lines.push((h.final_start_line().saturating_sub(1), commit));
-    }
-    lines.sort_by_key(|(l, _)| *l);
-    Ok(Some(Base {
-        head,
-        path: path.to_path_buf(),
-        text,
-        lines,
-    }))
 }
 
 /// The repository's `user.email` (the author whose email it is shows as "You").
@@ -443,9 +579,13 @@ fn clean(s: &str) -> String {
     s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
 }
 
-/// The hunks of the buffer's bytes `ours` against HEAD's blame (`skip`: the BOM's length at
-/// its start, which the buffer's positions don't count): unchanged lines keep their HEAD line's
-/// commit, changed and added ones are uncommitted. `None` for a binary text.
+/// A line's commit for `hunks`: `None` uncommitted, `Some(None)` not settled yet.
+type Slot<'a> = Option<&'a Option<Arc<Commit>>>;
+
+/// The hunks of the buffer's bytes `ours` against HEAD's file (`skip`: the BOM's length at its
+/// start, which the buffer's positions don't count): unchanged lines keep their HEAD line's
+/// commit (pending while the walk hasn't settled it), changed and added ones are uncommitted.
+/// `None` for a binary text.
 fn hunks(base: &Base, ours: &[u8], skip: usize) -> Result<Option<(Vec<Hunk>, ByteIdx)>, git2::Error> {
     let d = diff::diff(&base.text, ours, 0)?;
     if d.binary {
@@ -467,33 +607,31 @@ fn hunks(base: &Base, ours: &[u8], skip: usize) -> Result<Option<(Vec<Hunk>, Byt
     let at = |line: usize| ByteIdx(starts[line.min(count)].saturating_sub(skip));
 
     let mut out: Vec<Hunk> = Vec::new();
-    let mut push = |line: usize, commit: Option<&Arc<Commit>>| {
+    // `line` starts a run of `commit` (`None`: uncommitted; `Some(None)`: not settled yet).
+    let mut push = |line: usize, commit: Slot| {
         let same = out.last().is_some_and(|h| match (&h.commit, commit) {
-            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-            (None, None) => true,
+            (Owner::Commit(a), Some(Some(b))) => Arc::ptr_eq(a, b),
+            (Owner::Pending, Some(None)) | (Owner::Uncommitted, None) => true,
             _ => false,
         });
         if !same {
             out.push(Hunk {
                 start: at(line),
-                commit: commit.cloned(),
+                commit: match commit {
+                    Some(Some(c)) => Owner::Commit(c.clone()),
+                    Some(None) => Owner::Pending,
+                    None => Owner::Uncommitted,
+                },
             });
         }
     };
-    // Unchanged lines `new` of ours are HEAD's lines from `old`: their runs' commits.
-    let unchanged = |push: &mut dyn FnMut(usize, Option<&Arc<Commit>>), new: std::ops::Range<usize>, old: usize| {
-        if new.is_empty() || base.lines.is_empty() {
-            return;
-        }
-        let mut k = base.lines.partition_point(|(l, _)| *l <= old).saturating_sub(1);
-        let mut line = new.start;
-        while line < new.end {
-            push(line, Some(&base.lines[k].1));
-            match base.lines.get(k + 1) {
-                Some((next, _)) => line = new.start + next.saturating_sub(old).max(line - new.start + 1),
-                None => break,
+    // Unchanged lines `new` of ours are HEAD's lines from `old`.
+    let unchanged = |push: &mut dyn FnMut(usize, Slot), new: std::ops::Range<usize>, old: usize| {
+        for (i, line) in new.enumerate() {
+            match base.lines.get(old + i) {
+                Some(c) => push(line, Some(c)),
+                None => push(line, None),
             }
-            k += 1;
         }
     };
     let (mut new, mut old) = (0, 0);
@@ -526,12 +664,11 @@ mod tests {
     }
 
     fn make_base(text: &str, lines: &[(usize, &Arc<Commit>)]) -> Base {
-        Base {
-            head: Oid::ZERO_SHA1,
-            path: "f".into(),
-            text: text.as_bytes().to_vec(),
-            lines: lines.iter().map(|(l, c)| (*l, (*c).clone())).collect(),
+        let mut base = Base::new(Oid::ZERO_SHA1, "f".into(), text.as_bytes());
+        for (i, slot) in base.lines.iter_mut().enumerate() {
+            *slot = lines.iter().rev().find(|(l, _)| *l <= i).map(|(_, c)| (*c).clone());
         }
+        base
     }
 
     fn blamed(base: &Base, ours: &str) -> Blame {
@@ -550,6 +687,7 @@ mod tests {
             .map(|l| match b.line(rope, l) {
                 Some(Line::Committed(c)) => c.author.clone(),
                 Some(Line::Uncommitted) => "-".into(),
+                Some(Line::Pending) => "?".into(),
                 None => "".into(),
             })
             .collect()
@@ -577,11 +715,10 @@ mod tests {
         let bl = blamed(&base, text);
         assert_eq!(authors(&bl, &Rope::from_str(text)), ["a", "-", "a", "b", "b", ""]);
         // A BOM in the file's bytes isn't in the buffer's positions.
-        let mut bom = make_base("\u{feff}1\n2\n", &[(0, &a), (1, &b)]);
-        bom.lines = vec![(0, a.clone()), (1, b.clone())];
+        let bom = make_base("\u{feff}1\n2\n", &[(0, &a), (1, &b)]);
         let (h, end) = hunks(&bom, "\u{feff}1\nX\n".as_bytes(), 3).unwrap().unwrap();
         assert_eq!(h[0].start, ByteIdx(0));
-        assert_eq!((h[1].start, h[1].commit.is_none()), (ByteIdx(2), true));
+        assert_eq!((h[1].start, h[1].commit == Owner::Uncommitted), (ByteIdx(2), true));
         assert_eq!(end, ByteIdx(4));
         // Empty text: nothing.
         let bl = blamed(&base, "");
@@ -620,8 +757,9 @@ mod tests {
 
         // A computation started at revision 1 ends after another edit: mapped through it.
         assert_eq!(bl.want(1), Want::Later);
-        let (generation, kept, same) = bl.begin(1);
-        assert!(kept.is_none() && !same);
+        let begin = bl.begin(1);
+        let generation = begin.generation;
+        assert!(begin.base.is_none() && !begin.same_text);
         assert_eq!(bl.want(1), Want::Nothing);
         let snapshot = rope.clone();
         insert(&mut bl, &mut rope, 0, "w\n");
@@ -630,9 +768,9 @@ mod tests {
             revision: 1,
             generation,
             result: Ok(Found::Blamed {
-                base: base.clone(),
                 hunks,
                 end,
+                started: None,
             }),
         });
         assert_eq!(authors(&bl, &rope), ["-", "-", "-", "a", "-", "b", "-"]);
@@ -640,8 +778,9 @@ mod tests {
         assert_eq!(bl.want(1), Want::Nothing);
         bl.head_changed();
         assert_eq!(bl.want(1), Want::Now);
-        let (_, kept, same) = bl.begin(1);
-        assert!(kept.is_some_and(|k| Arc::ptr_eq(&k, &base)) && same);
+        bl.base = Some(base.clone());
+        let begin = bl.begin(1);
+        assert!(begin.base.is_some_and(|k| Arc::ptr_eq(&k, &base)) && begin.same_text);
 
         // Reset (turned off): an older computation's result is dropped.
         bl.reset();
@@ -653,6 +792,48 @@ mod tests {
             result: Ok(Found::NotTracked),
         });
         assert_eq!(bl.want(1), Want::Now, "a stale result changes nothing");
+    }
+
+    #[test]
+    fn chunks_fill_the_base_in_and_a_stopped_walks_are_dropped() {
+        let a = commit("a");
+        let settled = |line, count| Settled {
+            line,
+            count,
+            orig: line,
+            commit: a.clone(),
+        };
+        let base = Arc::new(Base::new(Oid::ZERO_SHA1, "f".into(), b"1\n2\n3\n"));
+        let mut bl = Blame {
+            base: Some(base),
+            stream: Some(Stream {
+                id: 3,
+                cancel: Arc::new(AtomicBool::new(false)),
+            }),
+            ..Default::default()
+        };
+        let flag = bl.cancel_flag().unwrap();
+        assert!(!bl.chunk(2, Ok(&[settled(0, 3)]), false), "another walk's chunk");
+        assert_eq!(bl.settled(), 0);
+        assert!(bl.chunk(3, Ok(&[settled(1, 2)]), false));
+        assert_eq!(bl.settled(), 2);
+        assert!(bl.walking() && !flag.load(Ordering::SeqCst));
+        assert!(bl.chunk(3, Ok(&[settled(0, 1)]), true));
+        assert!(!bl.walking() && bl.base.as_ref().unwrap().done);
+        // A finished base survives a reset (the blame turned off), an unfinished one doesn't.
+        bl.reset();
+        assert!(bl.base.is_some());
+        bl.base = Some(Arc::new(Base::new(Oid::ZERO_SHA1, "f".into(), b"1\n")));
+        bl.reset();
+        assert!(bl.base.is_none());
+        // Dropping the handle sets the flag.
+        bl.stream = Some(Stream {
+            id: 4,
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
+        let flag = bl.cancel_flag().unwrap();
+        bl.reset();
+        assert!(flag.load(Ordering::SeqCst));
     }
 
     #[test]
@@ -719,6 +900,7 @@ mod tests {
     }
 
     fn job(root: &std::path::Path, path: &str, text: &str, base: Option<Arc<Base>>, same_text: bool) -> Job {
+        let walking = base.as_ref().is_some_and(|b| !b.done);
         Job {
             repo: Repo::discover(root).unwrap(),
             path: path.into(),
@@ -727,7 +909,21 @@ mod tests {
             revision: 7,
             generation: 1,
             base,
+            walking,
             same_text,
+            slice: None,
+        }
+    }
+
+    /// Runs `walk` to its end into `base`'s lines, as the chunks would.
+    fn finish_walk(mut base: Arc<Base>, mut walk: Walk) -> Arc<Base> {
+        loop {
+            let step = walk.step().unwrap();
+            Arc::make_mut(&mut base).settle(&step.settled);
+            if step.done {
+                Arc::make_mut(&mut base).done = true;
+                return base;
+            }
         }
     }
 
@@ -744,16 +940,31 @@ mod tests {
 
         let done = compute(job(&root, "f.txt", "one\nTWO\nthree\n", None, false));
         assert_eq!(done.revision, 7);
-        let Ok(Found::Blamed { base, hunks, end }) = done.result else {
+        let Ok(Found::Blamed { hunks, end, started }) = done.result else {
             panic!("blamed: {:?}", done.result)
         };
+        // Nothing settled yet: the unchanged lines are pending.
+        let rope = Rope::from_str("one\nTWO\nthree\n");
         let bl = Blame {
             hunks,
             end,
             computed: Some(7),
             ..Default::default()
         };
-        let rope = Rope::from_str("one\nTWO\nthree\n");
+        assert_eq!(authors(&bl, &rope), ["?", "?", "?", ""]);
+        let (base, walk) = started.unwrap();
+        let base = finish_walk(base, *walk);
+        let done = compute(job(&root, "f.txt", "one\nTWO\nthree\n", Some(base.clone()), false));
+        let Ok(Found::Blamed { hunks, end, started }) = done.result else {
+            panic!()
+        };
+        assert!(started.is_none(), "a finished base is reused");
+        let bl = Blame {
+            hunks,
+            end,
+            computed: Some(7),
+            ..Default::default()
+        };
         assert_eq!(authors(&bl, &rope), ["Ann", "Bob", "Bob", ""]);
         let Some(Line::Committed(c)) = bl.line(&rope, 0) else {
             panic!()
@@ -768,15 +979,10 @@ mod tests {
         let done = compute(job(&root, "f.txt", "x", Some(base.clone()), true));
         assert!(matches!(done.result, Ok(Found::Unchanged)));
         let done = compute(job(&root, "f.txt", "one\nedited\nthree\n", Some(base.clone()), false));
-        let Ok(Found::Blamed {
-            base: again,
-            hunks,
-            end,
-        }) = done.result
-        else {
+        let Ok(Found::Blamed { hunks, end, started }) = done.result else {
             panic!()
         };
-        assert!(Arc::ptr_eq(&again, &base));
+        assert!(started.is_none());
         let bl = Blame {
             hunks,
             end,
@@ -791,7 +997,11 @@ mod tests {
         std::fs::write(root.join("f.txt"), "ONE\nTWO\nthree\n").unwrap();
         commit_as(&root, "Cy", "2022-01-01T00:00:00Z", "Third");
         let done = compute(job(&root, "f.txt", "ONE\nTWO\nthree\n", Some(base.clone()), true));
-        let Ok(Found::Blamed { base: newer, .. }) = done.result else {
+        let Ok(Found::Blamed {
+            started: Some((newer, _)),
+            ..
+        }) = done.result
+        else {
             panic!()
         };
         assert_ne!(newer.head, base.head);

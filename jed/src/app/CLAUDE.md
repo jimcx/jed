@@ -41,7 +41,7 @@ Summary only: [docs/dev/app.md](../../../docs/dev/app.md) has each submodule in 
 - `quick_diff.rs` — gutter markers (`sync_quick_diff`), their peek, staging / unstaging from the gutter
 - `spell.rs` — the spell checker: dictionaries, background / incremental checks into `buf.spell.marks` (`ServerId::SPELL`), the half-typed rule
 - `spell_cmd.rs` — the spell checker's palette commands (Next / Previous, Add to user / workspace dictionary, Ignore, Toggle, Open User Dictionary) and its quick fixes
-- `blame.rs` — inline blame (`app.blame`): toggle, `sync_blame`
+- `blame.rs` — inline blame (`app.blame`): toggle, `sync_blame`, the streamed walk job (`blame_done` starts it, `blame_chunk` takes its chunks)
 - `conflict.rs` — merge conflicts: `go_to_conflict(forward)` (Next / Previous Conflict) and `compare_conflict(at)` (Compare Current Conflict)
 - `diff_view.rs` — diff tabs (`app.diffs`): the caret's keys, mouse (`Drag::Diff`) and copy / cut, `open_diff(path, Pair)`, `sync_diffs`, `diff_command`, stage / revert hunks
 - `diff_edit.rs` — editing in diff tabs: `edit::run` on a scratch `View` at the caret's bytes of the file's buffer; a file not open opens in the background first (`DiffViews::pending`)

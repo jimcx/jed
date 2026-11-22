@@ -1672,7 +1672,7 @@ mod inline_blame {
     pub(super) async fn settle_blame(app: &mut App) -> bool {
         app.settle(|a| {
             let b = a.active_buffer().unwrap();
-            !b.blame.running() && b.blame.want(b.revision()) == Want::Nothing
+            !b.blame.running() && !b.blame.walking() && b.blame.want(b.revision()) == Want::Nothing
         })
         .await
     }
@@ -14179,10 +14179,10 @@ mod review_blame {
         assert!(app.settle(|a| file_buffer(a).is_some()).await);
         app.test_execute(Command::ToggleBlame);
         assert!(
-            app.settle(
-                |a| file_buffer(a).is_some_and(|b| !b.blame.running() && b.blame.want(b.revision()) == Want::Nothing)
-            )
-            .await
+            app.settle(|a| file_buffer(a).is_some_and(|b| !b.blame.running()
+                && !b.blame.walking()
+                && b.blame.want(b.revision()) == Want::Nothing))
+                .await
         );
         // Rows: m1, -m2, +m2 changed, +m3; the caret starts on the change's first row (deleted).
         let rows = screen(&mut app);

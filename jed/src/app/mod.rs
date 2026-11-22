@@ -27,6 +27,8 @@ mod find;
 mod format;
 mod git;
 mod git_history;
+#[cfg(test)]
+pub use git_history::StreamProbe;
 mod hex;
 mod history;
 mod hover;
@@ -535,6 +537,9 @@ pub struct App {
     /// Hooks on the history walk jobs, for tests.
     #[cfg(test)]
     pub stream_probe: std::sync::Arc<git_history::StreamProbe>,
+    /// Hooks on the blame walk jobs, for tests.
+    #[cfg(test)]
+    pub blame_probe: std::sync::Arc<git_history::StreamProbe>,
 }
 
 impl App {
@@ -729,6 +734,8 @@ impl App {
             test_dispatch_log: None,
             #[cfg(test)]
             stream_probe: Default::default(),
+            #[cfg(test)]
+            blame_probe: Default::default(),
         };
         app.load_associations();
         match initial {

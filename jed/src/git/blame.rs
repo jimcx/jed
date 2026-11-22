@@ -19,21 +19,20 @@
 //! --follow` do ([`super::log::renamed_from`]), and the suspects continue under the old name.
 //!
 //! [`Walk::step`] walks until a time slice runs out or the walk ends and returns the HEAD lines
-//! settled since the last step, which the caller (a job on `spawn_blocking`) sends on in chunks.
-
-// Nothing runs the walk until the streaming job does.
-#![cfg_attr(not(test), allow(dead_code))]
+//! settled since the last step. [`stream`] is the job on `spawn_blocking` that sends them on in
+//! chunks.
 
 use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use git2::{ErrorCode, Oid, Repository};
 
-use super::log::{Entries, SLICE, renamed_from};
+use super::log::{Entries, FLUSH, SLICE, renamed_from};
 use super::{Repo, diff};
 use crate::blame::{self, Commit};
 
@@ -62,6 +61,7 @@ struct Pending {
 pub struct Settled {
     pub line: usize,
     pub count: usize,
+    #[cfg_attr(not(test), allow(dead_code))]
     pub orig: usize,
     pub commit: Arc<Commit>,
 }
@@ -157,6 +157,7 @@ impl Walk {
     }
 
     /// How many commits the walk has taken off its queue so far.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn visited(&self) -> u64 {
         self.visited
     }
@@ -304,6 +305,61 @@ impl Walk {
             commit: commit.clone(),
         }));
         Ok(())
+    }
+}
+
+impl std::fmt::Debug for Walk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Walk")
+            .field("head", &self.head)
+            .field("visited", &self.visited)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What the walk's job sends: the HEAD lines settled since the last chunk.
+#[derive(Debug)]
+pub struct Chunk {
+    pub settled: Vec<Settled>,
+    /// The walk is over (the last chunk, possibly with nothing in it).
+    pub done: bool,
+}
+
+/// Blocking, for `spawn_blocking`: steps `walk` and sends what it settles as `send` chunks: the
+/// first at once, then every [`FLUSH`], and the last when the walk ends. Ends on done, an error
+/// (sent as `Err`), `cancel` (checked before every step and every send: nothing is sent after
+/// it is set) or `send` returning false.
+pub fn stream(mut walk: Walk, cancel: &AtomicBool, mut send: impl FnMut(Result<Chunk, String>) -> bool) {
+    let mut pending: Vec<Settled> = Vec::new();
+    let mut first = true;
+    let mut flushed = Instant::now();
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        let step = match walk.step() {
+            Ok(step) => step,
+            Err(e) => {
+                send(Err(e.message().to_string()));
+                return;
+            }
+        };
+        pending.extend(step.settled);
+        let due = !pending.is_empty() && (first || flushed.elapsed() >= FLUSH);
+        if step.done || due {
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            first = false;
+            flushed = Instant::now();
+            let chunk = Chunk {
+                settled: std::mem::take(&mut pending),
+                done: step.done,
+            };
+            if !send(Ok(chunk)) || step.done {
+                return;
+            }
+        }
     }
 }
 

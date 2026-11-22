@@ -197,6 +197,12 @@ pub(super) enum GutterEvent {
         buffer: BufferId,
         computed: crate::blame::Computed,
     },
+    /// A chunk of a buffer's blame walk `walk` (`app/blame.rs`).
+    BlameChunk {
+        buffer: BufferId,
+        walk: u64,
+        result: Result<crate::git::blame::Chunk, String>,
+    },
     /// Selected lines were staged or unstaged: how many changed lines.
     StagedLines {
         at: StageAt,
@@ -222,6 +228,7 @@ impl App {
         match ev {
             GutterEvent::Markers { buffer, computed } => self.quick_diff_done(buffer, computed),
             GutterEvent::Blame { buffer, computed } => self.blame_done(buffer, computed),
+            GutterEvent::BlameChunk { buffer, walk, result } => self.blame_chunk(buffer, walk, result),
             GutterEvent::Staged { at, unstage, result } => self.staged(at, unstage, result),
             GutterEvent::StagedLines { at, unstage, result } => self.staged_lines(at, unstage, result),
             GutterEvent::Reverted {

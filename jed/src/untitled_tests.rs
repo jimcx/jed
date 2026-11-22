@@ -1336,11 +1336,12 @@ async fn untitled_save_as_onto_a_tracked_file_takes_its_markers_and_blame() {
         match b.blame.line(&b.rope, 0)? {
             Line::Committed(c) => Some(c.summary.clone()),
             Line::Uncommitted => Some("uncommitted".into()),
+            Line::Pending => None,
         }
     };
     let idle = |a: &App| {
         let b = a.active_buffer().unwrap();
-        !a.git.running() && !b.quick_diff.running() && !b.blame.running()
+        !a.git.running() && !b.quick_diff.running() && !b.blame.running() && !b.blame.walking()
     };
     // f.txt: "one" became "two", not committed.
     assert!(

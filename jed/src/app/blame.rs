@@ -1,6 +1,7 @@
 //! Inline blame in the app: "Git: Toggle Inline Blame" (session state, off at start) and keeping
 //! the blame of shown buffers current while it's on — computed off-thread at once for a buffer
-//! never blamed or when HEAD may have moved (every git status read), `blame::DELAY` after edits.
+//! never blamed, when HEAD may have moved (every git status read) or a walk chunk arrived,
+//! `blame::DELAY` after edits.
 //! `ui::editor` draws the primary cursor line's label from `buf.blame`, `ui::diff` a review
 //! diff's caret line's (on its right side) from its file's buffer's.
 
@@ -18,6 +19,9 @@ pub struct BlameState {
     pub on: bool,
     /// When the blame of edited buffers is computed again.
     deadline: Option<Instant>,
+    /// Tests: the time slice of the walks started (short, so a chunk is cheap to hold back).
+    #[cfg(test)]
+    pub slice: Option<std::time::Duration>,
 }
 
 impl BlameState {
@@ -71,6 +75,10 @@ impl App {
             })
             .collect();
         let repo = self.git.status.as_ref().map(|s| &s.repo);
+        #[cfg(test)]
+        let slice = self.blame.slice;
+        #[cfg(not(test))]
+        let slice = None;
         let mut later = false;
         let mut start = Vec::new();
         for id in shown {
@@ -90,7 +98,7 @@ impl App {
                 later = true;
                 continue;
             }
-            let (generation, base, same_text) = buf.blame.begin(revision);
+            let begin = buf.blame.begin(revision);
             start.push((
                 id,
                 Job {
@@ -99,9 +107,11 @@ impl App {
                     rope: buf.rope.clone(),
                     bom: buf.bom,
                     revision,
-                    generation,
-                    base,
-                    same_text,
+                    generation: begin.generation,
+                    base: begin.base,
+                    walking: begin.walking,
+                    same_text: begin.same_text,
+                    slice,
                 },
             ));
         }
@@ -124,10 +134,61 @@ impl App {
         }
     }
 
-    /// `AppEvent::Gutter(GutterEvent::Blame)`: a buffer's blame was computed.
+    /// `AppEvent::Gutter(GutterEvent::Blame)`: a buffer's blame was computed; a walk it starts
+    /// runs on a blocking thread, sending its chunks as `GutterEvent::BlameChunk`.
     pub(super) fn blame_done(&mut self, buffer: BufferId, computed: Computed) {
-        if let Some(buf) = self.buffers.get_mut(buffer) {
-            buf.blame.finish(computed);
+        let Some(buf) = self.buffers.get_mut(buffer) else {
+            return;
+        };
+        self.needs_redraw = true;
+        let Some(start) = buf.blame.finish(computed) else {
+            return;
+        };
+        let tx = self.tx.clone();
+        #[cfg(test)]
+        let probe = self.blame_probe.clone();
+        tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            probe.walks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let id = start.id;
+            let send = |result: Result<crate::git::blame::Chunk, String>| {
+                // Counted before the send: the app may handle the chunk (and a test look) at once.
+                #[cfg(test)]
+                probe.sent.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let sent = tx
+                    .send(AppEvent::Gutter(super::quick_diff::GutterEvent::BlameChunk {
+                        buffer,
+                        walk: id,
+                        result,
+                    }))
+                    .is_ok();
+                #[cfg(test)]
+                probe.wait_if_held();
+                sent
+            };
+            crate::git::blame::stream(*start.walk, &start.cancel, send);
+            #[cfg(test)]
+            probe.exited.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+
+    /// A chunk of a buffer's walk: the commits it settled fill the blame in (the next loop turn
+    /// computes the hunks again, a diff only). A stopped walk's chunk is dropped.
+    pub(super) fn blame_chunk(
+        &mut self,
+        buffer: BufferId,
+        walk: u64,
+        result: Result<crate::git::blame::Chunk, String>,
+    ) {
+        let Some(buf) = self.buffers.get_mut(buffer) else {
+            return;
+        };
+        let taken = match &result {
+            Ok(c) => buf.blame.chunk(walk, Ok(&c.settled), c.done),
+            Err(e) => buf.blame.chunk(walk, Err(e), true),
+        };
+        if taken {
+            self.needs_redraw = true;
         }
     }
 
