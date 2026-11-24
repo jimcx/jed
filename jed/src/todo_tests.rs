@@ -14159,6 +14159,8 @@ mod find_in_diff_view {
             true,
         );
         app.test_start();
+        // Truecolor, so the three match colours stay distinct (256 colours merge them).
+        app.theme = crate::theme::Theme::dark_plus(true);
         assert!(
             app.settle(|a| !a.git.running() && a.git.status.as_ref().is_some_and(|s| !s.entries.is_empty()))
                 .await
