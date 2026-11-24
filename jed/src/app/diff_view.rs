@@ -69,6 +69,11 @@ pub(super) enum DiffEvent {
     Staged(Result<String, String>),
     /// A discard of working tree changes ended (`app/discard.rs`).
     Discarded(Box<super::discard::Done>),
+    /// Resolve Conflicts Using Ours / Theirs ended (`app/conflict.rs`): the file, the message.
+    Resolved {
+        path: std::path::PathBuf,
+        message: Result<String, String>,
+    },
     /// A commit tab's `git show` was read (`app/commit_tabs.rs`).
     Commit {
         commit: String,
@@ -82,6 +87,7 @@ impl App {
             DiffEvent::Loaded { id, generation, result } => self.diff_loaded(id, generation, *result),
             DiffEvent::Staged(message) => self.diff_staged(message),
             DiffEvent::Discarded(done) => self.discard_done(*done),
+            DiffEvent::Resolved { path, message } => self.resolve_done(path, message),
             DiffEvent::Commit { commit, result } => self.commit_loaded(commit, result),
         }
     }

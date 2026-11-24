@@ -33,6 +33,8 @@ pub enum Error {
     Untracked,
     /// A symbolic link: its target isn't reverted line by line.
     Symlink,
+    /// The file has no merge conflicts: there is no side to take.
+    NotConflicted,
 }
 
 impl fmt::Display for Error {
@@ -45,6 +47,7 @@ impl fmt::Display for Error {
             Error::Conflicted => write!(f, "the file has merge conflicts"),
             Error::Untracked => write!(f, "the file isn't in the index"),
             Error::Symlink => write!(f, "symbolic links can't be reverted by change"),
+            Error::NotConflicted => write!(f, "the file has no merge conflicts"),
         }
     }
 }
@@ -407,6 +410,97 @@ pub fn discard_file(repo: &Repo, path: &Path) -> Result<Option<Vec<u8>>, Error> 
 
 /// A symbolic link's git mode.
 const SYMLINK: u32 = 0o120000;
+
+/// Which side of a merge conflict [`resolve_file`] takes whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConflictSide {
+    /// Stage 2: the branch merged into, `HEAD` (`git checkout --ours`).
+    Ours,
+    /// Stage 3: the branch merged in (`git checkout --theirs`).
+    Theirs,
+}
+
+/// Blocking: resolves a conflicted file by taking `side` whole, as `git checkout --ours|--theirs
+/// -- path && git add path` (`git rm path` when that side deleted it): its blob is written to disk
+/// as stored, with its mode (a symbolic link as a link), and the index's conflict stages give way
+/// to it. Returns the file's bytes before (`None`: it was missing). A file without conflicts is
+/// refused.
+pub fn resolve_file(repo: &Repo, path: &Path, side: ConflictSide) -> Result<Option<Vec<u8>>, Error> {
+    let r = repo.open()?;
+    let mut index = r.index()?;
+    if !conflicted(&index, path) {
+        return Err(Error::NotConflicted);
+    }
+    let stage = match side {
+        ConflictSide::Ours => 2,
+        ConflictSide::Theirs => 3,
+    };
+    let chosen = match index.get_path(path, stage) {
+        Some(e) => Some(Text {
+            bytes: r.find_blob(e.id)?.content().to_vec(),
+            mode: e.mode,
+        }),
+        None => None,
+    };
+    let disk = disk_text(repo, path)?;
+    let full = repo.workdir.join(path);
+    match &chosen {
+        // That side deleted it.
+        None => {
+            if disk.is_some() {
+                std::fs::remove_file(&full)?;
+            }
+            index.remove_path(path)?;
+        }
+        Some(text) => {
+            write_text(&full, text, disk.as_ref())?;
+            index.add_path(path)?;
+        }
+    }
+    index.write()?;
+    tracing::info!(path = %path.display(), ?side, deleted = chosen.is_none(), "resolved conflict");
+    Ok(disk.map(|t| t.bytes))
+}
+
+/// `text` (an index blob and its mode) to the work tree at `full`, where `disk` is now.
+fn write_text(full: &Path, text: &Text, disk: Option<&Text>) -> Result<(), Error> {
+    if let Some(dir) = full.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    if text.mode == SYMLINK || disk.is_some_and(|d| d.mode == SYMLINK) {
+        #[cfg(not(unix))]
+        return Err(Error::Symlink);
+        #[cfg(unix)]
+        {
+            if disk.is_some() {
+                std::fs::remove_file(full)?;
+            }
+            if text.mode == SYMLINK {
+                use std::os::unix::ffi::OsStrExt;
+                std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(&text.bytes), full)?;
+                return Ok(());
+            }
+        }
+    }
+    crate::buffer::file::atomic_write(full, &text.bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(full)?.permissions();
+        let mode = perms.mode();
+        // Executable where readable, as git checks a 0o100755 entry out.
+        let want = if text.mode == 0o100755 {
+            mode | ((mode & 0o444) >> 2)
+        } else {
+            mode & !0o111
+        };
+        if want != mode {
+            perms.set_mode(want);
+            std::fs::set_permissions(full, perms)?;
+        }
+    }
+    Ok(())
+}
 
 /// What [`index_blob`] found.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -978,6 +1072,63 @@ mod tests {
         // Staging the whole file resolves it.
         stage_file(&repo, Path::new("f")).unwrap();
         assert_eq!(git(&root, &["status", "--porcelain"]), "M  f\n");
+    }
+
+    /// A repository with `f` conflicted: stages 1–3 hold `base` / `ours` / `theirs` (`None`:
+    /// that side deleted it), the file on disk has markers.
+    fn conflicted_repo(ours: Option<&str>, theirs: Option<&str>) -> (tempfile::TempDir, PathBuf) {
+        let (d, root) = repo(&[("f", b"base\n"), ("g", b"g\n")]);
+        let blob = |text: &str| git_with_input(&root, &["hash-object", "-w", "--stdin"], Some(text));
+        git(&root, &["rm", "-q", "--cached", "f"]);
+        let mut info = format!("100644 {} 1\tf\n", blob("base\n").trim());
+        for (stage, text) in [(2, ours), (3, theirs)] {
+            if let Some(text) = text {
+                info += &format!("100644 {} {stage}\tf\n", blob(text).trim());
+            }
+        }
+        git_with_input(&root, &["update-index", "--index-info"], Some(&info));
+        std::fs::write(
+            root.join("f"),
+            concat!("", "<<<<<<", "<\nours\n", "======", "=\ntheirs\n", ">>>>>>", ">\n"),
+        )
+        .unwrap();
+        (d, root)
+    }
+
+    #[test]
+    fn resolve_takes_one_side_whole_and_stages_it() {
+        for (side, want, status) in [
+            (ConflictSide::Ours, "ours\n", "M  f\n"),
+            (ConflictSide::Theirs, "theirs\n", "M  f\n"),
+        ] {
+            let (_d, root) = conflicted_repo(Some("ours\n"), Some("theirs\n"));
+            let before = resolve_file(&r(&root), Path::new("f"), side).unwrap();
+            assert!(before.unwrap().starts_with(concat!("", "<<<<<<", "<").as_bytes()));
+            assert_eq!(std::fs::read_to_string(root.join("f")).unwrap(), want);
+            assert_eq!(git(&root, &["status", "--porcelain"]), status);
+            assert_eq!(git(&root, &["ls-files", "-u"]), "");
+        }
+    }
+
+    #[test]
+    fn resolve_to_a_deleting_side_removes_the_file() {
+        let (_d, root) = conflicted_repo(Some("ours\n"), None);
+        resolve_file(&r(&root), Path::new("f"), ConflictSide::Theirs).unwrap();
+        assert!(!root.join("f").exists());
+        assert_eq!(git(&root, &["status", "--porcelain"]), "D  f\n");
+        // The other way round keeps it.
+        let (_d, root) = conflicted_repo(Some("ours\n"), None);
+        resolve_file(&r(&root), Path::new("f"), ConflictSide::Ours).unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("f")).unwrap(), "ours\n");
+        assert_eq!(git(&root, &["status", "--porcelain"]), "M  f\n");
+    }
+
+    #[test]
+    fn resolve_refuses_a_file_without_conflicts() {
+        let (_d, root) = conflicted_repo(Some("ours\n"), Some("theirs\n"));
+        let e = resolve_file(&r(&root), Path::new("g"), ConflictSide::Ours).unwrap_err();
+        assert!(matches!(e, Error::NotConflicted), "{e}");
+        assert_eq!(std::fs::read_to_string(root.join("g")).unwrap(), "g\n");
     }
 
     /// Staging by line equals `git add -p` for a change alone in its hunk, and `s`plit + `y` for

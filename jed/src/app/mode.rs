@@ -108,6 +108,8 @@ impl Mode {
                     | Command::StageAll
                     | Command::DiscardChanges
                     | Command::DiscardAll
+                    | Command::ResolveOurs
+                    | Command::ResolveTheirs
                     | Command::UnstageAll
                     | Command::OpenChange
                     | Command::ToggleBlame

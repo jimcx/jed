@@ -31,6 +31,8 @@ pub enum MenuTarget {
     Editor { has_file: bool },
     /// The Code Review panel: what the right-click is on.
     Review(ReviewSpot),
+    /// A conflicted file in Source Control's Merge Changes (the opener selects its row first).
+    Conflict,
 }
 
 /// What a right-click in the Code Review panel is on (the opener selects and focuses that row
@@ -143,6 +145,12 @@ pub fn menu_for(target: MenuTarget) -> Vec<MenuItem> {
     let has_file = match target {
         MenuTarget::Tab { has_file } | MenuTarget::Editor { has_file } => has_file,
         MenuTarget::Review(spot) => return review_items(spot),
+        MenuTarget::Conflict => {
+            return vec![
+                MenuItem::new("Resolve Using Ours", Command::ResolveOurs),
+                MenuItem::new("Resolve Using Theirs", Command::ResolveTheirs),
+            ];
+        }
     };
     let reveal = if cfg!(target_os = "macos") {
         "Reveal in Finder"
@@ -287,6 +295,28 @@ mod tests {
             i,
             MenuItem::Item { label, command: Command::ReviewDiscardPending, .. } if label == "Discard Review"
         )));
+    }
+
+    #[test]
+    fn the_conflict_menu_resolves_using_either_side() {
+        let items: Vec<_> = menu_for(MenuTarget::Conflict)
+            .into_iter()
+            .filter_map(|i| match i {
+                MenuItem::Item {
+                    label,
+                    command,
+                    enabled,
+                } => Some((label, command, enabled)),
+                MenuItem::Separator => None,
+            })
+            .collect();
+        assert_eq!(
+            items,
+            [
+                ("Resolve Using Ours".to_string(), Command::ResolveOurs, true),
+                ("Resolve Using Theirs".to_string(), Command::ResolveTheirs, true),
+            ]
+        );
     }
 
     #[test]

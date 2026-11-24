@@ -1023,6 +1023,7 @@ impl App {
             }
             Hit::Editor(g) => self.open_editor_menu(g, at),
             Hit::SidePanel if self.ui.side_panel == SidePanel::Review => self.review_menu(at),
+            Hit::SidePanel if self.ui.side_panel == SidePanel::SourceControl => self.scm_menu(at),
             Hit::ExplorerRow(row) if self.ui.side_panel == SidePanel::Explorer => {
                 let index = self.explorer.scroll + row as usize;
                 let Some(path) = self.explorer.rows().get(index).map(|r| r.entry.path.clone()) else {

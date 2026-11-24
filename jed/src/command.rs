@@ -267,6 +267,11 @@ pub enum Command {
     DiscardChanges,
     /// Discards every change in the Source Control view's Changes section (its header button).
     DiscardAll,
+    /// Resolves the active file's merge conflicts (the selected Merge Changes row in Source
+    /// Control) by taking one side whole — ours (the index's stage 2) or theirs (stage 3) — on
+    /// disk and staging it as resolved (`git checkout --ours|--theirs -- path && git add path`).
+    ResolveOurs,
+    ResolveTheirs,
     UnstageAll,
     /// Ctrl+Shift+G: shows the Source Control view and gives it the keys.
     FocusScm,
@@ -1278,6 +1283,8 @@ impl Command {
             Command::StageAll,
             Command::DiscardChanges,
             Command::DiscardAll,
+            Command::ResolveOurs,
+            Command::ResolveTheirs,
             Command::UnstageAll,
             Command::FocusScm,
         ]);
@@ -1657,6 +1664,8 @@ impl Command {
             Command::StageAll => "git.stageAll".into(),
             Command::DiscardChanges => "git.clean".into(),
             Command::DiscardAll => "git.cleanAll".into(),
+            Command::ResolveOurs => "git.resolveOurs".into(),
+            Command::ResolveTheirs => "git.resolveTheirs".into(),
             Command::UnstageAll => "git.unstageAll".into(),
             Command::FocusScm => "view.focusSourceControl".into(),
             Command::Scm(c) => format!(
@@ -2127,6 +2136,8 @@ impl Command {
             Command::StageAll => "Git: Stage All Changes",
             Command::DiscardChanges => "Git: Discard Changes",
             Command::DiscardAll => "Git: Discard All Changes",
+            Command::ResolveOurs => "Git: Resolve Conflicts Using Ours",
+            Command::ResolveTheirs => "Git: Resolve Conflicts Using Theirs",
             Command::UnstageAll => "Git: Unstage All Changes",
             Command::FocusScm => "View: Show Source Control",
             Command::Scm(c) => match c {
@@ -2532,6 +2543,8 @@ mod tests {
             Command::MoveTerminalToArea => 130,
             Command::DiscardChanges => 131,
             Command::DiscardAll => 132,
+            Command::ResolveOurs => 192,
+            Command::ResolveTheirs => 193,
             Command::CompareActiveFileWith => 133,
             Command::CompareOpenEditors => 134,
             Command::ApplyChangeToRight => 135,
@@ -2539,7 +2552,7 @@ mod tests {
             Command::Spell(_) => 149,
         }
     }
-    const VARIANTS: u8 = 181;
+    const VARIANTS: u8 = 194;
 
     #[test]
     fn all_lists_every_variant() {

@@ -287,6 +287,31 @@ impl App {
         }
     }
 
+    /// A right-click in the view: on a Merge Changes file, its row is selected, the view takes the
+    /// keys and the menu to resolve it using ours / theirs opens below the pointer. Elsewhere
+    /// nothing.
+    pub(super) fn scm_menu(&mut self, at: (u16, u16)) {
+        let Some(hit) = self.hits.scm.clone() else { return };
+        let Some(status) = self.git.status.as_ref() else { return };
+        let p = Position { x: at.0, y: at.1 };
+        if !hit.list.contains(p) {
+            return;
+        }
+        let Some(key @ RowKey::File(Section::MergeChanges, _)) = hit.rows.get((p.y - hit.list.y) as usize) else {
+            return;
+        };
+        let rows = self.scm.rows(status);
+        if !self.scm.select_key(&rows, key) {
+            return;
+        }
+        self.ui.focus = Focus::SidePanel;
+        self.branch_history.set_focused(false);
+        self.open_context_menu(
+            (at.0, at.1.saturating_add(1)),
+            super::context_menu::menu_for(super::context_menu::MenuTarget::Conflict),
+        );
+    }
+
     /// The mouse wheel over the view scrolls its list.
     pub(super) fn scm_scroll(&mut self, delta: isize) {
         if let Some(status) = self.git.status.as_ref() {

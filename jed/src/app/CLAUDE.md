@@ -42,7 +42,7 @@ Summary only: [docs/dev/app.md](../../../docs/dev/app.md) has each submodule in 
 - `spell.rs` — the spell checker: dictionaries, background / incremental checks into `buf.spell.marks` (`ServerId::SPELL`), the half-typed rule
 - `spell_cmd.rs` — the spell checker's palette commands (Next / Previous, Add to user / workspace dictionary, Ignore, Toggle, Open User Dictionary) and its quick fixes
 - `blame.rs` — inline blame (`app.blame`): toggle, `sync_blame`, the streamed walk job (`blame_done` starts it, `blame_chunk` takes its chunks)
-- `conflict.rs` — merge conflicts: `go_to_conflict(forward)` (Next / Previous Conflict) and `compare_conflict(at)` (Compare Current Conflict)
+- `conflict.rs` — merge conflicts: `go_to_conflict(forward)` (Next / Previous Conflict) and `compare_conflict(at)` (Compare Current Conflict); `resolve_command(side)` (Resolve Conflicts Using Ours / Theirs, a Merge Changes row's right-click menu: one side whole off-thread, staged)
 - `diff_view.rs` — diff tabs (`app.diffs`): the caret's keys, mouse (`Drag::Diff`) and copy / cut, `open_diff(path, Pair)`, `sync_diffs`, `diff_command`, stage / revert hunks
 - `diff_edit.rs` — editing in diff tabs: `edit::run` on a scratch `View` at the caret's bytes of the file's buffer; a file not open opens in the background first (`DiffViews::pending`)
 - `hex.rs` — hex tabs: binary files' load (`Loaded::Binary`), one tab per path, Reopen as Hex / Text, `hex_command` / `hex_copy`, Go to Offset, `hex_mouse`, paged docs' page reads / copy (`sync_hex_pages`)

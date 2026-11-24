@@ -14527,3 +14527,108 @@ mod terminal_mouse_passthrough {
         );
     }
 }
+
+/// scm_resolve_conflict: a right-click on a Source Control "Merge Changes" row offers Resolve
+/// Using Ours / Theirs; either takes that side of the file whole (`git checkout --ours|--theirs`),
+/// stages it as resolved and reloads the open buffer; the palette commands do the same for the
+/// active file, refusing one with unsaved changes.
+mod scm_resolve_conflict {
+    use std::fs;
+    use std::path::Path;
+
+    use crossterm::event::{MouseButton, MouseEventKind};
+
+    use crate::app::App;
+    use crate::command::{Command, ContextMenuCommand};
+    use crate::conflicts_tests::merge_repo;
+    use crate::git::Change;
+    use crate::git::test_repo::git;
+    use crate::milestone10_tests::{dirs, file, focus_scm, open_file_app, scm_row, settle_git, settle_stage};
+    use crate::scm::{RowKey, Section};
+
+    const OURS: &str = "alpha\nOURS ONE\nbravo\ncharlie\ntwo\ndelta\necho\nOURS THREE\nfoxtrot\n";
+    const THEIRS: &str = "alpha\nTHEIRS ONE\nbravo\ncharlie\ntwo\ndelta\necho\nTHEIRS THREE\nfoxtrot\n";
+
+    async fn conflicted(app: &mut App) -> bool {
+        settle_git(
+            app,
+            |s| matches!(s.entry(Path::new("a.txt")), Some(e) if e.unstaged == Some(Change::Conflicted)),
+        )
+        .await
+    }
+
+    fn text(app: &App) -> String {
+        app.active_buffer().unwrap().rope.to_string()
+    }
+
+    fn message(app: &App) -> String {
+        app.message.as_ref().map(|m| m.text.clone()).unwrap_or_default()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scm_resolve_conflict_right_click_resolves_using_theirs() {
+        let (_d, root, state) = dirs();
+        merge_repo(&root, false);
+        let mut app = open_file_app(&root, &state, "a.txt");
+        assert!(conflicted(&mut app).await);
+        focus_scm(&mut app);
+        // A right-click on the section header opens nothing.
+        let (x, y) = scm_row(&mut app, &RowKey::Header(Section::MergeChanges));
+        app.mouse(MouseEventKind::Down(MouseButton::Right), x, y);
+        assert!(app.context_menu.is_none());
+        let (x, y) = scm_row(&mut app, &file(Section::MergeChanges, "a.txt"));
+        app.mouse(MouseEventKind::Down(MouseButton::Right), x, y);
+        let menu = app.context_menu.as_ref().expect("the menu opens");
+        let labels: Vec<_> = menu
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                crate::context_menu::MenuItem::Item { label, command, .. } => Some((label.as_str(), *command)),
+                crate::context_menu::MenuItem::Separator => None,
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                ("Resolve Using Ours", Command::ResolveOurs),
+                ("Resolve Using Theirs", Command::ResolveTheirs)
+            ]
+        );
+        app.test_execute(Command::ContextMenu(ContextMenuCommand::Down));
+        app.test_execute(Command::ContextMenu(ContextMenuCommand::Accept));
+        assert!(app.context_menu.is_none());
+        assert!(settle_stage(&mut app).await);
+        assert!(app.settle(|a| text(a) == THEIRS).await, "{}", text(&app));
+        assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), THEIRS);
+        assert_eq!(git(&root, &["status", "--porcelain"]), "M  a.txt\n");
+        assert!(!app.active_buffer().unwrap().is_dirty());
+        assert!(
+            message(&app).contains("Resolved a.txt using theirs"),
+            "{}",
+            message(&app)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scm_resolve_conflict_command_takes_ours_for_the_active_file() {
+        let (_d, root, state) = dirs();
+        merge_repo(&root, false);
+        let mut app = open_file_app(&root, &state, "a.txt");
+        assert!(conflicted(&mut app).await);
+        // Unsaved changes: refused, nothing touched.
+        app.type_text("x");
+        app.test_execute(Command::ResolveOurs);
+        assert!(message(&app).contains("unsaved changes"), "{}", message(&app));
+        app.test_execute(Command::Undo);
+        assert!(!app.active_buffer().unwrap().is_dirty());
+        app.test_execute(Command::ResolveOurs);
+        assert!(settle_stage(&mut app).await);
+        assert!(app.settle(|a| text(a) == OURS).await, "{}", text(&app));
+        // Ours is HEAD's text: resolved, nothing left to commit for it (as `git` leaves it).
+        assert_eq!(git(&root, &["status", "--porcelain"]), "");
+        // No conflicts left: a second resolve says so and leaves the file.
+        app.test_execute(Command::ResolveTheirs);
+        assert!(message(&app).contains("has no merge conflicts"), "{}", message(&app));
+        assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), OURS);
+    }
+}

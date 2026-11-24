@@ -1609,6 +1609,8 @@ impl App {
             Command::DiscardChanges if self.scm_focused() => self.scm_discard(),
             Command::DiscardChanges => self.discard_command(),
             Command::DiscardAll => self.discard_all(),
+            Command::ResolveOurs => self.resolve_command(crate::git::stage::ConflictSide::Ours),
+            Command::ResolveTheirs => self.resolve_command(crate::git::stage::ConflictSide::Theirs),
             Command::UnstageAll => self.unstage_all(),
             Command::FocusScm => self.focus_scm(),
             Command::Scm(c) => self.scm_command(c),
