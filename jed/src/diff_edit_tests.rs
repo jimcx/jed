@@ -392,6 +392,36 @@ async fn diff_edit_edit_typing_is_one_undo_step_and_the_caret_stays() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn diff_edit_edit_shows_at_once_before_the_reload() {
+    let (_d, root, state) = dirs();
+    let mut app = open(&root, &state).await;
+    term(&mut app, 150);
+    // On an unchanged line: the text and the changed row's colour show before the diff is read.
+    mv(&mut app, Motion::DocStart, false);
+    mv(&mut app, Motion::LineEnd, false);
+    app.type_text("XY");
+    assert!(diff(&app).edited.is_some(), "not reloaded yet");
+    assert_eq!(right_line(&app, 0), "alpha oneXY");
+    let d = diff(&app);
+    let doc = d.doc.as_ref().unwrap();
+    assert_eq!(doc.kind(&d.rows()[0]), crate::diff_view::Kind::Changed);
+    let t = term(&mut app, 150);
+    let typed = crate::milestone10_tests::find_text(&t, "alpha oneXY");
+    let changed = crate::milestone10_tests::find_text(&t, "beta TWO");
+    assert_eq!(typed.len(), 1, "drawn once, on the right");
+    assert_eq!(bg(&t, typed[0]), bg(&t, *changed.last().unwrap()));
+    // A Backspace shows at once too; a line break waits for the reload.
+    app.press(KeyCode::Backspace, M::NONE);
+    assert_eq!(right_line(&app, 0), "alpha oneX");
+    app.press(KeyCode::Enter, M::NONE);
+    assert_eq!(right_line(&app, 0), "alpha oneX");
+    settled(&mut app).await;
+    assert_eq!(right_line(&app, 1), "");
+    assert_eq!(right_line(&app, 2), "beta TWO");
+    assert_eq!(diff(&app).caret.head, (1, 0));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn diff_edit_edit_enter_tab_backspace_delete() {
     let (_d, root, state) = dirs();
     let mut app = open(&root, &state).await;
@@ -596,23 +626,34 @@ async fn diff_edit_edit_before_the_reload_draws_moves_and_types_on() {
     assert_eq!(right_line(&app, 1), "abÖÖ TWO");
     assert_eq!(diff(&app).caret.head, (1, 2));
     // Typed at the line's end, then a move and a copy before the reload: no panic (a move
-    // slices the old lines with the caret); the edit after it waits for the diff.
+    // slices the lines with the caret). The one-line edit shows at once, so the next edit
+    // after the move lands without waiting for the diff.
     app.press(KeyCode::End, M::NONE);
     app.type_text("xyz");
     app.press(KeyCode::Left, M::NONE);
     app.press(KeyCode::Left, M::SHIFT);
     term(&mut app, 150);
     app.test_execute(Command::Copy);
+    assert_eq!(app.clipboard.read().unwrap(), "y");
     app.press(KeyCode::Esc, M::NONE);
+    assert_eq!(text(&app), "alpha one\nabÖÖ TWOxyz\ngamma three\n");
+    app.type_text("Q");
+    assert_eq!(said(&app), "");
+    assert_eq!(text(&app), "alpha one\nabÖÖ TWOxQyz\ngamma three\n");
+    settled(&mut app).await;
+    term(&mut app, 150);
+    assert_eq!(right_line(&app, 1), "abÖÖ TWOxQyz");
+    // After a line break (not shown until the reload) a move and an edit still wait for it.
+    app.press(KeyCode::Enter, M::NONE);
+    app.press(KeyCode::Up, M::NONE);
     let before = text(&app);
-    assert_eq!(before, "alpha one\nabÖÖ TWOxyz\ngamma three\n");
     app.type_text("Q");
     assert_eq!(said(&app), "The diff is updating, try again");
     assert_eq!(text(&app), before);
     settled(&mut app).await;
     term(&mut app, 150);
     app.type_text("Q");
-    assert!(text(&app).contains('Q'), "{}", said(&app));
+    assert_eq!(text(&app).matches('Q').count(), 2, "{}", said(&app));
 }
 
 #[tokio::test(flavor = "multi_thread")]

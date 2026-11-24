@@ -417,15 +417,17 @@ pub fn render(
             continue;
         }
         let at_caret;
-        let parts = (row.kind() == Kind::Changed)
+        // An unchanged row edited since the load draws as changed (`Doc::kind`).
+        let kind = doc.kind(row);
+        let parts = (kind == Kind::Changed)
             .then(|| diff_view::changed_parts(doc.left.line(row.left.unwrap()), doc.right.line(row.right.unwrap())));
         // The row's width and the widths of the lines under the Stage and the Revert buttons.
         let (_, w, under) = if inline {
-            let line = match row.kind() {
+            let line = match kind {
                 Kind::Removed => left_walk.line(row.left.unwrap_or_default()),
                 _ => right_walk.line(row.right.unwrap_or_default()),
             };
-            let (right, l) = (row.kind() != Kind::Removed, line_no(row));
+            let (right, l) = (kind != Kind::Removed, line_no(row));
             let sel = caret.on_line(right, l, line.text.len());
             let mark = marks.at(right, Some(l));
             let found = finds(find, &caret, right, l, line.text);
@@ -434,6 +436,7 @@ pub fn render(
                 body,
                 y,
                 row,
+                kind,
                 line,
                 (digits, base),
                 d.left_col,
@@ -491,8 +494,8 @@ pub fn render(
                 on(true, row.right),
                 right_found,
             );
-            let at_left = draw_half(out, &l, row, lr, lp, &st);
-            let at_right = draw_half(out, &r, row, rr, rp, &st);
+            let at_left = draw_half(out, &l, kind, lr, lp, &st);
+            let at_right = draw_half(out, &r, kind, rr, rp, &st);
             // The cell at `body.x + half` is the centre line (a border: `borders` draws it).
             let cell = if row.right.is_some() { at_right.0 } else { at_left.0 };
             at_caret = Some(if caret.right { at_right.0 } else { at_left.0 });
@@ -512,11 +515,7 @@ pub fn render(
             if start >= d.left_col
                 && let Some(shown) = blame::fit_keeping(label, keep, end.saturating_sub(start))
             {
-                let row_style = if row.kind() == Kind::Same {
-                    st.current
-                } else {
-                    st.inserted
-                };
+                let row_style = if kind == Kind::Same { st.current } else { st.inserted };
                 let style = row_style.patch(theme.get("git.blame.editorDecorationForeground"));
                 let x = tx + (start - d.left_col) as u16;
                 let room = (body.x + body.width).saturating_sub(x);
@@ -753,7 +752,7 @@ struct Half<'a> {
 fn draw_half(
     out: &mut Cells,
     h: &Half,
-    row: &Row,
+    kind: Kind,
     removed: bool,
     part: Option<Range<usize>>,
     st: &Styles,
@@ -764,7 +763,7 @@ fn draw_half(
         out.set_stringn(x, y, "╱".repeat(width as usize), width as usize, st.fill);
         return ((text_x, y), 0);
     };
-    let bg = match row.kind() {
+    let bg = match kind {
         Kind::Same if h.current => st.current,
         Kind::Same => st.base,
         _ if removed => st.removed,
@@ -804,6 +803,7 @@ fn draw_inline(
     body: Rect,
     y: u16,
     row: &Row,
+    kind: Kind,
     line: Line,
     (digits, base): (usize, usize),
     left_col: usize,
@@ -814,7 +814,7 @@ fn draw_inline(
     mark: Option<Style>,
     found: &[(Range<usize>, bool)],
 ) -> ((u16, u16), usize) {
-    let (bg, sign) = match row.kind() {
+    let (bg, sign) = match kind {
         Kind::Removed => (st.removed, "-"),
         Kind::Added | Kind::Changed => (st.inserted, "+"),
         Kind::Same if current => (st.current, " "),

@@ -523,6 +523,7 @@ impl App {
                 conflict: d.conflict.clone(),
                 left_path: d.left_path.clone(),
                 anchors,
+                prev: d.doc.clone(),
             };
             jobs.push((d.id, generation, job));
         }

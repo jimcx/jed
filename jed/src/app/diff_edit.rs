@@ -2,8 +2,10 @@
 //! scratch `View` whose selection is the caret at the same bytes of the file's buffer, so the
 //! edit is the editor's (`Buffer::edit`: undo grouping, dirty, auto-indent and auto-close; the
 //! text tabs of the buffer follow in `sync_views`). The caret then goes back into the diff's
-//! text (`DiffTab::edited`) and the diff reloads `diff_view::DELAY` later. A file that isn't
-//! open is opened behind the diff first (`DiffViews::pending`), the key applied once it loads.
+//! text (`DiffTab::edited`) and the diff reloads `diff_view::DELAY` later; an edit within the
+//! caret's line shows in the diff at once (`DiffTab::patch_line`, colours guessed until then).
+//! A file that isn't open is opened behind the diff first (`DiffViews::pending`), the key
+//! applied once it loads.
 
 use std::path::{Path, PathBuf};
 
@@ -189,6 +191,23 @@ fn edit_buffer(
     let mut view = View::new();
     view.selections = Selections::single(Selection::new(at(c.anchor)?, at(c.head)?));
     let before = buf.revision();
+    // An edit within the caret's line shows at once (`DiffTab::patch_line`), before the reload:
+    // typing, deleting, a paste or cut on one line, when the diff shows that line as it is.
+    let one_line = match &edit {
+        DiffEdit::Char(ch) => !matches!(ch, '\n' | '\r'),
+        DiffEdit::Paste(text) => !text.contains(['\n', '\r']),
+        DiffEdit::Cut => true,
+        DiffEdit::Command(cmd) => matches!(
+            cmd,
+            Command::DeleteLeft | Command::DeleteRight | Command::DeleteWordLeft | Command::DeleteWordRight
+        ),
+    };
+    let line = c.head.0;
+    let old_len = (one_line && c.anchor.0 == line)
+        .then(|| shown_line(d, rope, c.right, line))
+        .flatten()
+        .map(|(s, e)| e.0 - s.0);
+    let (len, lines) = (rope.len(), pos::line_count(rope));
     match edit {
         DiffEdit::Command(cmd) => {
             edit::run(cmd, buf, &mut view, settings);
@@ -222,6 +241,20 @@ fn edit_buffer(
     // Nothing changed (a Backspace at the start) and nothing waiting: the lines are the buffer's.
     if buf.revision() != before || waiting {
         d.edited = Some((caret, buf.revision()));
+    }
+    // Only the caret's line changed (the same lines, the text's length changed by the line's):
+    // it shows now, guessing its colours until the reload.
+    let rope = &buf.rope;
+    if let Some(old_len) = old_len
+        && buf.revision() != before
+        && pos::line_count(rope) == lines
+        && caret.anchor.0 == line
+        && caret.head.0 == line
+    {
+        let (start, end) = (pos::line_start(rope, line), pos::line_end(rope, line));
+        if (end.0 - start.0) as isize - old_len as isize == rope.len() as isize - len as isize {
+            d.patch_line(c.right, line, &rope.slice(start.0..end.0).to_string());
+        }
     }
     d.place_caret(caret);
     Ok(())

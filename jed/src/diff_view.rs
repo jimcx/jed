@@ -15,7 +15,9 @@
 //! or, in the one-column (inline) layout, a change's old lines above its new ones. Both layouts
 //! are built once per load, so drawing and scrolling only index into them. Each side's syntax
 //! colours are computed in the load too ([`Doc::highlight`]: the side's whole text parsed, so a
-//! comment or string over several lines colours every one of them).
+//! comment or string over several lines colours every one of them); a reload keeps a side's
+//! colours when its text is unchanged or only words were typed ([`Doc::highlight_from`]), and an
+//! edit within one line shows before its reload ([`Lines::patch`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -342,13 +344,35 @@ pub struct Compare {
 /// One side's text as lines (a UTF-8 BOM dropped, invalid UTF-8 replaced): git's lines, each
 /// ending after a `\n` (shown without it, or without `\r\n`); a last line without one is a line
 /// too, and an empty text has none.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Lines {
     text: String,
     starts: Vec<usize>,
     /// Syntax colours over `text` (byte ranges of it: line breaks counted), sorted; empty when
     /// not highlighted (plain text, too large, binary).
     spans: Vec<Span>,
+    /// How `spans` came about: the next load keeps them unless `Colours::Stale`.
+    colours: Colours,
+    /// Lines changed by `patch` since the load (an unchanged row with one draws as changed).
+    edited: Vec<usize>,
+}
+
+/// Whether a side's syntax colours are the parse's.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Colours {
+    /// From the parse of this text.
+    #[default]
+    Exact,
+    /// Word characters typed or deleted since (`Lines::patch`), coloured as the token at the
+    /// caret: kept by the next loads until a break character is typed.
+    Guessed,
+    /// Other edits since: the next load parses again.
+    Stale,
+}
+
+/// A character that may continue a token (typing it keeps the guessed colours).
+fn word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
 }
 
 impl Lines {
@@ -363,17 +387,118 @@ impl Lines {
         Lines {
             text,
             starts,
-            spans: Vec::new(),
+            ..Default::default()
         }
     }
 
     /// Blocking: colours the whole text in `language` (one parse, so a comment or string over
-    /// several lines colours each of them), unless it's over `max_bytes` (0: never).
-    fn highlight(&mut self, language: Language, max_bytes: usize) {
+    /// several lines colours each of them), unless it's over `max_bytes` (0: never). `prev`: the
+    /// side as last shown, coloured in the same language; its colours are taken when its text is
+    /// this one and they aren't stale (an unchanged side, or only words typed: no parse).
+    fn highlight(&mut self, language: Language, max_bytes: usize, prev: Option<&Lines>) {
         if max_bytes == 0 || self.text.len() > max_bytes {
             return;
         }
+        if let Some(p) = prev
+            && p.colours != Colours::Stale
+            && p.text == self.text
+        {
+            self.spans = p.spans.clone();
+            self.colours = p.colours;
+            return;
+        }
         self.spans = syntax::highlight_text(language, &self.text);
+    }
+
+    /// Line `i` becomes `new` (no line break in it) in place, until the next load: an edit shown
+    /// before the diff is taken again. The changed part's colour is guessed: the token at the
+    /// caret's (one containing it, else a word's that it continues). Typing or deleting only word
+    /// characters keeps the guess (`Colours::Guessed`); anything else makes the colours stale.
+    /// False (nothing changed) past the end or with a line break in `new`.
+    pub fn patch(&mut self, i: usize, new: &str) -> bool {
+        if i >= self.len() || new.contains(['\n', '\r']) {
+            return false;
+        }
+        let old = self.line(i);
+        if old == new {
+            return true;
+        }
+        let (o, n) = changed_parts(old, new);
+        let base = self.start(i);
+        let (a, b) = (base + o.start, base + o.end);
+        let ins = &new[n];
+        let removed = &self.text[a..b];
+        let words = ins.chars().all(word_char) && removed.chars().all(word_char);
+        let delta = ins.len() as isize - (b - a) as isize;
+        let shift = |x: usize| (x as isize + delta) as usize;
+        // The span the inserted text takes: one around the change, else (a word typed) the
+        // word's before or after it.
+        let before = self.text[..a].chars().next_back().is_some_and(word_char);
+        let after = self.text[b..].chars().next().is_some_and(word_char);
+        let inherit = (!ins.is_empty())
+            .then(|| {
+                let at = self.spans.partition_point(|s| s.end.0 < a);
+                let near = &self.spans[at..];
+                let inside = near.iter().take(2).position(|s| s.start.0 < a && s.end.0 > a);
+                let word = || {
+                    let ins_word = ins.chars().all(word_char);
+                    let end = near.iter().take(2).position(|s| s.end.0 == a && before);
+                    let start = || near.iter().take(2).position(|s| s.start.0 == b && after);
+                    end.or_else(start).filter(|_| ins_word)
+                };
+                inside.or_else(word).map(|k| at + k)
+            })
+            .flatten();
+        let spans = std::mem::take(&mut self.spans);
+        self.spans = (spans.into_iter().enumerate())
+            .filter_map(|(k, mut s)| {
+                let (st, en) = (s.start.0, s.end.0);
+                let mut st = if st < a {
+                    st
+                } else if st >= b {
+                    shift(st)
+                } else {
+                    a + ins.len()
+                };
+                let mut en = if en <= a {
+                    en
+                } else if en >= b {
+                    shift(en)
+                } else {
+                    a
+                };
+                if inherit == Some(k) {
+                    st = st.min(a);
+                    en = en.max(a + ins.len());
+                }
+                (s.start, s.end) = (ByteIdx(st), ByteIdx(en));
+                (st < en).then_some(s)
+            })
+            .collect();
+        self.text.replace_range(a..b, ins);
+        for s in &mut self.starts[i + 1..] {
+            *s = shift(*s);
+        }
+        self.colours = match self.colours {
+            Colours::Stale => Colours::Stale,
+            _ if words => Colours::Guessed,
+            _ => Colours::Stale,
+        };
+        if !self.edited.contains(&i) {
+            self.edited.push(i);
+        }
+        true
+    }
+
+    /// How the syntax colours came about.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn colours(&self) -> Colours {
+        self.colours
+    }
+
+    /// Line `i` was changed by `patch` since the load.
+    pub fn edited(&self, i: usize) -> bool {
+        self.edited.contains(&i)
     }
 
     /// Where line `i` starts in the text (its length past the end): spans' coordinates.
@@ -556,7 +681,7 @@ pub fn changed_parts(old: &str, new: &str) -> (std::ops::Range<usize>, std::ops:
 }
 
 /// A loaded diff: both sides' lines, the hunks between them, both layouts.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Doc {
     pub left: Lines,
     pub right: Lines,
@@ -572,6 +697,8 @@ pub struct Doc {
     /// `Job::anchors` (the commits its threads and drafts are numbered in): where they are in the
     /// text shown.
     pub live: crate::review_anchor::Live,
+    /// The language both sides were coloured in (`None`: plain).
+    language: Option<Language>,
 }
 
 impl Doc {
@@ -596,12 +723,21 @@ impl Doc {
             binary: d.binary,
             shown: FileDiff { old, new, diff: d },
             live: Default::default(),
+            language: None,
         })
     }
 
     /// Blocking: colours both sides in `language` (`None`: the one the text's shebang names),
     /// each side only up to `max_bytes` (0: never); a binary diff stays plain.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn highlight(&mut self, language: Option<Language>, max_bytes: usize) {
+        self.highlight_from(language, max_bytes, None);
+    }
+
+    /// `highlight`, a side taking `prev`'s colours of the same text instead of parsing it again
+    /// (`Lines::highlight`): an edit's reload parses only the edited side, and only after a break
+    /// character.
+    pub fn highlight_from(&mut self, language: Option<Language>, max_bytes: usize, prev: Option<&Doc>) {
         if self.binary {
             return;
         }
@@ -612,8 +748,28 @@ impl Doc {
         if language.grammar().is_none() {
             return;
         }
-        self.left.highlight(language, max_bytes);
-        self.right.highlight(language, max_bytes);
+        let prev = prev.filter(|p| p.language == Some(language));
+        self.left.highlight(language, max_bytes, prev.map(|p| &p.left));
+        self.right.highlight(language, max_bytes, prev.map(|p| &p.right));
+        self.language = Some(language);
+    }
+
+    /// Side `right`'s (else the left's) line `line` becomes `text` in place: `Lines::patch`.
+    pub fn patch(&mut self, right: bool, line: usize, text: &str) -> bool {
+        if self.binary {
+            return false;
+        }
+        if right { &mut self.right } else { &mut self.left }.patch(line, text)
+    }
+
+    /// The row's kind as drawn: an unchanged row whose line was edited since the load shows as
+    /// changed until the diff is taken again.
+    pub fn kind(&self, row: &Row) -> Kind {
+        match row.kind() {
+            Kind::Same if row.left.is_some_and(|l| self.left.edited(l)) => Kind::Changed,
+            Kind::Same if row.right.is_some_and(|r| self.right.edited(r)) => Kind::Changed,
+            kind => kind,
+        }
     }
 
     pub fn aligned(&self, inline: bool) -> &Aligned {
@@ -687,6 +843,8 @@ pub struct Job {
     pub left_path: Option<PathBuf>,
     /// A review diff's anchor commits, compared with its right side (`Doc::live`).
     pub anchors: Vec<String>,
+    /// The diff shown now: a side whose text is the same keeps its colours (`Doc::highlight_from`).
+    pub prev: Option<Arc<Doc>>,
 }
 
 /// What a thread tab (`Pair::THREAD`) is about.
@@ -729,7 +887,7 @@ pub fn load(job: Job) -> Result<Doc, String> {
         let rel = rel.to_string_lossy().replace('\\', "/");
         doc.live = crate::review_anchor::compare_live(repo, &rel, &job.anchors, &doc.shown.new);
     }
-    doc.highlight(job.language, job.syntax_max_bytes);
+    doc.highlight_from(job.language, job.syntax_max_bytes, job.prev.as_deref());
     Ok(doc)
 }
 
@@ -1222,6 +1380,14 @@ impl DiffTab {
             }
         }
         true
+    }
+
+    /// An edit of side `right`'s line `line` (now `text`) shown before the reload: `Doc::patch`
+    /// (a copy of the doc when a load or another tab holds it).
+    pub fn patch_line(&mut self, right: bool, line: usize, text: &str) {
+        if let Some(doc) = &mut self.doc {
+            Arc::make_mut(doc).patch(right, line, text);
+        }
     }
 
     /// The last load started read a live buffer at revision `rev`.
@@ -1800,6 +1966,7 @@ mod tests {
             conflict: None,
             left_path: None,
             anchors: Vec::new(),
+            prev: None,
             compare: None,
         };
         let doc = load(job(Some("new\n"))).unwrap();
@@ -1856,6 +2023,7 @@ mod tests {
             conflict: None,
             left_path: None,
             anchors: Vec::new(),
+            prev: None,
             compare: None,
         };
         let lines = |l: &Lines| (0..l.len()).map(|i| l.line(i).to_string()).collect::<Vec<_>>();
@@ -1896,6 +2064,7 @@ mod tests {
             conflict,
             left_path: None,
             anchors: Vec::new(),
+            prev: None,
             compare: None,
         };
         let doc = load(job(Some((b"ours\n".to_vec(), b"theirs\n".to_vec())))).unwrap();
@@ -1977,6 +2146,7 @@ mod tests {
             conflict: None,
             left_path: None,
             anchors: Vec::new(),
+            prev: None,
             compare: None,
         };
         let pair = Pair::commit(id(&second), Some(id(&first)));
@@ -2025,5 +2195,83 @@ mod tests {
         let mut doc = Doc::new(b"fn\0".to_vec(), text.into()).unwrap();
         doc.highlight(Some(Language::Rust), 1 << 20);
         assert!(doc.binary && doc.right.spans().is_empty());
+    }
+
+    fn rust(old: &str, new: &str) -> Doc {
+        let mut doc = Doc::new(old.into(), new.into()).unwrap();
+        doc.highlight(Some(Language::Rust), crate::syntax::DEFAULT_MAX_BYTES);
+        doc
+    }
+
+    #[test]
+    fn a_patched_line_guesses_its_colours_from_the_caret() {
+        let text = "fn foo() {}\nlet s = \"ab\";\n// end\n";
+        let mut doc = rust(text, text);
+        // A word typed at the end of a word takes its colour; the rest of the text shifts.
+        assert!(doc.patch(true, 0, "fn fooxy() {}"));
+        let right = coloured(&doc.right);
+        let foo = right.iter().find(|c| c.0 == 0 && c.1.starts_with("foo")).unwrap();
+        assert_eq!(foo.1, "fooxy", "{right:?}");
+        assert!(right.contains(&(0, "fn".into(), "keyword")), "{right:?}");
+        assert_eq!(doc.right.colours(), Colours::Guessed);
+        // Inside a string any character is the string's; a break character makes them stale.
+        assert!(doc.patch(true, 1, "let s = \"a, b\";"));
+        let right = coloured(&doc.right);
+        assert!(
+            right.iter().any(|c| c.0 == 1 && c.1 == "\"a, b\"" && c.2 == "string"),
+            "{right:?}"
+        );
+        assert!(right.contains(&(2, "// end".into(), "comment")), "{right:?}");
+        assert_eq!(doc.right.colours(), Colours::Stale);
+        // The left side is untouched; the edited rows draw as changed.
+        assert_eq!(doc.left.colours(), Colours::Exact);
+        assert_eq!(doc.right.line(1), "let s = \"a, b\";");
+        let rows = doc.split.rows.clone();
+        assert_eq!(doc.kind(&rows[0]), Kind::Changed);
+        assert_eq!(doc.kind(&rows[2]), Kind::Same);
+        // A line break isn't a one-line edit.
+        assert!(!doc.patch(true, 0, "fn\n"));
+    }
+
+    #[test]
+    fn deleting_keeps_the_colours_of_what_is_left() {
+        let text = "fn foobar() {}\n";
+        let mut doc = rust(text, text);
+        assert!(doc.patch(true, 0, "fn foo() {}"));
+        let right = coloured(&doc.right);
+        assert!(right.iter().any(|c| c.1 == "foo"), "{right:?}");
+        assert!(right.contains(&(0, "fn".into(), "keyword")), "{right:?}");
+        assert_eq!(doc.right.colours(), Colours::Guessed);
+        assert!(doc.patch(true, 0, "fn () {}"));
+        assert!(!coloured(&doc.right).iter().any(|c| c.1.is_empty()));
+    }
+
+    #[test]
+    fn a_reload_keeps_colours_unless_stale() {
+        let text = "fn foo() {}\n";
+        let mut shown = rust(text, text);
+        // Only words typed: the guess stays (no parse); the unchanged left keeps its colours.
+        shown.patch(true, 0, "fn fooxy() {}");
+        let guessed = shown.right.spans().to_vec();
+        let mut doc = Doc::new(text.into(), "fn fooxy() {}\n".into()).unwrap();
+        doc.highlight_from(Some(Language::Rust), crate::syntax::DEFAULT_MAX_BYTES, Some(&shown));
+        assert_eq!(doc.right.spans(), &guessed[..]);
+        assert_eq!(doc.right.colours(), Colours::Guessed);
+        assert_eq!(doc.left.spans(), shown.left.spans());
+        // A break character typed: that side is parsed again.
+        shown.patch(true, 0, "fn fooxy(() {}");
+        assert_eq!(shown.right.colours(), Colours::Stale);
+        let mut doc = Doc::new(text.into(), "fn fooxy(() {}\n".into()).unwrap();
+        doc.highlight_from(Some(Language::Rust), crate::syntax::DEFAULT_MAX_BYTES, Some(&shown));
+        assert_eq!(doc.right.colours(), Colours::Exact);
+        assert_eq!(doc.right.spans(), rust(text, "fn fooxy(() {}\n").right.spans());
+        // Another language: parsed again.
+        let mut doc = Doc::new(text.into(), text.into()).unwrap();
+        doc.highlight_from(
+            Some(Language::Python),
+            crate::syntax::DEFAULT_MAX_BYTES,
+            Some(&rust(text, text)),
+        );
+        assert_ne!(doc.left.spans(), rust(text, text).left.spans());
     }
 }
