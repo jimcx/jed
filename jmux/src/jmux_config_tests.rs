@@ -285,9 +285,11 @@ async fn jmux_config_b_a_user_binding_for_split_right_works_and_the_default_key_
     assert!(h.app.notice.is_none(), "{:?}", h.app.notice);
     h.settle("the first shell", |h| h.app.groups.tabs().count() == 1).await;
     assert_eq!(h.app.groups.order().len(), 1);
-    // The default key (Ctrl+\\) no longer splits.
+    // The default key (Ctrl+\\) no longer splits. Checked in the app's keymap, not pressed: an
+    // unbound key goes to the shell, and Ctrl+\\ there is SIGQUIT (fakesh would dump core).
     let old = crate::keymap::keymap().binding_for(Command::SplitRight).unwrap();
-    h.app.press(old.code, old.mods);
+    let old = crossterm::event::KeyEvent::new(old.code, old.mods);
+    assert_eq!(h.app.keymap.lookup(&old, crate::command::Context::Terminal), None);
     assert_eq!(h.app.groups.order().len(), 1);
     h.app.press(KeyCode::Char('k'), ctrl_alt());
     h.settle("a second group", |h| h.app.groups.order().len() == 2).await;

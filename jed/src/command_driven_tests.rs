@@ -816,8 +816,9 @@ const ALLOWED_LINES: &[(&str, &str, &str)] = &[
     ),
     (
         "jmux/src/jmux_config_tests.rs",
-        "h.app.press(old.code, old.mods)",
-        "the default split key, which the test's keybindings.toml has taken the command from",
+        "let old = crossterm::event::KeyEvent::new(old.code, old.mods);",
+        "the default split key, which the test's keybindings.toml has taken the command from: \
+         looked up, not pressed (unbound, Ctrl+\\ would reach the shell as SIGQUIT)",
     ),
     (
         "jmux/src/jmux_config_tests.rs",
