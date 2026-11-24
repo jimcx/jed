@@ -113,6 +113,17 @@ impl World {
         r.error.expect("an error")
     }
 
+    /// Waits until no draft job is queued or on its way: Claude's reply queues one (the setting
+    /// is on), and Submit Review refuses to start while it runs.
+    async fn drafts_idle(&mut self) {
+        assert!(
+            self.app
+                .settle(|a| a.review.drafts.inflight.is_none() && a.review.drafts.queue.is_empty())
+                .await,
+            "the draft jobs finish"
+        );
+    }
+
     fn writes(&self) -> Vec<String> {
         self.server
             .requests()
@@ -297,6 +308,7 @@ async fn claude_ide_a_reply_draft_is_tagged_claude_replaced_not_posted_and_submi
     assert_eq!(threads["threads"][0]["reply_draft"]["resolve"], true);
     assert!(w.writes().is_empty(), "nothing is posted by the tool: {:?}", w.writes());
     // The user's Submit Review posts the reply, then resolves the thread.
+    w.drafts_idle().await;
     w.app.test_submit(Command::ReviewSubmitComment);
     assert!(
         w.app
@@ -332,6 +344,7 @@ async fn claude_ide_a_reply_draft_is_tagged_claude_replaced_not_posted_and_submi
 async fn claude_ide_a_failed_reply_stays_pending_with_its_error() {
     let mut w = boot(false, false).await;
     w.data(reply("11", "Will not post", false)).await;
+    w.drafts_idle().await;
     w.app.test_submit(Command::ReviewSubmitComment);
     assert!(
         w.app
@@ -515,11 +528,7 @@ async fn claude_ide_a_claude_reply_draft_is_queued_with_the_setting_on_and_local
     let mut w = boot(false, true).await;
     assert!(w.app.settings.review_drafts_on_forge);
     w.data(reply("11", "Claude reply", false)).await;
-    assert!(
-        w.app
-            .settle(|a| a.review.drafts.inflight.is_none() && a.review.drafts.queue.is_empty())
-            .await
-    );
+    w.drafts_idle().await;
     assert!(w.writes().is_empty(), "{:?}", w.writes());
     let claude = w
         .app
