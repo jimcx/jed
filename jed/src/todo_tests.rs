@@ -14145,9 +14145,9 @@ mod find_in_diff_view {
         fs::create_dir_all(&root).unwrap();
         fs::create_dir_all(&state).unwrap();
         init(&root);
-        fs::write(root.join("f.txt"), "alpha\nlet foo = 1;\ngamma foo\n").unwrap();
+        fs::write(root.join("f.txt"), "a.b\nlet foo = 1;\ngamma foo\n").unwrap();
         commit_all(&root, "one");
-        fs::write(root.join("f.txt"), "alpha\nlet foo = 2;\ngamma foo\n").unwrap();
+        fs::write(root.join("f.txt"), "a.b\nlet foo = 2;\ngamma foo\n").unwrap();
         let initial = InitialFile {
             buffer: Buffer::open(&root.join("f.txt")).unwrap(),
             goto: None,
@@ -14243,6 +14243,27 @@ mod find_in_diff_view {
         assert_eq!(app.find.query.text, "let foo");
         let c = caret(&app);
         assert_eq!((c.right, c.anchor, c.head), (false, (1, 0), (1, 7)));
+
+        // With regex on, the seed is escaped so it finds itself.
+        app.test_execute(Command::Find(FindCommand::Close));
+        app.find_options.regex = true;
+        place(
+            &mut app,
+            Caret {
+                right: true,
+                anchor: (0, 0),
+                head: (0, 3),
+                col: None,
+            },
+        );
+        app.test_execute(Command::OpenFind);
+        assert_eq!(app.find.query.text, r"a\.b");
+        let c = caret(&app);
+        assert_eq!(
+            (c.anchor, c.head),
+            ((0, 0), (0, 3)),
+            "the escaped query matches the seed"
+        );
     }
 }
 
