@@ -14118,7 +14118,9 @@ mod find_in_diff_view {
             bgs_of("beta x").iter().all(|&b| b == other),
             "other matches, both sides"
         );
-        assert!(bgs_of("gone x").iter().all(|&b| b == other));
+        // A removed line's: blended over its red, where the editor's colour hardly shows.
+        let removed = app.theme.get("diffEditor.removedFindMatchHighlight").bg.unwrap();
+        assert!(bgs_of("gone x").iter().all(|&b| b == removed));
 
         app.test_execute(Command::Find(FindCommand::ReplaceOne));
         app.test_execute(Command::Find(FindCommand::SelectAllMatches));
@@ -14129,6 +14131,116 @@ mod find_in_diff_view {
         assert_eq!(cursor(&app), 3, "a query without a match leaves the cursor in place");
         app.press(K::Enter, M::NONE);
         assert_eq!(cursor(&app), 3);
+    }
+
+    /// Find on a diff tab opens as in the editor: seeded from the word under the caret (or its
+    /// one-line selection), that match selected; matches are highlighted on changed rows too,
+    /// side by side and inline.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn find_on_a_diff_tab_seeds_from_the_caret_and_highlights() {
+        use crate::diff_caret::Caret;
+        let dir = tempfile::tempdir().unwrap();
+        let base = workspace::normalize(dir.path());
+        let (root, state) = (base.join("proj"), base.join("state"));
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&state).unwrap();
+        init(&root);
+        fs::write(root.join("f.txt"), "alpha\nlet foo = 1;\ngamma foo\n").unwrap();
+        commit_all(&root, "one");
+        fs::write(root.join("f.txt"), "alpha\nlet foo = 2;\ngamma foo\n").unwrap();
+        let initial = InitialFile {
+            buffer: Buffer::open(&root.join("f.txt")).unwrap(),
+            goto: None,
+        };
+        let mut app = App::new(
+            Workspace::load(root.clone()),
+            TrustStore::load(state.join("trust.toml")),
+            Some(initial),
+            true,
+        );
+        app.test_start();
+        assert!(
+            app.settle(|a| !a.git.running() && a.git.status.as_ref().is_some_and(|s| !s.entries.is_empty()))
+                .await
+        );
+        app.open_diff(root.join("f.txt"), Pair::UNSTAGED);
+        assert!(app.settle(|a| a.diffs_settled() && a.git.status.is_some()).await);
+        let place = |app: &mut App, c: Caret| {
+            app.groups.active_group_mut().active_diff_mut().unwrap().place_caret(c);
+        };
+        let caret = |a: &App| a.groups.active_group().active_diff().unwrap().caret;
+
+        // An empty caret inside `foo` on line 3 (right side): the word seeds the query.
+        let at = |l, b| Caret {
+            right: true,
+            anchor: (l, b),
+            head: (l, b),
+            col: None,
+        };
+        place(&mut app, at(2, 7));
+        app.test_execute(Command::OpenFind);
+        assert_eq!(app.find.query.text, "foo");
+        let c = caret(&app);
+        assert_eq!((c.anchor, c.head), ((2, 6), (2, 9)), "the seeded match is selected");
+
+        let draw = |app: &mut App| {
+            let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(200, 20)).unwrap();
+            term.draw(|f| crate::ui::render(f, app)).unwrap();
+            term.backend().buffer().clone()
+        };
+        let current = app.theme.get("editor.findMatch").bg.unwrap();
+        let other = app.theme.get("editor.findMatchHighlight").bg.unwrap();
+        let removed = app.theme.get("diffEditor.removedFindMatchHighlight").bg.unwrap();
+        let inserted = app.theme.get("diffEditor.insertedFindMatchHighlight").bg.unwrap();
+        // The background of each drawn `foo`'s middle cell (the widget's row left out).
+        let foo_bgs = |cells: &ratatui::buffer::Buffer| {
+            let mut out = Vec::new();
+            for y in 0..20 {
+                let text: String = (0..200).map(|x| cells[(x, y)].symbol().to_string()).collect();
+                if text.contains(" of 3") {
+                    continue;
+                }
+                for (i, _) in text.match_indices("foo") {
+                    out.push(cells[(text[..i].chars().count() as u16 + 1, y)].bg);
+                }
+            }
+            out
+        };
+        for inline in [false, true] {
+            app.groups
+                .active_group_mut()
+                .active_diff_mut()
+                .unwrap()
+                .set_layout(inline);
+            let bgs = foo_bgs(&draw(&mut app));
+            assert!(bgs.len() >= 3, "inline {inline}: {bgs:?}");
+            assert_eq!(
+                bgs.iter().filter(|&&b| b == current).count(),
+                1,
+                "inline {inline}: {bgs:?}"
+            );
+            // The unchanged line's `foo` on the editor's colour, the changed line's on the
+            // removed / added lines' own.
+            assert!(bgs.contains(&other), "inline {inline}: {bgs:?}");
+            assert!(bgs.contains(&removed), "inline {inline}: {bgs:?}");
+            assert!(bgs.contains(&inserted), "inline {inline}: {bgs:?}");
+        }
+
+        // A one-line selection seeds the query as is.
+        app.test_execute(Command::Find(FindCommand::Close));
+        place(
+            &mut app,
+            Caret {
+                right: false,
+                anchor: (1, 0),
+                head: (1, 7),
+                col: None,
+            },
+        );
+        app.test_execute(Command::OpenFind);
+        assert_eq!(app.find.query.text, "let foo");
+        let c = caret(&app);
+        assert_eq!((c.right, c.anchor, c.head), (false, (1, 0), (1, 7)));
     }
 }
 

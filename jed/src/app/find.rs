@@ -419,9 +419,37 @@ impl App {
 const HEX_SEED_MAX: usize = 256;
 
 impl App {
-    /// Cmd+F on a diff tab: the widget, focused, its query selected (no replace: the rows are
-    /// read-only here), the search going on from the cursor's row.
+    /// Cmd+F on a diff tab: the widget, focused (no replace: the rows are read-only here), its
+    /// query seeded as in the editor — the caret's selection when it's on one line, else the
+    /// word under an empty caret (else the last query stays), escaped when regex is on — and
+    /// selected; the search goes on from the seed (else the caret's selection).
     fn open_diff_find(&mut self) {
+        let regex = self.find_options.regex;
+        if let Some(d) = self.groups.active_group_mut().active_diff_mut() {
+            d.sync_caret();
+            let c = d.caret;
+            let (lo, hi) = c.ordered();
+            let text = d.side_text(c.right, lo.0);
+            let seed = if lo == hi {
+                pos::word_at_in(text, lo.1)
+            } else if lo.0 == hi.0 {
+                Some((lo.1, hi.1))
+            } else {
+                None
+            };
+            let seed = seed.and_then(|(s, e)| Some((s, e, text.get(s..e)?.to_string())));
+            if let Some((s, e, word)) = seed {
+                let word = if regex { regex::escape(&word) } else { word };
+                self.find.query = TextField::new(word);
+                // From the seed's start, so the incremental search selects it.
+                d.place_caret(crate::diff_caret::Caret {
+                    right: c.right,
+                    anchor: (lo.0, s),
+                    head: (lo.0, e),
+                    col: None,
+                });
+            }
+        }
         let f = &mut self.find;
         f.visible = true;
         f.replace_visible = false;

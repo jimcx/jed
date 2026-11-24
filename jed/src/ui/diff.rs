@@ -59,9 +59,13 @@ struct Styles {
     inserted_text: Style,
     fill: Style,
     control: Style,
-    /// Find matches (the find widget open over the tab): the selected one, the others.
+    /// Find matches (the find widget open over the tab): the selected one, the others (on an
+    /// unchanged, a removed and an added line: the editor's colour hardly shows on the diff
+    /// backgrounds).
     find_match: Style,
     find_highlight: Style,
+    find_highlight_removed: Style,
+    find_highlight_inserted: Style,
     /// Per `syntax::KEYS` index: the token's foreground (and modifiers), never a background.
     tokens: Vec<Style>,
 }
@@ -169,6 +173,8 @@ pub fn render(
         control: theme.get("editor.whitespace.control"),
         find_match: theme.get("editor.findMatch"),
         find_highlight: theme.get("editor.findMatchHighlight"),
+        find_highlight_removed: theme.get("diffEditor.removedFindMatchHighlight"),
+        find_highlight_inserted: theme.get("diffEditor.insertedFindMatchHighlight"),
         selection: theme.get("editor.selection"),
         tokens: crate::syntax::KEYS
             .iter()
@@ -861,6 +867,15 @@ fn draw_text(
     let mut col = 0usize;
     let mut k = 0;
     let mut fi = 0;
+    // The other matches' colour for the line's background (`style`: a removed, an added or an
+    // unchanged line's).
+    let other_match = if style == st.removed {
+        st.find_highlight_removed
+    } else if style == st.inserted {
+        st.find_highlight_inserted
+    } else {
+        st.find_highlight
+    };
     for (off, g) in line.text.grapheme_indices(true) {
         let (shown, w) = pos::display_grapheme(g, DisplayCol(col), tab_width);
         if col < left_col {
@@ -893,7 +908,7 @@ fn draw_text(
         }
         let in_match = found.get(fi).filter(|(r, _)| r.contains(&off));
         if let Some((_, false)) = in_match {
-            s = s.patch(st.find_highlight);
+            s = s.patch(other_match);
         }
         if let Some((range, _)) = &sel
             && range.contains(&off)

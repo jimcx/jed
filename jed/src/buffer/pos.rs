@@ -885,10 +885,16 @@ pub fn word_at(rope: &Rope, pos: ByteIdx) -> Option<(ByteIdx, ByteIdx)> {
     let line = line_of(rope, pos);
     let start = line_start(rope, line).0;
     let text = line_text(rope, line);
-    let off = (pos.0 - start).min(text.len());
+    let (a, b) = word_at_in(&text, (pos.0 - start).min(text.len()))?;
+    Some((ByteIdx(start + a), ByteIdx(start + b)))
+}
+
+/// `word_at` within one line's `text`, at byte `off`: the word's byte range in it.
+pub fn word_at_in(text: &str, off: usize) -> Option<(usize, usize)> {
+    let off = off.min(text.len());
     let gs: Vec<(usize, &str)> = text.grapheme_indices(true).collect();
     let is_word = |g: &str| class_of(g) == CharClass::Word;
-    // The grapheme at `pos` if it's a word char, else the one before it.
+    // The grapheme at `off` if it's a word char, else the one before it.
     let i = match gs.iter().position(|&(o, _)| o >= off) {
         Some(i) if is_word(gs[i].1) && gs[i].0 == off => i,
         Some(i) if i > 0 && is_word(gs[i - 1].1) => i - 1,
@@ -904,7 +910,7 @@ pub fn word_at(rope: &Rope, pos: ByteIdx) -> Option<(ByteIdx, ByteIdx)> {
         b += 1;
     }
     let end = gs.get(b).map_or(text.len(), |&(o, _)| o);
-    Some((ByteIdx(start + gs[a].0), ByteIdx(start + end)))
+    Some((gs[a].0, end))
 }
 
 /// The run of same-class characters around `pos` (double-click selection).

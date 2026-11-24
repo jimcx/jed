@@ -200,6 +200,11 @@ fn own_entries(truecolor: bool) -> Vec<(&'static str, Style)> {
         ("diffEditor.removedTextBackground", Style::new().bg(c(0x741818))),
         ("diffEditor.insertedTextBackground", Style::new().bg(c(0x505F2F))),
         ("diffEditor.diagonalFill", Style::new().fg(c(0x404040))),
+        // Find's other matches on a removed / added line (Dark+'s `findMatchHighlight`,
+        // #ea5c0055, blended over the line's background: `editor.findMatchHighlight` is the
+        // same over the editor's, and hardly shows on these).
+        ("diffEditor.removedFindMatchHighlight", Style::new().bg(c(0x843314))),
+        ("diffEditor.insertedFindMatchHighlight", Style::new().bg(c(0x774B1F))),
         ("diffEditor.header", fg_bg(0xBBBBBB, 0x252526)),
         // Merge conflicts' blocks (VS Code's `merge.*Background`; the header colours are
         // Dark+'s #3675aa55 / #3c806b55 / #3a3a3a55 blended over the editor, the content
