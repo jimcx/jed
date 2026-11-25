@@ -138,6 +138,11 @@ pub struct ScmView {
     reveal_pending: bool,
     /// The row under the mouse pointer (its buttons are drawn), from the last move.
     pub hover: Option<RowKey>,
+    /// Files picked with Ctrl / Cmd+click or Shift+click (empty: just `selected`); their
+    /// buttons act on all of them.
+    picked: Vec<RowKey>,
+    /// Where a Shift+click range starts: the last file clicked without Shift.
+    anchor: Option<RowKey>,
 }
 
 /// The view's scroll bar: its state with its rows (`ScmView::scrollable`).
@@ -239,8 +244,16 @@ impl ScmView {
         self.selected.is_some()
     }
 
-    /// Selects row `row` (clamped; nothing when there are none) and scrolls to it.
+    /// Selects row `row` (clamped; nothing when there are none) and scrolls to it, dropping
+    /// the picked files.
     pub fn select(&mut self, rows: &[Row], row: usize) {
+        self.picked.clear();
+        self.anchor = None;
+        self.place(rows, row);
+    }
+
+    /// Moves the selection to `row` and scrolls to it, the picked files kept.
+    fn place(&mut self, rows: &[Row], row: usize) {
         if rows.is_empty() {
             self.selected = None;
             return;
@@ -254,20 +267,104 @@ impl ScmView {
         match rows.iter().position(|r| r.is(key)) {
             Some(i) => {
                 self.select(rows, i);
+                self.anchor = Some(key.clone());
                 true
             }
             None => false,
         }
     }
 
+    /// Ctrl / Cmd+click on a file: adds it to the picked files or takes it out (the selected
+    /// file joins them first) and selects it. Not a file or not listed: nothing.
+    pub fn toggle_pick(&mut self, rows: &[Row], key: &RowKey) -> bool {
+        let Some(i) = rows.iter().position(|r| r.is(key)) else {
+            return false;
+        };
+        if !matches!(key, RowKey::File(..)) {
+            return false;
+        }
+        if self.picked.is_empty()
+            && let Some(current @ RowKey::File(..)) = self.selected(rows).map(|r| r.key())
+        {
+            self.picked.push(current);
+        }
+        match self.picked.iter().position(|k| k == key) {
+            Some(at) => {
+                self.picked.remove(at);
+            }
+            None => self.picked.push(key.clone()),
+        }
+        self.anchor = Some(key.clone());
+        self.place(rows, i);
+        true
+    }
+
+    /// Shift+click on a file: picks the files from the anchor (the last file clicked, else the
+    /// selected row) to it and selects it, the anchor kept.
+    pub fn pick_range(&mut self, rows: &[Row], key: &RowKey) -> bool {
+        let Some(to) = rows.iter().position(|r| r.is(key)) else {
+            return false;
+        };
+        if !matches!(key, RowKey::File(..)) {
+            return false;
+        }
+        let from = self
+            .anchor
+            .as_ref()
+            .and_then(|a| rows.iter().position(|r| r.is(a)))
+            .or_else(|| self.selected_row(rows))
+            .unwrap_or(to);
+        let (lo, hi) = (from.min(to), from.max(to));
+        self.picked = rows[lo..=hi]
+            .iter()
+            .filter(|r| matches!(r, Row::File { .. }))
+            .map(|r| r.key())
+            .collect();
+        if self.anchor.is_none() {
+            self.anchor = Some(rows[from].key());
+        }
+        self.place(rows, to);
+        true
+    }
+
+    /// Selects `key`'s row keeping the picked files when it's one of them (a click on its
+    /// button), else as [`Self::select_key`].
+    pub fn focus_key(&mut self, rows: &[Row], key: &RowKey) -> bool {
+        if !self.is_picked(key) {
+            return self.select_key(rows, key);
+        }
+        match rows.iter().position(|r| r.is(key)) {
+            Some(i) => {
+                self.place(rows, i);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether `key`'s row is one of the picked files.
+    pub fn is_picked(&self, key: &RowKey) -> bool {
+        self.picked.contains(key)
+    }
+
+    /// The picked files' rows in list order (those still listed).
+    pub fn picked<'a>(&self, rows: &[Row<'a>]) -> Vec<Row<'a>> {
+        rows.iter()
+            .filter(|r| self.picked.iter().any(|k| r.is(k)))
+            .copied()
+            .collect()
+    }
+
     /// The selection follows to where `selected_row` puts it (after a status read), so a file
     /// coming back later doesn't pull it back.
+    /// Picked files gone from the list are dropped.
     pub fn settle(&mut self, rows: &[Row]) {
+        self.picked.retain(|k| rows.iter().any(|r| r.is(k)));
         if self.selected.is_some() {
             match self.selected_row(rows) {
                 Some(i) => {
                     let keep = self.top;
-                    self.select(rows, i);
+                    self.place(rows, i);
                     self.top = keep;
                 }
                 None => self.selected = None,

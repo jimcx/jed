@@ -2517,7 +2517,7 @@ async fn milestone_10_source_control_saves_dirty_files_before_staging() {
     focus_scm(&mut app);
     let b = scm_button(&mut app, &RowKey::Header(Section::Changes));
     click(&mut app, b);
-    assert!(matches!(&app.prompt, Some(Prompt::SaveBeforeStageAll { buffers }) if buffers.len() == 2));
+    assert!(matches!(&app.prompt, Some(Prompt::SaveBeforeStageAll { buffers, .. }) if buffers.len() == 2));
     let screen = lines(&draw(&mut app));
     assert!(
         screen

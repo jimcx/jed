@@ -3,8 +3,8 @@
 //! "Staged Changes" and "Changes" (both only with files) — each a header row (`▾` / `▸`, title,
 //! the count in a badge at the right) and its files: the name in its change's `gitDecoration.*`
 //! colour (struck through when deleted), the folder dimmed, the change's letter at the right
-//! edge. The hovered and the selected row show their button left of the letter / badge: `+`
-//! stage, `−` unstage (a header's: the whole section). No repository, still reading, or nothing
+//! edge. The hovered and the selected rows (the picked files too) show their button left of the
+//! letter / badge: `+` stage, `−` unstage (a header's: the whole section). No repository, still reading, or nothing
 //! changed: a line of text instead. Only the rows on screen are drawn.
 
 use ratatui::Frame;
@@ -112,12 +112,13 @@ fn render_list(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ScmHit>, Opt
     };
     for (i, row) in rows.iter().enumerate().skip(top).take(list.height as usize) {
         let y = list.y + (i - top) as u16;
-        let is_selected = selected == Some(i);
+        let key = row.key();
+        // The picked files are drawn as selected, with their buttons (which act on all of them).
+        let is_selected = selected == Some(i) || view.is_picked(&key);
         let style = if is_selected { base.patch(selected_style) } else { base };
         if is_selected {
             out.set_style(Rect { y, height: 1, ..list }, style);
         }
-        let key = row.key();
         let buttons = is_selected || view.hover.as_ref() == Some(&key);
         let unstage = row.section() == Section::Staged;
         let button = if unstage { "−" } else { "+" };

@@ -54,11 +54,15 @@ pub struct Done {
 
 impl App {
     /// `git.clean` with the Source Control view focused: the selected row (a Changes header:
-    /// all of them).
+    /// all of them; one of the picked files: all of them).
     pub(super) fn scm_discard(&mut self) {
         let Some(status) = self.git.status.as_ref() else {
             return self.notify(Level::Info, "Not in a git repository".into());
         };
+        if let Some(files) = self.scm_picked_files() {
+            let files = files.iter().map(|rel| status.repo.workdir.join(rel)).collect();
+            return self.discard_request(files);
+        }
         let rows = self.scm.rows(status);
         match self.scm.selected(&rows) {
             Some(Row::Header {

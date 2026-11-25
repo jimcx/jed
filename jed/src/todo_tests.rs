@@ -14740,3 +14740,128 @@ mod scm_refresh {
         );
     }
 }
+
+/// Quick task: the Source Control view's multi-select — Ctrl / Cmd+click picks files,
+/// Shift+click a range, and a picked row's stage / unstage button acts on all of them.
+mod scm_multi_select {
+    use std::fs;
+
+    use crossterm::event::{KeyModifiers as M, MouseButton, MouseEventKind as Mouse};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::App;
+    use crate::buffer::Buffer;
+    use crate::command::Command;
+    use crate::scm::{RowKey, Section};
+    use crate::workspace::trust::TrustStore;
+    use crate::workspace::{self, Workspace};
+
+    const DOWN: Mouse = Mouse::Down(MouseButton::Left);
+    const UP: Mouse = Mouse::Up(MouseButton::Left);
+
+    /// A repository with untracked `f00.txt` … `f03.txt`, the Source Control view focused.
+    async fn app() -> (tempfile::TempDir, App) {
+        let dir = tempfile::tempdir().unwrap();
+        let base = workspace::normalize(dir.path());
+        let (root, state) = (base.join("proj"), base.join("state"));
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&state).unwrap();
+        crate::git::test_repo::init(&root);
+        for i in 0..4 {
+            fs::write(root.join(format!("f{i:02}.txt")), "x\n").unwrap();
+        }
+        let ws = Workspace::load(root.clone());
+        let trust = TrustStore::load(state.join("trust.toml"));
+        let buffer = Buffer::open(&root.join("f00.txt")).unwrap();
+        let mut app = App::new(ws, trust, Some(crate::app::InitialFile { buffer, goto: None }), true);
+        app.test_start();
+        assert!(
+            app.settle(|a| !a.git.running() && a.git.status.as_ref().is_some_and(|s| s.entries.len() == 4))
+                .await
+        );
+        app.test_execute(Command::FocusScm);
+        draw(&mut app);
+        (dir, app)
+    }
+
+    fn draw(app: &mut App) {
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+    }
+
+    fn file(section: Section, name: &str) -> RowKey {
+        RowKey::File(section, name.into())
+    }
+
+    /// Clicks `key`'s row (on its name) with `mods` held, then draws.
+    fn click_row(app: &mut App, key: &RowKey, mods: M) {
+        let hit = app.hits.scm.clone().unwrap();
+        let i = hit.rows.iter().position(|k| k == key).expect("the row is drawn");
+        let (x, y) = (hit.list.x + 5, hit.list.y + i as u16);
+        app.mouse_with(DOWN, x, y, mods);
+        app.mouse_with(UP, x, y, mods);
+        draw(app);
+    }
+
+    /// Clicks the stage / unstage button drawn on `key`'s row.
+    fn click_button(app: &mut App, key: &RowKey) {
+        let hit = app.hits.scm.clone().unwrap();
+        let (r, ..) = hit
+            .buttons
+            .iter()
+            .find(|(_, k, _)| k == key)
+            .expect("a button on the row");
+        let (x, y) = (r.x, r.y);
+        app.mouse(DOWN, x, y);
+        app.mouse(UP, x, y);
+    }
+
+    fn staged(app: &App) -> Vec<String> {
+        let status = app.git.status.as_ref().unwrap();
+        status
+            .entries
+            .iter()
+            .filter(|e| e.staged.is_some())
+            .map(|e| e.path.display().to_string())
+            .collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scm_multi_select_ctrl_click_picks_and_the_button_stages_them_all() {
+        let (_dir, mut app) = app().await;
+        click_row(&mut app, &file(Section::Changes, "f00.txt"), M::NONE);
+        click_row(&mut app, &file(Section::Changes, "f02.txt"), M::CONTROL);
+        click_row(&mut app, &file(Section::Changes, "f03.txt"), M::SUPER);
+        // Ctrl+click on a picked file takes it out again.
+        click_row(&mut app, &file(Section::Changes, "f03.txt"), M::CONTROL);
+        assert!(app.scm.is_picked(&file(Section::Changes, "f00.txt")));
+        assert!(!app.scm.is_picked(&file(Section::Changes, "f03.txt")));
+        click_button(&mut app, &file(Section::Changes, "f02.txt"));
+        assert!(
+            app.settle(|a| staged(a) == ["f00.txt", "f02.txt"]).await,
+            "{:?}",
+            staged(&app)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scm_multi_select_shift_click_picks_a_range_and_the_button_unstages_them_all() {
+        let (_dir, mut app) = app().await;
+        app.test_execute(Command::StageAll);
+        assert!(app.settle(|a| staged(a).len() == 4).await);
+        draw(&mut app);
+        click_row(&mut app, &file(Section::Staged, "f01.txt"), M::NONE);
+        click_row(&mut app, &file(Section::Staged, "f03.txt"), M::SHIFT);
+        for (name, picked) in [
+            ("f00.txt", false),
+            ("f01.txt", true),
+            ("f02.txt", true),
+            ("f03.txt", true),
+        ] {
+            assert_eq!(app.scm.is_picked(&file(Section::Staged, name)), picked, "{name}");
+        }
+        click_button(&mut app, &file(Section::Staged, "f01.txt"));
+        assert!(app.settle(|a| staged(a) == ["f00.txt"]).await, "{:?}", staged(&app));
+    }
+}

@@ -500,8 +500,9 @@ pub struct App {
     pub branch_history: crate::git_history::GitHistory,
     /// The Explorer's "File History" section above it.
     pub file_history_view: crate::file_history_view::FileHistoryView,
-    /// Stage All waiting for these buffers' saves to end.
-    stage_all_after_save: Option<HashSet<BufferId>>,
+    /// Stage All (or staging the picked files: these, relative to the work tree) waiting for
+    /// these buffers' saves to end.
+    stage_all_after_save: Option<(HashSet<BufferId>, Vec<PathBuf>)>,
     /// Task templates from `tasks.toml` and the task runs (`app/tasks.rs`).
     pub tasks: crate::tasks::Tasks,
     /// The environment tasks fill their `{{NAME}}`s from (`task_environments`); kept in the session.

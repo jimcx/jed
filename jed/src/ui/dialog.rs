@@ -88,10 +88,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) -> Option<R
             lines.push(Line::raw(""));
             lines.push(buttons(&[("S", "ave and Stage"), ("C", "ancel")]));
         }
-        Prompt::SaveBeforeStageAll { buffers } => {
+        Prompt::SaveBeforeStageAll { buffers, all, .. } => {
+            let what = if *all { "all changes" } else { "the selected files" };
             let q = match buffers.as_slice() {
-                [one] => format!(" Save {} before staging all changes?", name_of(*one)),
-                many => format!(" Save {} files before staging all changes?", many.len()),
+                [one] => format!(" Save {} before staging {what}?", name_of(*one)),
+                many => format!(" Save {} files before staging {what}?", many.len()),
             };
             lines.push(Line::raw(q));
             for id in buffers.iter().take(8).filter(|_| buffers.len() > 1) {

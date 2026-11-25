@@ -4,14 +4,15 @@
 //! whole section — a file through the diff view's `stage_path` (an open dirty buffer saved
 //! first, as from the gutter; a conflicted file still holding markers asks before it's staged
 //! as resolved), Stage All after saving every dirty buffer among its files (one prompt) — and
-//! the mouse (rows, buttons, wheel, the row under the pointer). The list itself is the git
+//! the mouse (rows, buttons, wheel, the row under the pointer; Ctrl / Cmd+click and Shift+click
+//! pick files, whose buttons then act on all of them). The list itself is the git
 //! status, read again by `app/git.rs` after `notify` events: `scm_status_changed` keeps the
 //! selection on its file.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use crossterm::event::MouseEvent;
+use crossterm::event::{KeyModifiers, MouseEvent};
 use ratatui::layout::Position;
 
 use super::{App, Focus, Level, Prompt};
@@ -127,13 +128,42 @@ impl App {
         }
     }
 
+    /// The picked files (relative to the work tree, each once) when the selected row is one
+    /// of two or more: what its buttons and the stage / discard commands act on.
+    pub(super) fn scm_picked_files(&self) -> Option<Vec<PathBuf>> {
+        let status = self.git.status.as_ref()?;
+        let rows = self.scm.rows(status);
+        let key = self.scm.selected(&rows)?.key();
+        let picked = self.scm.picked(&rows);
+        if !self.scm.is_picked(&key) || picked.len() < 2 {
+            return None;
+        }
+        let mut files: Vec<PathBuf> = picked
+            .iter()
+            .filter_map(|r| match r {
+                Row::File { entry, .. } => Some(entry.path.clone()),
+                Row::Header { .. } => None,
+            })
+            .collect();
+        files.sort();
+        files.dedup();
+        Some(files)
+    }
+
     /// `git.stageFile` / `git.unstageFile` while the view has the keys: the selected file (a
-    /// header: its whole section, as Stage All / Unstage All).
+    /// header: its whole section, as Stage All / Unstage All; one of the picked files: all of
+    /// them that can be — conflicted ones are staged on their own, after the markers check).
     pub(super) fn scm_stage(&mut self, unstage: bool) {
         let Some(status) = self.git.status.as_ref() else {
             self.notify(Level::Info, "Not in a git repository".into());
             return;
         };
+        if let Some(files) = self.scm_picked_files() {
+            return match unstage {
+                true => self.unstage_files(files),
+                false => self.stage_files(files, false),
+            };
+        }
         let rows = self.scm.rows(status);
         match self.scm.selected(&rows) {
             Some(Row::Header { .. }) if unstage => self.unstage_all(),
@@ -159,9 +189,24 @@ impl App {
             self.notify(Level::Info, "Not in a git repository".into());
             return;
         };
-        let repo = status.repo.clone();
         let files: Vec<PathBuf> = scm::files(status, Section::Changes)
             .map(|(e, _)| e.path.clone())
+            .collect();
+        self.stage_files(files, true);
+    }
+
+    /// Stages `files` (relative to the work tree) as one job, those of them still in Changes:
+    /// Stage All's (`all`) or the picked files'. Dirty buffers among them are saved first (one
+    /// prompt), saves in flight waited for.
+    fn stage_files(&mut self, files: Vec<PathBuf>, all: bool) {
+        let Some(status) = self.git.status.as_ref() else {
+            self.notify(Level::Info, "Not in a git repository".into());
+            return;
+        };
+        let repo = status.repo.clone();
+        let files: Vec<PathBuf> = files
+            .into_iter()
+            .filter(|rel| status.entry(rel).is_some_and(|e| Section::Changes.change(e).is_some()))
             .collect();
         if files.is_empty() {
             self.notify(Level::Info, "No changes to stage".into());
@@ -181,11 +226,15 @@ impl App {
             }
         }
         if !dirty.is_empty() {
-            self.prompt = Some(Prompt::SaveBeforeStageAll { buffers: dirty });
+            self.prompt = Some(Prompt::SaveBeforeStageAll {
+                buffers: dirty,
+                files,
+                all,
+            });
             return;
         }
         if !saving.is_empty() {
-            self.stage_all_after_save = Some(saving);
+            self.stage_all_after_save = Some((saving, files));
             self.notify(Level::Info, "Waiting for the saves to finish…".into());
             return;
         }
@@ -196,8 +245,8 @@ impl App {
         self.spawn_diff_stage(done, "Staging failed", move || stage::stage_files(&repo, &files));
     }
 
-    /// The Stage All prompt's Save: saves each, then stages all once every save is done.
-    pub(super) fn save_then_stage_all(&mut self, buffers: Vec<BufferId>) {
+    /// The Stage All prompt's Save: saves each, then stages `files` once every save is done.
+    pub(super) fn save_then_stage_all(&mut self, buffers: Vec<BufferId>, files: Vec<PathBuf>) {
         let mut waiting = HashSet::new();
         for id in buffers {
             self.save(id);
@@ -208,13 +257,13 @@ impl App {
             }
             waiting.insert(id);
         }
-        self.stage_all_after_save = Some(waiting);
+        self.stage_all_after_save = Some((waiting, files));
     }
 
     /// A save ended (`save_done`): Stage All waiting for it goes ahead once the last one is
     /// done (checking again), or is dropped when one failed.
     pub(super) fn stage_all_save_done(&mut self, id: BufferId, saved: bool) {
-        let Some(waiting) = &mut self.stage_all_after_save else {
+        let Some((waiting, _)) = &mut self.stage_all_after_save else {
             return;
         };
         if !waiting.remove(&id) {
@@ -223,9 +272,10 @@ impl App {
         if !saved {
             tracing::info!("not staging all: a save didn't happen");
             self.stage_all_after_save = None;
-        } else if waiting.is_empty() {
-            self.stage_all_after_save = None;
-            self.stage_all();
+        } else if waiting.is_empty()
+            && let Some((_, files)) = self.stage_all_after_save.take()
+        {
+            self.stage_files(files, false);
         }
     }
 
@@ -235,9 +285,22 @@ impl App {
             self.notify(Level::Info, "Not in a git repository".into());
             return;
         };
-        let repo = status.repo.clone();
         let files: Vec<PathBuf> = scm::files(status, Section::Staged)
             .map(|(e, _)| e.path.clone())
+            .collect();
+        self.unstage_files(files);
+    }
+
+    /// Unstages `files` (relative to the work tree) as one job, those of them with staged
+    /// changes.
+    fn unstage_files(&mut self, files: Vec<PathBuf>) {
+        let Some(status) = self.git.status.as_ref() else {
+            return;
+        };
+        let repo = status.repo.clone();
+        let files: Vec<PathBuf> = files
+            .into_iter()
+            .filter(|rel| status.entry(rel).is_some_and(|e| e.staged.is_some()))
             .collect();
         if files.is_empty() {
             self.notify(Level::Info, "No staged changes".into());
@@ -258,9 +321,12 @@ impl App {
         self.check_open_files(|_| true);
     }
 
-    /// A click in the view: a button stages / unstages its row; a header collapses / expands;
-    /// a file is selected and its diff opens with the keys staying in the list (a double click
-    /// focuses the editor). The view takes the keys.
+    /// A click in the view: a button stages / unstages (or discards) its row — all the picked
+    /// files when it's one of them; a header collapses / expands; a file is selected and its
+    /// diff opens with the keys staying in the list (a double click focuses the editor).
+    /// Ctrl+click (Cmd+click: mouse reports carry Ctrl, rarely Cmd) picks a file or unpicks it,
+    /// Shift+click picks the files from the last one clicked; neither opens a diff. The view
+    /// takes the keys.
     pub(super) fn scm_click(&mut self, m: MouseEvent, count: u8) {
         self.ui.focus = Focus::SidePanel;
         self.branch_history.set_focused(false);
@@ -273,13 +339,13 @@ impl App {
         let Some(status) = self.git.status.as_ref() else { return };
         let rows = self.scm.rows(status);
         if let Some((_, key)) = hit.discards.iter().find(|(r, _)| r.contains(at)) {
-            if self.scm.select_key(&rows, key) {
+            if self.scm.focus_key(&rows, key) {
                 self.scm_discard();
             }
             return;
         }
         if let Some((_, key, unstage)) = hit.buttons.iter().find(|(r, ..)| r.contains(at)) {
-            if self.scm.select_key(&rows, key) {
+            if self.scm.focus_key(&rows, key) {
                 self.scm_stage(*unstage);
             }
             return;
@@ -290,6 +356,16 @@ impl App {
         let Some(key) = hit.rows.get((at.y - hit.list.y) as usize) else {
             return;
         };
+        if matches!(key, RowKey::File(..)) {
+            if m.modifiers.contains(KeyModifiers::SHIFT) {
+                self.scm.pick_range(&rows, key);
+                return;
+            }
+            if m.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER) {
+                self.scm.toggle_pick(&rows, key);
+                return;
+            }
+        }
         if !self.scm.select_key(&rows, key) {
             return;
         }

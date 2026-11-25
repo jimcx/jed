@@ -35,9 +35,14 @@ pub enum Prompt {
         line: usize,
         what: super::quick_diff::What,
     },
-    /// Stage All (the Source Control view) with dirty buffers among the files: save them first.
+    /// Stage All or staging the picked files (the Source Control view) with dirty buffers among
+    /// the files: save them first.
     SaveBeforeStageAll {
         buffers: Vec<BufferId>,
+        /// The files to stage (relative to the work tree).
+        files: Vec<PathBuf>,
+        /// Stage All (else the picked files).
+        all: bool,
     },
     /// Crash backups found at start (`app.backups.offered`): Restore / Discard / Later (Esc).
     RestoreBackups,
@@ -221,13 +226,13 @@ impl App {
                 _ if esc || ch == Some('c') => self.close_prompt(),
                 _ => self.prompt = Some(Prompt::SaveBeforeStage { buffer, line, what }),
             },
-            Prompt::SaveBeforeStageAll { buffers } => match ch {
+            Prompt::SaveBeforeStageAll { buffers, files, all } => match ch {
                 _ if enter || ch == Some('s') => {
                     self.close_prompt();
-                    self.save_then_stage_all(buffers);
+                    self.save_then_stage_all(buffers, files);
                 }
                 _ if esc || ch == Some('c') => self.close_prompt(),
-                _ => self.prompt = Some(Prompt::SaveBeforeStageAll { buffers }),
+                _ => self.prompt = Some(Prompt::SaveBeforeStageAll { buffers, files, all }),
             },
             Prompt::RestoreBackups => match ch {
                 _ if enter || ch == Some('r') => {
