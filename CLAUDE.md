@@ -4,7 +4,7 @@ A cargo workspace: **jed**, a VS Code-style terminal text editor (`jed/`; ratatu
 
 **PLAN.md is the source of truth for jed's design and scope** — read the section you need instead of guessing: Features (one subsection per area), [Keybindings](PLAN.md#keybindings-vs-code-defaults), [Architecture](PLAN.md#architecture), [Text positions](PLAN.md#text-positions), [Async and blocking work](PLAN.md#async-and-blocking-work), [Logging](PLAN.md#logging), [Tasks](PLAN.md#tasks).
 
-Work is a task, built via `/task <name>`: one commit, or one per subtask (`tools-a`, `tools-b`, …) for a bigger one. Each lives in `tasks/<id>.md` (front matter, "Needs", "Deferred", "Done when"; finished ones keep their file with `status: done` — grep `tasks/` when something refers back to one); PLAN.md's Tasks list is generated from them by `scripts/tasks` ([tasks/README.md](tasks/README.md)). Milestones 1–13 are done and keep their numbers.
+Work is a task, built via `/task <name>`: one commit, or one per subtask (`tools-a`, `tools-b`, …) for a bigger one. Each lives in `tasks/<id>.md` (front matter, "Needs", "Deferred", "Done when"; finished ones keep their file with `status: done` — grep `tasks/` when something refers back to one); PLAN.md's Tasks list is generated from them by `scripts/tasks` ([tasks/README.md](tasks/README.md)). Milestones 1–13 are done and keep their numbers. A small fix or feature with no task file goes through `/quicktask <instruction>` (same worktree and review loop, done in-session with the user, light testing).
 
 **This file is the summary; details are read on demand**:
 - [docs/dev/modules.md](docs/dev/modules.md) — every `jed/src/` module (one line each, then in full) and the data flow step by step.

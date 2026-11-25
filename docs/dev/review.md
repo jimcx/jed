@@ -141,3 +141,7 @@ instead of forming an impression. One block per subtask:
 
 A reviewer trusts a mutation result as far as its test still exists and still fails for that reason; it is worth
 re-running one when a finding turns on it.
+
+`/quicktask` (a small fix or feature with no task file) attaches a lighter block: no mutations, and the user's
+instruction and decisions under **Instruction:** in place of a task file. Review against that instruction, and don't
+report the missing mutation runs; a missing regression test for a bug fix is still a finding.
