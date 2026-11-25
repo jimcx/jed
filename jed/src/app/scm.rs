@@ -255,21 +255,7 @@ impl App {
     /// checked against disk (reloaded, or the changed-on-disk banner over unsaved edits).
     pub(super) fn scm_refresh(&mut self) {
         self.refresh_git(None);
-        let ids: Vec<BufferId> = self
-            .buffers
-            .iter()
-            .filter(|(_, b)| b.has_file())
-            .map(|(id, _)| id)
-            .collect();
-        for id in ids {
-            self.check_disk(id, false);
-        }
-        let mut hex: Vec<PathBuf> = self.groups.hex_tabs().map(|h| h.path.clone()).collect();
-        hex.sort();
-        hex.dedup();
-        for path in hex {
-            self.check_hex(path);
-        }
+        self.check_open_files(|_| true);
     }
 
     /// A click in the view: a button stages / unstages its row; a header collapses / expands;

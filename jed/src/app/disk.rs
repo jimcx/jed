@@ -82,10 +82,16 @@ impl App {
     /// inside one (a folder deleted or renamed).
     pub(super) fn disk_paths_changed(&mut self, paths: &[PathBuf]) {
         let changed: HashSet<&Path> = paths.iter().map(PathBuf::as_path).collect();
+        self.check_open_files(|p| p.ancestors().any(|a| changed.contains(a)));
+    }
+
+    /// Checks against disk every open file and hex tab whose path passes `filter` (each file
+    /// once, however many hex tabs show it). `|_| true`: all of them (`git.refresh`).
+    pub(super) fn check_open_files(&mut self, filter: impl Fn(&Path) -> bool) {
         let ids: Vec<BufferId> = self
             .buffers
             .iter()
-            .filter(|(_, b)| b.has_file() && b.path.ancestors().any(|a| changed.contains(a)))
+            .filter(|(_, b)| b.has_file() && filter(&b.path))
             .map(|(id, _)| id)
             .collect();
         for id in ids {
@@ -93,7 +99,7 @@ impl App {
         }
         let mut hex: Vec<PathBuf> = Vec::new();
         for h in self.groups.hex_tabs() {
-            if h.path.ancestors().any(|a| changed.contains(a)) && !hex.contains(&h.path) {
+            if filter(&h.path) && !hex.contains(&h.path) {
                 hex.push(h.path.clone());
             }
         }
@@ -509,6 +515,19 @@ mod tests {
         assert_eq!(app.disk.checked, 2);
         assert_eq!(app.active_hex().unwrap().doc.bytes(), b"\0two");
         assert_eq!(app.disk.reloads, 1, "the second check found the bytes it has");
+    }
+
+    /// `git.refresh` checks a hex tab's file though no file system event named it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_scm_refresh_rereads_a_hex_tab() {
+        let (_d, path, mut app) = hex_setup(b"\0one");
+        fs::write(&path, b"\0two").unwrap();
+        app.test_execute(crate::command::Command::ScmRefresh);
+        assert!(
+            app.settle(|a| a.active_hex().is_some_and(|h| h.doc.bytes() == b"\0two"))
+                .await,
+            "the new bytes"
+        );
     }
 
     /// A hex tab closed while its check runs: the result finds no tab and is dropped, and the

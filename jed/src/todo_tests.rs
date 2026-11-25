@@ -14712,4 +14712,31 @@ mod scm_refresh {
         app.mouse(MouseEventKind::Up(MouseButton::Left), button.x, button.y);
         assert!(caught_up(&mut app).await);
     }
+
+    /// With no repository the button is still there, and a `git init` the watcher never
+    /// reported is found by the refresh.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scm_refresh_finds_a_repository_made_since() {
+        let (_d, root, state) = dirs();
+        fs::write(root.join("a.txt"), "a\n").unwrap();
+        let ws = Workspace::load(root.clone());
+        let trust = TrustStore::load(state.join("trust.toml"));
+        let mut app = App::new(ws, trust, None, true);
+        app.test_start();
+        focus_scm(&mut app);
+        assert!(app.settle(|a| !a.git.running()).await);
+        assert!(app.git.status.is_none());
+        let term = draw(&mut app);
+        let button = app.hits.scm.as_ref().expect("the button's hit").refresh;
+        assert_eq!(term.backend().buffer()[(button.x, button.y)].symbol(), "↻");
+        init(&root);
+        app.test_execute(Command::ScmRefresh);
+        assert!(
+            settle_git(&mut app, |s| matches!(
+                s.entry(Path::new("a.txt")),
+                Some(e) if e.unstaged == Some(Change::Untracked)
+            ))
+            .await
+        );
+    }
 }
