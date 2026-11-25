@@ -14917,6 +14917,32 @@ mod scm_multi_select {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn scm_multi_select_unpicking_moves_the_selection_so_the_commands_act_on_the_rest() {
+        let (_dir, mut app) = app().await;
+        click_row(&mut app, &file(Section::Changes, "f00.txt"), M::NONE);
+        click_row(&mut app, &file(Section::Changes, "f02.txt"), M::CONTROL);
+        click_row(&mut app, &file(Section::Changes, "f03.txt"), M::CONTROL);
+        click_row(&mut app, &file(Section::Changes, "f03.txt"), M::CONTROL);
+        // Discard from the keys: the two still picked, not the file just dropped.
+        app.test_execute(Command::DiscardChanges);
+        let workdir = app.git.status.as_ref().unwrap().repo.workdir.clone();
+        let want = vec![workdir.join("f00.txt"), workdir.join("f02.txt")];
+        assert!(
+            matches!(&app.prompt, Some(Prompt::ConfirmDiscard { files, .. }) if *files == want),
+            "{:?}",
+            app.prompt.is_some()
+        );
+        app.press(K::Esc, M::NONE);
+        assert!(app.prompt.is_none());
+        app.test_execute(Command::StageFile);
+        assert!(
+            app.settle(|a| staged(a) == ["f00.txt", "f02.txt"]).await,
+            "{:?}",
+            staged(&app)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn scm_multi_select_a_key_move_or_a_plain_click_drops_the_picks() {
         let (_dir, mut app) = app().await;
         let (f00, f01, f02) = (

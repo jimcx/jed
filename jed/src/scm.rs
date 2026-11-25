@@ -274,8 +274,9 @@ impl ScmView {
         }
     }
 
-    /// Ctrl / Cmd+click on a file: adds it to the picked files or takes it out (the selected
-    /// file joins them first) and selects it. Not a file or not listed: nothing.
+    /// Ctrl / Cmd+click on a file: adds it to the picked files and selects it (the selected
+    /// file joins them first), or takes it out, selecting the last file still picked. Not a
+    /// file or not listed: nothing.
     pub fn toggle_pick(&mut self, rows: &[Row], key: &RowKey) -> bool {
         let Some(i) = rows.iter().position(|r| r.is(key)) else {
             return false;
@@ -288,14 +289,23 @@ impl ScmView {
         {
             self.picked.push(current);
         }
+        self.anchor = Some(key.clone());
         match self.picked.iter().position(|k| k == key) {
             Some(at) => {
+                // Unpicked: the selection goes to the last file still picked (one left is a
+                // plain selection), so the keys don't act on the file just dropped.
                 self.picked.remove(at);
+                let last = self.picked.last().and_then(|k| rows.iter().position(|r| r.is(k)));
+                if self.picked.len() == 1 {
+                    self.picked.clear();
+                }
+                self.place(rows, last.unwrap_or(i));
             }
-            None => self.picked.push(key.clone()),
+            None => {
+                self.picked.push(key.clone());
+                self.place(rows, i);
+            }
         }
-        self.anchor = Some(key.clone());
-        self.place(rows, i);
         true
     }
 
