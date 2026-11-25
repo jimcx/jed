@@ -68,7 +68,7 @@ and not fed back to it):
 | `get_document_symbols` | a file's symbols as a tree: name, kind, detail, line range, children |
 | `find_workspace_symbols` | symbols by name across the workspace (`max`, default 50, up to 200) |
 | `open_file` | opens a file at a line in jed |
-| `get_review` | the merge request, its files and the pending drafts (each with its id, author `claude` / `you` and state `on_forge` / `local_only`) |
+| `get_review` | the merge request, its files, its general comments (the newest 50), the reviewers' verdicts and the pending drafts (each with its id, author `claude` / `you` and state `on_forge` / `local_only`) |
 | `get_review_threads` | the threads, their live lines, comments and suggestions |
 | `review_refresh` | reloads the merge request |
 | `review_apply_suggestion` | applies a suggestion and saves the file |

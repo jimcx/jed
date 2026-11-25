@@ -273,7 +273,9 @@ pub fn tools() -> Vec<Value> {
             "get_review",
             "The code review of the checked-out branch's merge request, as jed last loaded it (no forge call): number, title, \
              URL, branches, state, unresolved count, whether local is ahead / behind / diverged, the files with +/-, the user's \
-             pending drafts (each with its id, author claude / you, and state on_forge / local_only), when it was fetched, and why there is none. Start here to deal with \
+             pending drafts (each with its id, author claude / you, and state on_forge / local_only), the general comments on the \
+             merge request (not on a line; the newest 50, oldest first, with author, time, body and URL), each reviewer's \
+             verdict (approved / changes_requested), when it was fetched, and why there is none. Start here to deal with \
              review feedback. `read_only: true` means the user forbids the write tools below (mcp_read_only in forges.toml).",
             json!({}),
             &[],

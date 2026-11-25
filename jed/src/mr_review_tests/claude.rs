@@ -236,6 +236,52 @@ async fn review_conversation_claude_gets_the_description_clipped() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn review_conversation_claude_gets_the_general_comments_and_verdicts() {
+    use crate::forge::{Approval, ApprovalState, Comment};
+    let mut w = boot(false, false).await;
+    let a = w.data(Query::Review).await;
+    assert_eq!(a["review"]["conversation"], json!([]));
+    assert_eq!(a["review"]["approvals"], json!([]));
+    let Content::Loaded(r) = &mut w.app.review.content else {
+        panic!("loaded");
+    };
+    let note = |i: usize, body: String| Comment {
+        id: i.to_string(),
+        author: "carol".into(),
+        body,
+        created_at: format!("t{i}"),
+        updated_at: String::new(),
+        url: format!("https://git.example.com/c/{i}"),
+    };
+    r.conversation = (0..60).map(|i| note(i, format!("note {i}"))).collect();
+    r.conversation.push(note(60, "y".repeat(10_000)));
+    r.approvals = vec![Approval {
+        author: "dave".into(),
+        state: ApprovalState::ChangesRequested,
+        id: None,
+    }];
+    let a = w.data(Query::Review).await;
+    let r = &a["review"];
+    let c = r["conversation"].as_array().unwrap();
+    // The newest 50, oldest first; a long body is clipped.
+    assert_eq!((c.len(), r["conversation_total"].as_u64()), (50, Some(61)));
+    assert_eq!(c[0]["body"], "note 11");
+    assert_eq!(
+        (c[0]["id"].as_str(), c[0]["author"].as_str(), c[0]["time"].as_str()),
+        (Some("11"), Some("carol"), Some("t11"))
+    );
+    assert_eq!(c[0]["url"], "https://git.example.com/c/11");
+    assert_eq!(c[0]["truncated"], false);
+    assert!(c[49]["body"].as_str().unwrap().len() < 10_000);
+    assert_eq!(c[49]["truncated"], true);
+    assert_eq!(
+        r["approvals"],
+        json!([{"author": "dave", "state": "changes_requested"}])
+    );
+    assert!(w.writes().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn claude_ide_apply_changes_and_saves_the_file_in_one_undo_step() {
     let mut w = boot(false, false).await;
     let a = w.data(Query::ReviewApply { thread: "11".into() }).await;

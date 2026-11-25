@@ -2,6 +2,9 @@
 //! Claude Code integration): what `get_review`, `get_review_threads`, `review_refresh`,
 //! `review_apply_suggestion` and `review_draft_reply` ask.
 //!
+//! `get_review` also carries the merge request's general comments (`Review::conversation`, the
+//! newest `MAX_CONVERSATION`) and the reviewers' verdicts, read-only like the rest.
+//!
 //! Reads (`claude_review`, `claude_review_threads`) use only the loaded `ReviewState`: no forge
 //! call, no token, nothing off the UI thread. Comment bodies are other people's text (already
 //! cleaned of control characters); they are capped per comment and per thread list, and reach
@@ -43,6 +46,8 @@ const MAX_SUGGESTIONS: usize = 5;
 const MAX_SUGGESTION_LINES: usize = 200;
 const MAX_FILES: usize = 300;
 const MAX_DRAFTS: usize = 100;
+/// The merge request's general (non-line) comments `get_review` lists: the newest.
+const MAX_CONVERSATION: usize = 50;
 /// A reply draft's body, in bytes.
 const MAX_REPLY: usize = 20_000;
 
@@ -221,6 +226,25 @@ impl App {
                 })
             })
             .collect();
+        let skip = review.conversation.len().saturating_sub(MAX_CONVERSATION);
+        let conversation: Vec<Value> = review.conversation[skip..]
+            .iter()
+            .map(|c| {
+                let (body, truncated) = clip_head(&c.body, MAX_BODY);
+                json!({"id": c.id, "author": c.author, "time": c.created_at, "body": body, "truncated": truncated, "url": c.url})
+            })
+            .collect();
+        let approvals: Vec<Value> = review
+            .approvals
+            .iter()
+            .map(|a| {
+                let state = match a.state {
+                    crate::forge::ApprovalState::Approved => "approved",
+                    crate::forge::ApprovalState::ChangesRequested => "changes_requested",
+                };
+                json!({"author": a.author, "state": state})
+            })
+            .collect();
         json!({"review": {
             "number": mr.number,
             "title": crate::forge::http::clean_line(&mr.title),
@@ -239,6 +263,9 @@ impl App {
             "files": files,
             "files_total": review.files.len(),
             "pending_drafts": drafts,
+            "conversation": conversation,
+            "conversation_total": review.conversation.len(),
+            "approvals": approvals,
             "read_only": review.mcp_read_only,
             "fetched_at": r.fetched_at.map(epoch),
             "comments_error": review.comments_error,
