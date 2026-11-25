@@ -13940,20 +13940,13 @@ mod shell_integration_check {
                 .contains("READY")))
                 .await
         );
-        if let Some(m) = &app.message {
-            eprintln!(
-                "FLAKE never_installed_warns_once: message {:?} {:?}; integration checked {}, seen {:?}; shell tabs {}",
-                m.level,
-                m.text,
-                app.shell_integration_checked,
-                app.shell_integration_seen,
-                app.shell_tabs().count()
-            );
-        }
         assert!(
             app.message.is_none(),
-            "FLAKE second tab warned again: {:?}",
-            app.message.as_ref().map(|m| (&m.level, &m.text))
+            "FLAKE second tab warned again: {:?}; integration checked {}, seen {:?}; shell tabs {}",
+            app.message.as_ref().map(|m| (&m.level, &m.text)),
+            app.shell_integration_checked,
+            app.shell_integration_seen,
+            app.shell_tabs().count()
         );
         assert_eq!(app.shell_integration_seen, None, "second tab checked again");
     }
