@@ -14746,13 +14746,13 @@ mod scm_refresh {
 mod scm_multi_select {
     use std::fs;
 
-    use crossterm::event::{KeyModifiers as M, MouseButton, MouseEventKind as Mouse};
+    use crossterm::event::{KeyCode as K, KeyModifiers as M, MouseButton, MouseEventKind as Mouse};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    use crate::app::App;
+    use crate::app::{App, Prompt};
     use crate::buffer::Buffer;
-    use crate::command::Command;
+    use crate::command::{Command, ScmCommand};
     use crate::scm::{RowKey, Section};
     use crate::workspace::trust::TrustStore;
     use crate::workspace::{self, Workspace};
@@ -14863,5 +14863,77 @@ mod scm_multi_select {
         }
         click_button(&mut app, &file(Section::Staged, "f01.txt"));
         assert!(app.settle(|a| staged(a) == ["f00.txt"]).await, "{:?}", staged(&app));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scm_multi_select_discard_button_asks_once_for_all_picked_files() {
+        let (_dir, mut app) = app().await;
+        click_row(&mut app, &file(Section::Changes, "f01.txt"), M::NONE);
+        click_row(&mut app, &file(Section::Changes, "f03.txt"), M::CONTROL);
+        let hit = app.hits.scm.clone().unwrap();
+        let key = file(Section::Changes, "f03.txt");
+        let (r, _) = hit.discards.iter().find(|(_, k)| *k == key).expect("a discard button");
+        let (x, y) = (r.x, r.y);
+        app.mouse(DOWN, x, y);
+        app.mouse(UP, x, y);
+        let workdir = app.git.status.as_ref().unwrap().repo.workdir.clone();
+        let want = vec![workdir.join("f01.txt"), workdir.join("f03.txt")];
+        assert!(
+            matches!(&app.prompt, Some(Prompt::ConfirmDiscard { files, trash: 2, .. }) if *files == want),
+            "{:?}",
+            app.prompt.is_some()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scm_multi_select_stage_saves_a_dirty_picked_file_first_then_stages_only_the_picked() {
+        let (dir, mut app) = app().await;
+        // f00.txt is open: an unsaved edit in it.
+        app.test_execute(Command::Scm(ScmCommand::FocusEditor));
+        app.type_text("y");
+        assert!(app.active_buffer().unwrap().is_dirty());
+        app.test_execute(Command::FocusScm);
+        draw(&mut app);
+        click_row(&mut app, &file(Section::Changes, "f00.txt"), M::NONE);
+        click_row(&mut app, &file(Section::Changes, "f02.txt"), M::CONTROL);
+        click_button(&mut app, &file(Section::Changes, "f02.txt"));
+        assert!(matches!(
+            &app.prompt,
+            Some(Prompt::SaveBeforeStageAll { buffers, files, all: false })
+                if buffers.len() == 1 && files.len() == 2
+        ));
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let screen: String = term.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(screen.contains("before staging the selected files?"), "{screen}");
+        app.press(K::Char('s'), M::NONE);
+        assert!(
+            app.settle(|a| staged(a) == ["f00.txt", "f02.txt"]).await,
+            "{:?}",
+            staged(&app)
+        );
+        let root = workspace::normalize(dir.path()).join("proj");
+        assert_eq!(fs::read_to_string(root.join("f00.txt")).unwrap(), "yx\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scm_multi_select_a_key_move_or_a_plain_click_drops_the_picks() {
+        let (_dir, mut app) = app().await;
+        let (f00, f01, f02) = (
+            file(Section::Changes, "f00.txt"),
+            file(Section::Changes, "f01.txt"),
+            file(Section::Changes, "f02.txt"),
+        );
+        click_row(&mut app, &f00, M::NONE);
+        click_row(&mut app, &f01, M::SHIFT);
+        assert!(app.scm.is_picked(&f00) && app.scm.is_picked(&f01));
+        app.test_execute(Command::Scm(ScmCommand::Down));
+        assert!(!app.scm.is_picked(&f00) && !app.scm.is_picked(&f01));
+        draw(&mut app);
+        click_row(&mut app, &f00, M::NONE);
+        click_row(&mut app, &f02, M::CONTROL);
+        assert!(app.scm.is_picked(&f02));
+        click_row(&mut app, &f01, M::NONE);
+        assert!(!app.scm.is_picked(&f00) && !app.scm.is_picked(&f02));
     }
 }

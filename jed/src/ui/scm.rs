@@ -4,8 +4,8 @@
 //! the count in a badge at the right) and its files: the name in its change's `gitDecoration.*`
 //! colour (struck through when deleted), the folder dimmed, the change's letter at the right
 //! edge. The hovered and the selected rows (the picked files too) show their button left of the
-//! letter / badge: `+` stage, `−` unstage (a header's: the whole section). No repository, still reading, or nothing
-//! changed: a line of text instead. Only the rows on screen are drawn.
+//! letter / badge: `+` stage, `−` unstage (a header's: the whole section). No repository, still
+//! reading, or nothing changed: a line of text instead. Only the rows on screen are drawn.
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;

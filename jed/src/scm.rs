@@ -357,6 +357,7 @@ impl ScmView {
 
     /// The selection follows to where `selected_row` puts it (after a status read), so a file
     /// coming back later doesn't pull it back.
+    ///
     /// Picked files gone from the list are dropped.
     pub fn settle(&mut self, rows: &[Row]) {
         self.picked.retain(|k| rows.iter().any(|r| r.is(k)));
