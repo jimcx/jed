@@ -103,12 +103,16 @@ impl App {
 }
 
 /// `→ [mcp 12] get_command_output terminal 2 command 5`: a tool call's name and what it
-/// touches (`targets`), any other method's name alone; a line that wasn't JSON is a warning.
+/// touches (`targets`), any other method's name alone; a line without a method is a warning
+/// naming at most its JSON-RPC id (never its text).
 fn request_line(who: &str, msg: &Value) -> (Level, String) {
     let Some(method) = msg["method"].as_str() else {
         return (
             Level::Warn,
-            format!("→ {who} unreadable: {}", capped_json(msg, PARAMS_CAP)),
+            match &msg["id"] {
+                Value::Number(id) => format!("→ {who} unreadable (id {id})"),
+                _ => format!("→ {who} unreadable"),
+            },
         );
     };
     let params = &msg["params"];
@@ -201,54 +205,6 @@ fn cut(s: &str, cap: usize) -> String {
     out
 }
 
-/// A writer that keeps the first `cap` bytes and fails after, so serializing a huge value
-/// stops early rather than building all of it.
-struct Capped {
-    buf: Vec<u8>,
-    cap: usize,
-    cut: bool,
-}
-
-impl std::io::Write for Capped {
-    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        let room = self.cap - self.buf.len();
-        if data.len() > room {
-            self.buf.extend_from_slice(&data[..room]);
-            self.cut = true;
-            return Err(std::io::ErrorKind::WriteZero.into());
-        }
-        self.buf.extend_from_slice(data);
-        Ok(data.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-/// `value` as compact JSON, at most about `cap` bytes (`…` after a cut).
-fn capped_json(value: &Value, cap: usize) -> String {
-    let mut w = Capped {
-        buf: Vec::new(),
-        cap,
-        cut: false,
-    };
-    let _ = serde_json::to_writer(&mut w, value);
-    let mut s = match String::from_utf8(w.buf) {
-        Ok(s) => s,
-        Err(e) => {
-            let valid = e.utf8_error().valid_up_to();
-            let mut b = e.into_bytes();
-            b.truncate(valid);
-            String::from_utf8(b).unwrap_or_default()
-        }
-    };
-    if w.cut {
-        s.push('…');
-    }
-    s
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,7 +257,14 @@ mod tests {
         );
         let init = json!({"method": "initialize", "params": {"clientInfo": {"name": "c"}}});
         assert_eq!(request_line("[mcp]", &init), (Level::Info, "→ [mcp] initialize".into()));
-        assert_eq!(request_line("[mcp]", &json!("junk")).0, Level::Warn);
+        assert_eq!(
+            request_line("[mcp]", &json!("secret junk")),
+            (Level::Warn, "→ [mcp] unreadable".into())
+        );
+        assert_eq!(
+            request_line("[mcp]", &json!({"id": 7, "params": {"body": "secret"}})),
+            (Level::Warn, "→ [mcp] unreadable (id 7)".into())
+        );
     }
 
     #[test]
@@ -325,13 +288,5 @@ mod tests {
         let tool = json!({"result": {"content": [{"text": "boom"}], "isError": true}});
         let (level, line) = response_line("[mcp]", &tool, Some(1));
         assert_eq!((level, line.as_str()), (Level::Error, "← [mcp] tool error: boom, 1 ms"));
-    }
-
-    #[test]
-    fn capped_json_stops_at_the_cap_on_a_character_boundary() {
-        let big = json!({"text": "é".repeat(100_000)});
-        let s = capped_json(&big, 1000);
-        assert!(s.len() <= 1000 + 3 && s.ends_with('…'));
-        assert_eq!(capped_json(&json!({"a": 1}), 1000), "{\"a\":1}");
     }
 }
