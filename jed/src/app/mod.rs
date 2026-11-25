@@ -1612,6 +1612,7 @@ impl App {
             Command::ResolveOurs => self.resolve_command(crate::git::stage::ConflictSide::Ours),
             Command::ResolveTheirs => self.resolve_command(crate::git::stage::ConflictSide::Theirs),
             Command::UnstageAll => self.unstage_all(),
+            Command::ScmRefresh => self.scm_refresh(),
             Command::FocusScm => self.focus_scm(),
             Command::Scm(c) => self.scm_command(c),
             Command::GitHistory(c) => self.git_history_command(c),

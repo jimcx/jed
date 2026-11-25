@@ -87,8 +87,21 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
         SidePanel::SourceControl => {
             let (scm, bar, history) = super::scm::render(f, view, app);
             let (history, history_scrollbar) = history.unwrap_or_default();
+            // The `↻` at the title's right end (one blank cell before the border): always there,
+            // with or without a repository, so a refresh can find one made since.
+            let mut scm = scm.unwrap_or_default();
+            if inner_w >= 8 {
+                scm.refresh = Rect {
+                    x: area.x + inner_w - 2,
+                    y: area.y,
+                    width: 1,
+                    height: 1,
+                };
+                let style = base.patch(app.theme.get("scm.action"));
+                f.buffer_mut().set_string(scm.refresh.x, scm.refresh.y, "↻", style);
+            }
             return SideHits {
-                scm,
+                scm: Some(scm),
                 rules: history.iter().map(|h| h.divider).collect(),
                 history,
                 history_scrollbar,

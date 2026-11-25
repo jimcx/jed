@@ -273,6 +273,9 @@ pub enum Command {
     ResolveOurs,
     ResolveTheirs,
     UnstageAll,
+    /// "Git: Refresh" (unbound; the Source Control view's `↻`): reads the git status again
+    /// regardless of what the file watcher saw, and checks every open file against disk.
+    ScmRefresh,
     /// Ctrl+Shift+G: shows the Source Control view and gives it the keys.
     FocusScm,
     /// The Source Control view's list (`Context::Scm`).
@@ -1286,6 +1289,7 @@ impl Command {
             Command::ResolveOurs,
             Command::ResolveTheirs,
             Command::UnstageAll,
+            Command::ScmRefresh,
             Command::FocusScm,
         ]);
         all.extend(ScmCommand::ALL.map(Command::Scm));
@@ -1667,6 +1671,7 @@ impl Command {
             Command::ResolveOurs => "git.resolveOurs".into(),
             Command::ResolveTheirs => "git.resolveTheirs".into(),
             Command::UnstageAll => "git.unstageAll".into(),
+            Command::ScmRefresh => "git.refresh".into(),
             Command::FocusScm => "view.focusSourceControl".into(),
             Command::Scm(c) => format!(
                 "scm.{}",
@@ -2139,6 +2144,7 @@ impl Command {
             Command::ResolveOurs => "Git: Resolve Conflicts Using Ours",
             Command::ResolveTheirs => "Git: Resolve Conflicts Using Theirs",
             Command::UnstageAll => "Git: Unstage All Changes",
+            Command::ScmRefresh => "Git: Refresh",
             Command::FocusScm => "View: Show Source Control",
             Command::Scm(c) => match c {
                 ScmCommand::Up => "Source Control: Select Previous Row",
@@ -2545,6 +2551,7 @@ mod tests {
             Command::DiscardAll => 132,
             Command::ResolveOurs => 192,
             Command::ResolveTheirs => 193,
+            Command::ScmRefresh => 194,
             Command::CompareActiveFileWith => 133,
             Command::CompareOpenEditors => 134,
             Command::ApplyChangeToRight => 135,
@@ -2552,7 +2559,7 @@ mod tests {
             Command::Spell(_) => 149,
         }
     }
-    const VARIANTS: u8 = 194;
+    const VARIANTS: u8 = 195;
 
     #[test]
     fn all_lists_every_variant() {

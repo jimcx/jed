@@ -111,6 +111,7 @@ impl Mode {
                     | Command::ResolveOurs
                     | Command::ResolveTheirs
                     | Command::UnstageAll
+                    | Command::ScmRefresh
                     | Command::OpenChange
                     | Command::ToggleBlame
             ),

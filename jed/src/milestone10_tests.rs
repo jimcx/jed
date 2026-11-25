@@ -2589,7 +2589,10 @@ async fn milestone_10_source_control_without_a_repository() {
     assert_eq!(app.ui.focus, Focus::SidePanel);
     let text = side_text(&mut app);
     assert!(text.contains("doesn't have a git repository"), "{text}");
-    assert!(app.hits.scm.is_none());
+    assert!(
+        app.hits.scm.as_ref().is_some_and(|h| h.rows.is_empty()),
+        "only the refresh button"
+    );
     run_command(&mut app, "Git: Stage All Changes");
     assert!(app.message.as_ref().unwrap().text.contains("Not in a git repository"));
     // The keys do nothing, and clicks don't panic.

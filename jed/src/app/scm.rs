@@ -250,6 +250,28 @@ impl App {
         self.spawn_diff_stage(done, "Unstaging failed", move || stage::unstage_files(&repo, &files));
     }
 
+    /// `git.refresh` (the view's `↻`): the git status read again whatever the file watcher saw
+    /// (a full walk, finding a repository made since too), and every open file and hex tab
+    /// checked against disk (reloaded, or the changed-on-disk banner over unsaved edits).
+    pub(super) fn scm_refresh(&mut self) {
+        self.refresh_git(None);
+        let ids: Vec<BufferId> = self
+            .buffers
+            .iter()
+            .filter(|(_, b)| b.has_file())
+            .map(|(id, _)| id)
+            .collect();
+        for id in ids {
+            self.check_disk(id, false);
+        }
+        let mut hex: Vec<PathBuf> = self.groups.hex_tabs().map(|h| h.path.clone()).collect();
+        hex.sort();
+        hex.dedup();
+        for path in hex {
+            self.check_hex(path);
+        }
+    }
+
     /// A click in the view: a button stages / unstages its row; a header collapses / expands;
     /// a file is selected and its diff opens with the keys staying in the list (a double click
     /// focuses the editor). The view takes the keys.
@@ -257,8 +279,12 @@ impl App {
         self.ui.focus = Focus::SidePanel;
         self.branch_history.set_focused(false);
         let Some(hit) = self.hits.scm.clone() else { return };
-        let Some(status) = self.git.status.as_ref() else { return };
         let at = Position { x: m.column, y: m.row };
+        if hit.refresh.contains(at) {
+            self.execute(crate::command::Command::ScmRefresh);
+            return;
+        }
+        let Some(status) = self.git.status.as_ref() else { return };
         let rows = self.scm.rows(status);
         if let Some((_, key)) = hit.discards.iter().find(|(r, _)| r.contains(at)) {
             if self.scm.select_key(&rows, key) {

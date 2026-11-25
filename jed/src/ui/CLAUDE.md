@@ -17,7 +17,7 @@ One line per widget or editor layer; [docs/dev/ui.md](../../../docs/dev/ui.md) h
 - `find.rs` — the find / replace widget (top right of the active editor), `draw_field` (re-exported from `jtui::field_draw`)
 - `side.rs` — the side panel: explorer rows with git colours, the Explorer's split with the "Git History" section (divider, header, commit rows)
 - `search.rs` — the Search view: inputs, toggles, details, results list
-- `scm.rs` — the Source Control view: branch line, sections, rows, `+` / `−` buttons on the hovered row
+- `scm.rs` — the Source Control view: branch line, sections, rows, `+` / `−` buttons on the hovered row (the title row's `↻` refresh is drawn by `side.rs`)
 - `tools.rs` — the Tools view: server / task / jed rows, state marks, error badges
 - `review.rs` — the Code Review panel: summary, FILES rows (viewed mark, status letter, `+a -d`), CONVERSATIONS, PENDING (drafts, held back ones named), empty states, errors
 - `palette.rs` — the palette (input, hint, ≤ 14 rows with match highlights and bindings)

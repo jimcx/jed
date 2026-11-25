@@ -14632,3 +14632,84 @@ mod scm_resolve_conflict {
         assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), OURS);
     }
 }
+
+/// Source Control's `↻` (`git.refresh`): a change the file watcher never reported (it is off
+/// here) shows once the status is read again, and an open file changed on disk reloads.
+mod scm_refresh {
+    use std::fs;
+    use std::path::Path;
+
+    use crossterm::event::{MouseButton, MouseEventKind};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::{App, InitialFile};
+    use crate::buffer::Buffer;
+    use crate::command::Command;
+    use crate::git::Change;
+    use crate::git::test_repo::{commit_all, git, init};
+    use crate::milestone10_tests::{dirs, focus_scm, settle_git};
+    use crate::workspace::Workspace;
+    use crate::workspace::trust::TrustStore;
+
+    /// A repository with `a.txt` committed and open, and no file watching.
+    async fn setup() -> (tempfile::TempDir, std::path::PathBuf, App) {
+        let (d, root, state) = dirs();
+        init(&root);
+        fs::write(root.join("a.txt"), "one\n").unwrap();
+        commit_all(&root, "first");
+        let ws = Workspace::load(root.clone());
+        let trust = TrustStore::load(state.join("trust.toml"));
+        let buffer = Buffer::open(&root.join("a.txt")).unwrap();
+        let mut app = App::new(ws, trust, Some(InitialFile { buffer, goto: None }), true);
+        app.test_start();
+        focus_scm(&mut app);
+        assert!(settle_git(&mut app, |s| s.entries.is_empty()).await);
+        (d, root, app)
+    }
+
+    /// Changes jed hears nothing about: `a.txt` edited, `b.txt` added and staged.
+    fn change_behind_its_back(root: &Path) {
+        fs::write(root.join("a.txt"), "two\n").unwrap();
+        fs::write(root.join("b.txt"), "b\n").unwrap();
+        git(root, &["add", "b.txt"]);
+    }
+
+    async fn caught_up(app: &mut App) -> bool {
+        let git = settle_git(app, |s| {
+            matches!(s.entry(Path::new("a.txt")), Some(e) if e.unstaged == Some(Change::Modified))
+                && matches!(s.entry(Path::new("b.txt")), Some(e) if e.staged == Some(Change::Added))
+        })
+        .await;
+        git && app
+            .settle(|a| a.active_buffer().is_some_and(|b| b.rope == "two\n"))
+            .await
+    }
+
+    fn draw(app: &mut App) -> Terminal<TestBackend> {
+        let mut term = Terminal::new(TestBackend::new(100, 28)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        term
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scm_refresh_reads_the_status_and_open_files_again() {
+        let (_d, root, mut app) = setup().await;
+        change_behind_its_back(&root);
+        app.test_execute(Command::ScmRefresh);
+        assert!(caught_up(&mut app).await);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scm_refresh_button_on_the_title_row_refreshes() {
+        let (_d, root, mut app) = setup().await;
+        let term = draw(&mut app);
+        let button = app.hits.scm.as_ref().expect("the view drawn").refresh;
+        assert_eq!(button.y, app.hits.regions.side.unwrap().y, "on the title row");
+        assert_eq!(term.backend().buffer()[(button.x, button.y)].symbol(), "↻");
+        change_behind_its_back(&root);
+        app.mouse(MouseEventKind::Down(MouseButton::Left), button.x, button.y);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), button.x, button.y);
+        assert!(caught_up(&mut app).await);
+    }
+}

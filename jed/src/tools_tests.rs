@@ -1032,6 +1032,9 @@ async fn tools_every_command_on_a_log_tab_leaves_it_alone() {
                 | Command::NewShell
                 | Command::OpenLogFile
                 | Command::ClearToolLog
+                // It stages the Changes section, whatever tab is active: `f.txt` really is
+                // staged (Git: Refresh, run later, reads the status that shows it).
+                | Command::StageAll
         )
     };
     let mut term = Terminal::new(TestBackend::new(120, 24)).unwrap();
