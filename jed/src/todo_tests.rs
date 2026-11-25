@@ -13915,6 +13915,9 @@ mod shell_integration_check {
             .map(|m| m.text.clone())
     }
 
+    // FLAKE: 2026-11-26, failed once in a full `scripts/check` run with "second tab warned again"
+    // (a message was set after the second shell printed); not reproduced in 40 loaded solo runs
+    // or 8 full-binary runs.
     #[tokio::test(flavor = "multi_thread")]
     async fn never_installed_warns_once() {
         let (_dir, mut app, _home, _state) = env("zsh");
@@ -13937,7 +13940,21 @@ mod shell_integration_check {
                 .contains("READY")))
                 .await
         );
-        assert!(app.message.is_none(), "second tab warned again");
+        if let Some(m) = &app.message {
+            eprintln!(
+                "FLAKE never_installed_warns_once: message {:?} {:?}; integration checked {}, seen {:?}; shell tabs {}",
+                m.level,
+                m.text,
+                app.shell_integration_checked,
+                app.shell_integration_seen,
+                app.shell_tabs().count()
+            );
+        }
+        assert!(
+            app.message.is_none(),
+            "FLAKE second tab warned again: {:?}",
+            app.message.as_ref().map(|m| (&m.level, &m.text))
+        );
         assert_eq!(app.shell_integration_seen, None, "second tab checked again");
     }
 
