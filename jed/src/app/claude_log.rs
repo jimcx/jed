@@ -8,7 +8,7 @@ use serde_json::Value;
 use super::App;
 use crate::forge::http::clean_line;
 use crate::ipc::{CLOSED, LogLine};
-use crate::logs::{self, Level, Tool};
+use crate::logs::{Level, Tool};
 
 /// One connected `jed claude mcp` process.
 pub struct Session {
@@ -96,16 +96,14 @@ impl App {
                 } else {
                     let (level, line) = response_line(&who, &log.msg, log.ms);
                     self.logs.push(&tool, level, &line);
-                    self.logs
-                        .push(&tool, Level::Debug, &capped_json(&log.msg, logs::MAX_LINE));
                 }
             }
         }
     }
 }
 
-/// `→ [mcp 12] tools/call get_command_output {"terminal":2}`: the method (a tool call's name
-/// after it) and its parameters cut short; a line that wasn't JSON is a warning.
+/// `→ [mcp 12] get_command_output terminal 2 command 5`: a tool call's name and what it
+/// touches (`targets`), any other method's name alone; a line that wasn't JSON is a warning.
 fn request_line(who: &str, msg: &Value) -> (Level, String) {
     let Some(method) = msg["method"].as_str() else {
         return (
@@ -114,16 +112,45 @@ fn request_line(who: &str, msg: &Value) -> (Level, String) {
         );
     };
     let params = &msg["params"];
-    let (name, args) = match (method, params["name"].as_str()) {
-        ("tools/call", Some(name)) => (format!("{method} {name}"), &params["arguments"]),
-        _ => (method.to_string(), params),
+    let line = match (method, params["name"].as_str()) {
+        ("tools/call", Some(name)) => {
+            let targets = targets(&params["arguments"]);
+            format!("→ {who} {}{targets}", cut(name, PARAMS_CAP))
+        }
+        _ => format!("→ {who} {}", cut(method, PARAMS_CAP)),
     };
-    let args = if args.is_null() {
-        String::new()
-    } else {
-        format!(" {}", capped_json(args, PARAMS_CAP))
+    (Level::Info, line)
+}
+
+/// The files, shells and review threads a tool call's arguments name (` src/a.rs:12`,
+/// ` terminal 2 command 5`, ` thread abc`), each cut and cleaned; queries, bodies and the rest
+/// are left out.
+fn targets(args: &Value) -> String {
+    let text = |key: &str| match &args[key] {
+        Value::String(s) => Some(cut(s, PARAMS_CAP)),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
     };
-    (Level::Info, format!("→ {who} {name}{args}"))
+    let mut out = String::new();
+    if let Some(path) = text("path") {
+        out.push(' ');
+        out.push_str(&path);
+        if let Some(line) = text("line").or_else(|| text("start")) {
+            out.push(':');
+            out.push_str(&line);
+        }
+    }
+    for (key, label) in [
+        ("terminal", "terminal"),
+        ("command_id", "command"),
+        ("thread", "thread"),
+        ("draft", "draft"),
+    ] {
+        if let Some(value) = text(key) {
+            out.push_str(&format!(" {label} {value}"));
+        }
+    }
+    out
 }
 
 /// `← [mcp 12] 182 lines, 7.9 KB, 2 ms` for a tool result (its text's size), or the error:
@@ -228,15 +255,52 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn request_lines_name_the_method_and_cut_the_params() {
-        let msg = json!({"method": "tools/call", "params": {"name": "get_x", "arguments": {"terminal": 2}}});
+    fn request_lines_name_the_tool_and_only_what_it_touches() {
+        let call = |name: &str, args: Value| {
+            request_line(
+                "[mcp 1]",
+                &json!({"method": "tools/call", "params": {"name": name, "arguments": args}}),
+            )
+            .1
+        };
         assert_eq!(
-            request_line("[mcp 1]", &msg),
-            (Level::Info, "→ [mcp 1] tools/call get_x {\"terminal\":2}".into())
+            call(
+                "get_command_output",
+                json!({"terminal": 2, "command_id": 5, "max_lines": 50})
+            ),
+            "→ [mcp 1] get_command_output terminal 2 command 5"
         );
-        let long = json!({"method": "m", "params": {"a": "é".repeat(500)}});
-        let (_, line) = request_line("[mcp]", &long);
-        assert!(line.len() < PARAMS_CAP + 30 && line.ends_with('…'), "{line}");
+        assert_eq!(
+            call(
+                "find_references",
+                json!({"path": "src/a.rs", "line": 12, "symbol": "x"})
+            ),
+            "→ [mcp 1] find_references src/a.rs:12"
+        );
+        assert_eq!(
+            call(
+                "review_draft_reply",
+                json!({"thread": "t1", "body": "long text", "resolve": true})
+            ),
+            "→ [mcp 1] review_draft_reply thread t1"
+        );
+        assert_eq!(
+            call(
+                "review_draft_comment",
+                json!({"path": "b.rs", "side": "new", "start": 3, "end": 4, "body": "x"})
+            ),
+            "→ [mcp 1] review_draft_comment b.rs:3"
+        );
+        assert_eq!(
+            call("find_workspace_symbols", json!({"query": "Foo"})),
+            "→ [mcp 1] find_workspace_symbols"
+        );
+        assert_eq!(
+            call("open_file", json!({"path": "a\n→ forged"})),
+            "→ [mcp 1] open_file a"
+        );
+        let init = json!({"method": "initialize", "params": {"clientInfo": {"name": "c"}}});
+        assert_eq!(request_line("[mcp]", &init), (Level::Info, "→ [mcp] initialize".into()));
         assert_eq!(request_line("[mcp]", &json!("junk")).0, Level::Warn);
     }
 

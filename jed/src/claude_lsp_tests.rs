@@ -561,9 +561,6 @@ async fn claude_lsp_the_mcp_log_shows_each_call_and_its_answer_size() {
         e.app.logs.texts(&Tool::Claude)
     );
     let t = e.app.logs.texts(&Tool::Claude);
-    let called = |name: &str| {
-        t.iter()
-            .any(|l| l.starts_with(&format!("→ [mcp {pid}] tools/call {name}")))
-    };
+    let called = |name: &str| t.iter().any(|l| l.starts_with(&format!("→ [mcp {pid}] {name}")));
     assert!(called("find_definition") && called("find_workspace_symbols"), "{t:?}");
 }

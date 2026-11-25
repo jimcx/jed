@@ -97,8 +97,9 @@ jed terminal".
 - Shell output reaches Claude only through `get_command_output` and `get_terminal_screen`, which Claude Code
   asks you to allow. The hooks never include it.
 - Comment text reaches Claude only as a tool result, never through the hooks (which show counts).
-- Every request and response is in the Tools view under "claude (mcp)" (open it with Enter), so you can read
-  what was sent.
+- Every request is in the Tools view under "claude (mcp)" (open it with Enter): the tool called and the file,
+  terminal or review thread it names, then the size of the answer or its error. Neither the arguments' other
+  text (comment bodies, queries) nor the answer's content is logged.
 
 ## Code review
 

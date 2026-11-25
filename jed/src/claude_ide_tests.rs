@@ -660,7 +660,7 @@ async fn claude_ide_mcp_log_rows_lines_badge_and_disconnect() {
     assert!(has("[mcp 4242] connected"), "{texts:?}");
     assert!(has("→ [mcp 4242] initialize"), "{texts:?}");
     assert!(has("client claude-code 2.1"), "{texts:?}");
-    assert!(has("→ [mcp 4242] tools/call get_command_output {"), "{texts:?}");
+    assert!(has("→ [mcp 4242] get_command_output terminal 2"), "{texts:?}");
     assert!(has("← [mcp 4242] 182 lines, 1.") && has(", 2 ms"), "{texts:?}");
     assert!(has("← [mcp 4242] error -32601: unknown method"), "{texts:?}");
     assert!(has("[hook 4243] prompt → 3 lines"), "{texts:?}");
@@ -720,10 +720,7 @@ async fn claude_ide_mcp_log_from_the_real_client_and_hooks() {
     let pid = std::process::id();
     let any = |f: &dyn Fn(&String) -> bool| texts.iter().any(f);
     assert!(any(&|t| *t == format!("→ [mcp {pid}] tools/list")), "{texts:?}");
-    assert!(
-        any(&|t| t.starts_with(&format!("→ [mcp {pid}] tools/call get_environment"))),
-        "{texts:?}"
-    );
+    assert!(any(&|t| *t == format!("→ [mcp {pid}] get_environment")), "{texts:?}");
     assert!(
         any(&|t| t.starts_with(&format!("← [mcp {pid}]")) && t.contains(" ms")),
         "{texts:?}"
