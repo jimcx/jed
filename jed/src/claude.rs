@@ -725,11 +725,12 @@ fn prompt(jed: &mut dyn Jed) -> Result<String, String> {
         let selection = &editor["selection"];
         if editor["kind"] == "hex" {
             out.push_str(&format!("Active file: {path} (hex view, offset {})", cursor["offset"]));
-            if selection["empty"] == false {
-                out.push_str(&format!(
-                    " (bytes {}\u{2013}{} selected)",
-                    selection["start"], selection["end"]
-                ));
+            if selection["empty"] == false
+                && let (Some(start), Some(end)) = (selection["start"].as_u64(), selection["end"].as_u64())
+            {
+                // `end` is exclusive: the line names the last byte selected.
+                let last = end.saturating_sub(1);
+                out.push_str(&format!(" (bytes {start}\u{2013}{last} selected)"));
             }
         } else {
             out.push_str(&format!("Active file: {path}:{}:{}", cursor["line"], cursor["col"]));
@@ -1280,7 +1281,7 @@ pub(crate) mod tests {
         }));
         let text = hook_text(HookKind::Prompt, &mut jed);
         assert!(
-            text.contains("Active file: a.bin (hex view, offset 7) (bytes 4\u{2013}8 selected)\n"),
+            text.contains("Active file: a.bin (hex view, offset 7) (bytes 4\u{2013}7 selected)\n"),
             "{text}"
         );
         assert!(!text.contains("Selected text"), "{text}");

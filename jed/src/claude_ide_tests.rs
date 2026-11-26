@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 
 use crate::app::App;
 use crate::buffer::pos::ByteIdx;
+use crate::command::Command;
 use crate::diagnostics::{Mark, Severity, tests::diag};
 use crate::diff_caret::Caret;
 use crate::diff_view::Pair;
@@ -158,6 +159,13 @@ async fn claude_ide_context_reports_a_diff_or_hex_tabs_selection() {
     assert_eq!(editor["ranges"][0]["start"], json!({"line": 2, "col": 5}));
     assert_eq!(editor["selection"]["text"], "let x = 1;\n}");
     assert_eq!(editor["selection"]["truncated"], false);
+    // A renamed file (a review's): the left side is the old path.
+    let old = path.with_file_name("old.rs");
+    app.group_mut().active_diff_mut().unwrap().left_path = Some(old.clone());
+    let reply = query(&mut app, &socket, Query::Context).await;
+    let editor = &data(&reply)["editor"];
+    assert_eq!(editor["relative"], "old.rs");
+    assert_eq!(editor["path"], old.display().to_string());
     // The right side (the buffer) is editable; an empty caret selects nothing.
     let d = app.group_mut().active_diff_mut().unwrap();
     d.caret = Caret {
@@ -172,6 +180,7 @@ async fn claude_ide_context_reports_a_diff_or_hex_tabs_selection() {
         (&editor["side"], &editor["read_only"]),
         (&json!("right"), &json!(false))
     );
+    assert_eq!(editor["relative"], "a.rs", "the right side is the file's path");
     assert_eq!(editor["selection"]["empty"], true);
 
     let bin = path.with_file_name("b.bin");
@@ -184,6 +193,26 @@ async fn claude_ide_context_reports_a_diff_or_hex_tabs_selection() {
     assert_eq!(editor["kind"], "hex");
     assert_eq!(editor["cursor"]["offset"], 7);
     assert_eq!(editor["selection"], json!({"empty": false, "start": 4, "end": 8}));
+
+    // A shell active in another group (where `claude` runs): the hex tab the first group shows.
+    let first = app.groups.active;
+    app.test_execute(Command::SplitRight);
+    assert_ne!(app.groups.active, first, "a second group");
+    app.tasks.shell = jterm::testing::fake_shell();
+    app.new_shell_in_editor();
+    assert!(
+        app.groups.active_group().active_tab().is_none(),
+        "a shell is the active tab"
+    );
+    app.groups.get_mut(first).unwrap().active = 0;
+    let reply = query(&mut app, &socket, Query::Context).await;
+    assert_eq!(data(&reply)["editor"]["kind"], "text", "the first group's text tab");
+    app.groups.get_mut(first).unwrap().active = 1;
+    let reply = query(&mut app, &socket, Query::Context).await;
+    assert_eq!(data(&reply)["editor"]["kind"], "diff", "the first group's diff tab");
+    app.groups.get_mut(first).unwrap().active = 2;
+    let reply = query(&mut app, &socket, Query::Context).await;
+    assert_eq!(data(&reply)["editor"]["kind"], "hex", "the first group's hex tab");
 }
 
 #[tokio::test(flavor = "multi_thread")]
