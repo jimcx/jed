@@ -33,6 +33,9 @@ pub enum MenuTarget {
     Review(ReviewSpot),
     /// A conflicted file in Source Control's Merge Changes (the opener selects its row first).
     Conflict,
+    /// An Explorer row (the opener selects it first, so the explorer commands act on it):
+    /// `is_dir` for a folder.
+    ExplorerRow { is_dir: bool },
 }
 
 /// What a right-click in the Code Review panel is on (the opener selects and focuses that row
@@ -139,12 +142,49 @@ fn review_items(spot: ReviewSpot) -> Vec<MenuItem> {
     }
 }
 
+fn reveal_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Reveal in Finder"
+    } else {
+        "Open Containing Folder"
+    }
+}
+
+fn explorer_items(is_dir: bool) -> Vec<MenuItem> {
+    use crate::command::ExplorerCommand as X;
+    let item = |label: &str, c| MenuItem::new(label, Command::Explorer(c));
+    let mut items = Vec::new();
+    if is_dir {
+        items.extend([
+            item("New File…", X::NewFile),
+            item("New Folder…", X::NewFolder),
+            item("Find in Folder…", X::FindInFolder),
+            MenuItem::Separator,
+        ]);
+    }
+    items.extend([
+        item("Rename…", X::Rename),
+        item("Delete", X::Delete),
+        MenuItem::Separator,
+    ]);
+    items.extend([
+        item("Copy Path", X::CopyPath),
+        item("Copy Relative Path", X::CopyRelativePath),
+        item(reveal_label(), X::RevealInFinder),
+    ]);
+    if !is_dir {
+        items.extend([MenuItem::Separator, item("File History: Show", X::ShowHistory)]);
+    }
+    items
+}
+
 /// The items of the menu for `target`. They are the active file's commands, so whoever opens the
 /// menu makes the target's tab the active one first.
 pub fn menu_for(target: MenuTarget) -> Vec<MenuItem> {
     let has_file = match target {
         MenuTarget::Tab { has_file } | MenuTarget::Editor { has_file } => has_file,
         MenuTarget::Review(spot) => return review_items(spot),
+        MenuTarget::ExplorerRow { is_dir } => return explorer_items(is_dir),
         MenuTarget::Conflict => {
             return vec![
                 MenuItem::new("Resolve Using Ours", Command::ResolveOurs),
@@ -152,11 +192,7 @@ pub fn menu_for(target: MenuTarget) -> Vec<MenuItem> {
             ];
         }
     };
-    let reveal = if cfg!(target_os = "macos") {
-        "Reveal in Finder"
-    } else {
-        "Open Containing Folder"
-    };
+    let reveal = reveal_label();
     let file_item = |label: &str, command| {
         let item = MenuItem::new(label, command);
         if has_file { item } else { item.disabled() }
@@ -202,6 +238,18 @@ impl App {
         self.open_context_menu(at, menu_for(MenuTarget::Editor { has_file }));
     }
 
+    /// A right-click at `at` on the Explorer row of `path`: commit a rename in progress, select
+    /// the row, focus the explorer and open the row's menu at the pointer.
+    pub(super) fn open_explorer_menu(&mut self, path: std::path::PathBuf, at: (u16, u16)) {
+        if self.inline_rename.is_some() {
+            self.commit_inline_rename();
+        }
+        let is_dir = self.explorer.find(&path).is_some_and(|e| e.is_dir);
+        self.ui.focus = super::Focus::SidePanel;
+        self.explorer.selected = Some(path);
+        self.open_context_menu(at, menu_for(MenuTarget::ExplorerRow { is_dir }));
+    }
+
     /// Opens a menu of `items` at the screen cell `anchor` (the pointer), replacing any open one.
     pub fn open_context_menu(&mut self, anchor: (u16, u16), items: Vec<MenuItem>) {
         self.close_hover();
@@ -237,6 +285,20 @@ impl App {
             ContextMenuCommand::Close => self.close_context_menu(),
         }
         self.needs_redraw = true;
+    }
+
+    /// Tests: selects the open menu's item running `cmd` and accepts it as Enter would; panics
+    /// when no menu is open or none of its enabled items runs `cmd`.
+    #[cfg(test)]
+    pub fn test_pick_menu(&mut self, cmd: Command) {
+        let menu = self.context_menu.as_mut().expect("a context menu is open");
+        let i = menu
+            .items
+            .iter()
+            .position(|item| item.runnable() == Some(cmd))
+            .unwrap_or_else(|| panic!("the menu has no enabled {cmd:?}"));
+        assert!(menu.select(i));
+        self.test_execute(Command::ContextMenu(ContextMenuCommand::Accept));
     }
 
     /// Closes the menu, then runs `cmd` (when there is one).

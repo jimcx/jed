@@ -17,7 +17,7 @@ Summary only: [docs/dev/app.md](../../../docs/dev/app.md) has each submodule in 
 - `cheatsheet.rs` — the keyboard cheat sheet overlay (`app.cheat_sheet`): toggle, its keys (all swallowed) and mouse
 - `keys.rs` — the Keyboard Shortcuts view (`app.keys`, model `crate::keys`): toggle, search, record-keys mode, Enter's `keybindings.toml` stub, keys and mouse
 - `explorer_drag.rs` — dragging an Explorer row onto a folder (`Drag::Explorer`): the folder under the pointer shaded (`list.dropBackground`), a release moves it through `FileOp::Rename`, Esc cancels
-- `inline_rename.rs` — F2 in the Explorer edits the row's name in place (`app.inline_rename`, a `TextField`): Enter or a click elsewhere commits through `FileOp::Rename`, Esc cancels
+- `inline_rename.rs` — F2 (or the row menu's Rename…) in the Explorer edits the row's name in place (`app.inline_rename`, a `TextField`): Enter or a click elsewhere commits through `FileOp::Rename` (a name with `/` moves it below its folder, making the folders), Esc cancels
 - `cursors.rs` — Cmd+D / Cmd+Shift+L / Cmd+Alt+D sessions, Cmd+U (`cursor_undo`), `track_selections`
 - `find.rs` — the find / replace widget (`app.find`): open, incremental search, next / previous, replace (all); on a hex tab byte search (`find.hex`, the count and, on a paged doc, next / previous off-thread via `AppEvent::View(ViewEvent::HexCount` / `HexFound)`)
 - `workspace_search.rs` — the Search view (`app.search_view`): focus, debounce, starting searches, results, opening matches

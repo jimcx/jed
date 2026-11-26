@@ -1,7 +1,8 @@
 //! Renaming an Explorer entry in place (F2, `explorer.rename`): the row's name becomes a text
 //! field with the cursor at its end (as the prompt it replaces). Enter or a click elsewhere
 //! commits through `FileOp::Rename` (so open tabs, file history and listings follow); Esc, or an
-//! unchanged name, cancels; an invalid name keeps the field and says why.
+//! unchanged name, cancels; an invalid name keeps the field and says why. A name with `/` is a path
+//! from the entry's folder (`a/b/c.rs`): the rename moves it there, creating the folders on the way.
 
 use std::path::PathBuf;
 
@@ -40,12 +41,15 @@ impl App {
     pub(super) fn commit_inline_rename(&mut self) {
         let Some(r) = self.inline_rename.take() else { return };
         let name = r.field.text.trim().to_string();
-        if let Err(e) = explorer::validate_name(&name, false) {
+        if let Err(e) = explorer::validate_name(&name, true) {
             self.notify(Level::Error, e.into());
             self.inline_rename = Some(r);
             return;
         }
-        let to = r.from.with_file_name(&name);
+        let to = r
+            .from
+            .parent()
+            .map_or_else(|| PathBuf::from(&name), |dir| dir.join(&name));
         if to != r.from {
             self.run_file_op(FileOp::Rename { from: r.from, to });
         }

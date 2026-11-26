@@ -794,7 +794,7 @@ async fn jed_touch_b_a_held_tab_released_in_place_opens_its_menu_and_a_drag_does
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn jed_touch_b_a_held_explorer_folder_runs_find_in_folder() {
+async fn jed_touch_b_a_held_explorer_folder_opens_its_menu() {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir(workspace::normalize(dir.path()).join("sub")).unwrap();
     let (mut app, _) = open_app(&dir, &["a.txt"], true);
@@ -811,6 +811,10 @@ async fn jed_touch_b_a_held_explorer_folder_runs_find_in_folder() {
     assert_eq!(app.ui.side_panel, crate::layout::SidePanel::Explorer);
     app.test_hold();
     app.mouse(UP, x + 2, y);
+    // The row's right-click menu, its Find in Folder… picked.
+    app.test_pick_menu(crate::command::Command::Explorer(
+        crate::command::ExplorerCommand::FindInFolder,
+    ));
     assert_eq!(app.ui.side_panel, crate::layout::SidePanel::Search, "Find in Folder");
 }
 

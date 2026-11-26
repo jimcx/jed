@@ -650,10 +650,10 @@ pub enum ExplorerCommand {
     NewFolder,
     Rename,
     Delete,
-    /// "File History: Show" for the selected file (also a right-click on a file's row).
+    /// "File History: Show" for the selected file (also in a file row's right-click menu).
     ShowHistory,
     /// "Find in Folder…": the Search view with the selected folder as its files to include
-    /// (also a right-click on a folder's row).
+    /// (also in a folder row's right-click menu).
     FindInFolder,
     /// "Explorer: Copy Path": the selected row's absolute path.
     CopyPath,

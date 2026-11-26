@@ -193,7 +193,7 @@ Go back to any earlier save of a file, independent of git.
 - Skip if identical to the newest snapshot (content hash)
 - Written off the UI thread, after the save's rename completes; a history failure never fails the save (log + status message)
 - Explorer rename: history moves with the file; delete: history kept
-- Explorer rename (F2) edits the name in place; dragging a row onto a folder moves it (same file operation, so tabs and history follow)
+- Explorer rename (F2, or Rename… in a row's right-click menu: New File… / New Folder… / Find in Folder… on a folder, Rename… / Delete, Copy Path / Copy Relative Path / Reveal, File History: Show on a file) edits the name in place; a name with `/` is a path from the entry's folder (`a/b/c.rs` moves it there, making the folders); dragging a row onto a folder moves it (same file operation, so tabs and history follow)
 
 **Limits** (`.workspace` `[history]`)
 - `max_entries` per file (default 50; oldest dropped)
@@ -208,7 +208,7 @@ Go back to any earlier save of a file, independent of git.
   - Open ("File History: Open"; Space in the Explorer's File History section): the entry's text in a read-only tab titled `a.rs (History: 3 min ago)`, highlighted by the file's language, to select and copy from it; kept by sessions ([Open and restore earlier versions of a file](tasks/hist_versions.md))
   - Restore: replaces the buffer text as one undoable edit; nothing written until you save — or, with "File History: Restore Selection" (palette, unbound) in an opened version or a history / commit compare, just the lines a selection touches, mapped through the version → buffer diff (a file not open opens first; a read-only buffer refuses)
 - Also reachable from the explorer (on a file) and the tab bar
-  - Explorer: "Explorer: Show File History" (palette, on the selected file) or right-click on a file's row; tab bar: right-click on a tab (activates it); jed has no context menus, so the right-click runs the command directly
+  - Explorer: "Explorer: Show File History" (palette, on the selected file) or a file row's right-click menu ("File History: Show"); tab bar: right-click on a tab (activates it), then the same in its menu
   - The file needn't be open: Compare shows the entry against the file on disk (the buffer once it opens); Restore opens the file first, then restores into the buffer
 
 ### Explorer (file tree)
@@ -222,7 +222,7 @@ Go back to any earlier save of a file, independent of git.
 - Gitignored files and folders are always listed, in a slightly darker grey (task `search_ignored_files`); `.git/`, `.jed/` and `.workspace` excludes stay hidden
 - Live refresh through `notify`
 - Git status colouring on entries
-- "Find in Folder…" (`explorer.findInFolder`; right-click on a folder's row — a file's row shows its history): the Search view with that folder as its files to include (folders only, as VS Code)
+- "Find in Folder…" (`explorer.findInFolder`; or a folder row's right-click menu): the Search view with that folder as its files to include (folders only, as VS Code)
 
 ### Editor
 - Multiple cursors — see [Multi-cursor](#multi-cursor)
@@ -232,7 +232,7 @@ Go back to any earlier save of a file, independent of git.
   - Paste, cut and each multi-cursor command are one step each
   - Each step stores the selections from before and after it
 - Select with mouse drag, Shift+arrows, double/triple-click
-  - Touch layout (`jed_touch`): a press in a text, diff or hex view or a shell runs through `jtui::touch`: a tap places the cursor (double / triple tap select a word / line; a shell whose program reports the mouse gets the click), a swipe scrolls by the rows and columns moved without selecting (a shell's scrollback, or wheel events to a program that reports the mouse), a hold then drag selects from the press, and a hold released without moving opens the context menu the right button would (an Explorer row runs its right-click action; a tab's menu after a hold that lifted it)
+  - Touch layout (`jed_touch`): a press in a text, diff or hex view or a shell runs through `jtui::touch`: a tap places the cursor (double / triple tap select a word / line; a shell whose program reports the mouse gets the click), a swipe scrolls by the rows and columns moved without selecting (a shell's scrollback, or wheel events to a program that reports the mouse), a hold then drag selects from the press, and a hold released without moving opens the context menu the right button would (an Explorer row's menu too; a tab's menu after a hold that lifted it)
 - Clipboard — see [Clipboard](#clipboard)
 - Find/replace in the file (regex, case, whole word)
   - Same matcher and options as [Workspace search](#workspace-search) and Cmd+D

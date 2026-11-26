@@ -838,13 +838,21 @@ fn draw(app: &mut App) {
     term.draw(|f| crate::ui::render(f, app)).unwrap();
 }
 
-/// Right-clicks the explorer's row of `path` (drawn first).
+/// Right-clicks the explorer's row of `path` (drawn first) and picks, in its menu, a file's
+/// "File History: Show" or a folder's "Find in Folder…".
 fn right_click_row(app: &mut App, path: &Path) {
     draw(app);
     let index = app.explorer.rows().iter().position(|r| r.entry.path == path).unwrap();
+    let is_dir = app.explorer.rows()[index].entry.is_dir;
     let rows = app.hits.explorer_rows;
     let y = rows.y + (index - app.explorer.scroll) as u16;
     app.mouse(MouseEventKind::Down(MouseButton::Right), rows.x + 2, y);
+    let pick = if is_dir {
+        crate::command::ExplorerCommand::FindInFolder
+    } else {
+        crate::command::ExplorerCommand::ShowHistory
+    };
+    app.test_pick_menu(Command::Explorer(pick));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -854,7 +862,7 @@ async fn milestone_11_explorer_shows_the_history_of_a_file_not_open() {
     let mut app = open_app(&root, &state);
     explorer_with_src(&mut app, &root, &path).await;
 
-    // A right-click on its row: the picker (the row selected, the explorer keeps the keys).
+    // A right-click on its row, then File History: Show in its menu: the picker (the row selected, the explorer keeps the keys).
     right_click_row(&mut app, &path);
     assert_eq!(app.explorer.selected.as_deref(), Some(path.as_path()));
     assert!(
@@ -910,7 +918,7 @@ async fn milestone_11_explorer_shows_the_history_of_a_file_not_open() {
     assert_eq!(text(&app), "disk\n");
     assert!(!app.active_buffer().unwrap().is_dirty());
 
-    // A folder's right-click is "Find in Folder…" (no picker); the command on it: a message.
+    // A folder's menu runs "Find in Folder…" (no picker); the command on it: a message.
     right_click_row(&mut app, &root.join("src"));
     assert!(app.palette.is_none());
     assert_eq!(app.search_view.include.text, "./src");

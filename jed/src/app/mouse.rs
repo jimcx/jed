@@ -13,7 +13,7 @@ use super::tab_drag::TabDrag;
 use super::{App, Focus};
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::column::{self, Cell};
-use crate::command::{Command, ExplorerCommand};
+use crate::command::Command;
 use crate::field::TextField;
 use crate::find::Field;
 use crate::group::{Tab, is_terminal_group};
@@ -1014,8 +1014,7 @@ impl App {
 
     /// Right-click: on a tab, its menu at the pointer (`open_tab_menu`, the tab activated first);
     /// in a text tab's text, the same menu for the active file (`open_editor_menu`, selections untouched);
-    /// on an explorer file, that file's history; on an explorer folder, "Find in Folder…" (the
-    /// row selected first).
+    /// on an Explorer row, its menu (`open_explorer_menu`, the row selected first).
     pub(super) fn right_click(&mut self, hit: Hit, at: (u16, u16)) {
         match hit {
             Hit::Tab(g, i) | Hit::TabClose(g, i) => {
@@ -1029,16 +1028,7 @@ impl App {
                 let Some(path) = self.explorer.rows().get(index).map(|r| r.entry.path.clone()) else {
                     return;
                 };
-                // A folder: "Find in Folder…"; a file: its history.
-                let is_dir = self.explorer.find(&path).is_some_and(|e| e.is_dir);
-                self.ui.focus = Focus::SidePanel;
-                self.explorer.selected = Some(path);
-                let cmd = if is_dir {
-                    ExplorerCommand::FindInFolder
-                } else {
-                    ExplorerCommand::ShowHistory
-                };
-                self.execute(Command::Explorer(cmd));
+                self.open_explorer_menu(path, at);
             }
             _ => {}
         }

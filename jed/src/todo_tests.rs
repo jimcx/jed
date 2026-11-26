@@ -1978,7 +1978,7 @@ mod folder_filter {
 
     use crate::app::{App, Focus};
     use crate::buffer::Buffer;
-    use crate::command::Command;
+    use crate::command::{Command, ExplorerCommand};
     use crate::layout::SidePanel;
     use crate::search::Options;
     use crate::search_view::{DEBOUNCE, Input};
@@ -2409,15 +2409,24 @@ mod folder_filter {
                 .unwrap();
             app.hits.explorer_rows.y + (i - app.explorer.scroll) as u16
         };
-        // A file's row: its history, the Search view untouched.
+        // A file's row: its menu has its history, not Find in Folder; the Search view untouched.
         explorer(&mut app);
         let y = row_of(&app, "README.md");
         app.mouse(Mouse::Down(MouseButton::Right), app.hits.explorer_rows.x + 2, y);
+        let menu = app.context_menu.as_ref().expect("the row's menu");
+        assert!(
+            !menu
+                .items
+                .iter()
+                .any(|i| i.runnable() == Some(Command::Explorer(ExplorerCommand::FindInFolder)))
+        );
+        app.test_pick_menu(Command::Explorer(ExplorerCommand::ShowHistory));
         assert_eq!(app.ui.side_panel, SidePanel::Explorer);
         assert!(app.search_view.include.text.is_empty());
 
         let y = row_of(&app, "src");
         app.mouse(Mouse::Down(MouseButton::Right), app.hits.explorer_rows.x + 2, y);
+        app.test_pick_menu(Command::Explorer(ExplorerCommand::FindInFolder));
         assert_eq!((app.ui.focus, app.ui.side_panel), (Focus::SidePanel, SidePanel::Search));
         assert_eq!(app.search_view.include.text, "./src");
         assert!(app.search_view.details && !app.search_view.list_focused);
@@ -12975,13 +12984,14 @@ mod explorer_drag_drop {
         app.type_text("zz");
         app.press(KeyCode::Esc, KeyModifiers::NONE);
         assert!(app.inline_rename.is_none() && dir.path().join("a.txt").exists());
-        // A name with a slash is refused and the field stays.
+        // A path out of its folder (`..`) is refused and the field stays.
         app.press(KeyCode::F(2), KeyModifiers::NONE);
-        app.type_text("/x");
+        app.type_text("/..");
         app.press(KeyCode::Enter, KeyModifiers::NONE);
         assert!(app.inline_rename.is_some());
-        app.press(KeyCode::Backspace, KeyModifiers::NONE);
-        app.press(KeyCode::Backspace, KeyModifiers::NONE);
+        for _ in 0.."/..".len() {
+            app.press(KeyCode::Backspace, KeyModifiers::NONE);
+        }
         for _ in 0.."a.txt".len() {
             app.press(KeyCode::Backspace, KeyModifiers::NONE);
         }
@@ -14971,5 +14981,93 @@ mod scm_multi_select {
         assert!(app.scm.is_picked(&f02));
         click_row(&mut app, &f01, M::NONE);
         assert!(!app.scm.is_picked(&f00) && !app.scm.is_picked(&f02));
+    }
+}
+
+/// Quick task: the Explorer's right-click menu, and its Rename… taking a name with `/` as a path
+/// from the entry's folder (the folders made on the way, the open tab following the file).
+mod explorer_rename_menu {
+    use std::fs;
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M, MouseButton, MouseEventKind as Mouse};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::{App, Focus};
+    use crate::buffer::Buffer;
+    use crate::command::{Command, ContextMenuCommand, ExplorerCommand as X};
+    use crate::workspace::trust::TrustStore;
+    use crate::workspace::{self, Workspace};
+
+    fn draw(app: &mut App) {
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+    }
+
+    fn right_click(app: &mut App, path: &std::path::Path) {
+        draw(app);
+        let i = app.explorer.rows().iter().position(|r| r.entry.path == path).unwrap();
+        let rows = app.hits.explorer_rows;
+        let y = rows.y + (i - app.explorer.scroll) as u16;
+        app.mouse(Mouse::Down(MouseButton::Right), rows.x + 2, y);
+    }
+
+    fn commands(app: &App) -> Vec<Command> {
+        let menu = app.context_menu.as_ref().expect("the row's menu");
+        menu.items.iter().filter_map(|i| i.runnable()).collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn explorer_rename_menu_renames_to_a_nested_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = workspace::normalize(dir.path());
+        let (root, state) = (base.join("proj"), base.join("state"));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(&state).unwrap();
+        fs::write(root.join("src/a.txt"), "a\n").unwrap();
+        let trust = TrustStore::load(state.join("trust.toml"));
+        let mut app = App::new(Workspace::load(root.clone()), trust, None, true);
+        app.test_start();
+        app.test_open(Buffer::open(&root.join("src/a.txt")).unwrap());
+        app.test_execute(Command::FocusExplorer);
+        let (src, a) = (root.join("src"), root.join("src/a.txt"));
+        assert!(app.settle(|app| app.explorer.find(&src).is_some()).await, "root listed");
+        app.explorer.selected = Some(src.clone());
+        app.test_execute(Command::Explorer(X::Right));
+        assert!(app.settle(|app| app.explorer.find(&a).is_some()).await, "src listed");
+
+        // A folder's menu: its folder items, Rename and Delete, no file history.
+        right_click(&mut app, &src);
+        let dir_items = commands(&app);
+        for c in [X::NewFile, X::NewFolder, X::FindInFolder, X::Rename, X::Delete] {
+            assert!(dir_items.contains(&Command::Explorer(c)), "{c:?}");
+        }
+        assert!(!dir_items.contains(&Command::Explorer(X::ShowHistory)));
+        app.test_execute(Command::ContextMenu(ContextMenuCommand::Close));
+
+        // A file's row: selected, the explorer focused, Rename… opens the field on its name.
+        right_click(&mut app, &a);
+        assert_eq!(app.explorer.selected.as_deref(), Some(a.as_path()));
+        assert_eq!(app.ui.focus, Focus::SidePanel);
+        assert!(commands(&app).contains(&Command::Explorer(X::ShowHistory)));
+        app.test_pick_menu(Command::Explorer(X::Rename));
+        assert!(app.context_menu.is_none());
+        assert_eq!(app.inline_rename.as_ref().map(|r| r.field.text.as_str()), Some("a.txt"));
+        for _ in 0.."a.txt".len() {
+            app.press(K::Backspace, M::NONE);
+        }
+        app.type_text("sub/dir/b.txt");
+        app.press(K::Enter, M::NONE);
+
+        // Moved under src/, its folders made, the tab following it, the new row revealed.
+        let to = root.join("src/sub/dir/b.txt");
+        assert!(
+            app.settle(|app| app.buffers.iter().any(|(_, b)| b.path == to) && app.explorer.find(&to).is_some())
+                .await,
+            "renamed and revealed"
+        );
+        assert_eq!(fs::read_to_string(&to).unwrap(), "a\n");
+        assert!(!a.exists());
+        assert!(app.message.is_none(), "{:?}", app.message.as_ref().map(|m| &m.text));
     }
 }

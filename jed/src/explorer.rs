@@ -604,6 +604,8 @@ pub mod ops {
         fs::create_dir_all(path)
     }
 
+    /// Renames or moves `from` to `to`, creating `to`'s missing folders first (a rename typed as
+    /// `a/b/c.rs`); the folders it created are removed again when the rename fails.
     pub fn rename(from: &Path, to: &Path) -> io::Result<()> {
         // Same name with different case must still work on case-insensitive filesystems.
         let same = from.to_string_lossy().to_lowercase() == to.to_string_lossy().to_lowercase();
@@ -613,7 +615,30 @@ pub mod ops {
                 "a file or folder with that name exists",
             ));
         }
-        fs::rename(from, to)
+        if to.starts_with(from) && to != from {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a folder can't be moved into itself",
+            ));
+        }
+        // The missing folders above `to`, deepest first.
+        let created: Vec<&Path> = to
+            .ancestors()
+            .skip(1)
+            .take_while(|d| !d.as_os_str().is_empty() && !d.exists())
+            .collect();
+        if let Some(parent) = to.parent()
+            && !created.is_empty()
+        {
+            fs::create_dir_all(parent)?;
+        }
+        let result = fs::rename(from, to);
+        if result.is_err() {
+            for dir in &created {
+                let _ = fs::remove_dir(dir);
+            }
+        }
+        result
     }
 
     /// Moves `path` to the Trash. Tests never touch the user's real Trash: under `cfg(test)` the
@@ -631,7 +656,8 @@ pub mod ops {
     }
 }
 
-/// Checks a name typed for a new or renamed entry. New entries may contain `/` to create nested folders.
+/// Checks a name typed for a new or renamed entry. With `allow_nested` it may contain `/` (a
+/// path from the entry's folder, its missing folders created).
 pub fn validate_name(name: &str, allow_nested: bool) -> Result<(), &'static str> {
     let name = name.trim();
     if name.is_empty() {
@@ -920,6 +946,20 @@ mod tests {
         assert!(validate_name("a/b.txt", false).is_err());
         assert!(validate_name("..", true).is_err());
         assert!(validate_name("  ", true).is_err());
+    }
+
+    #[test]
+    fn rename_creates_the_folders_of_a_nested_name_and_removes_them_on_failure() {
+        let (_d, root) = tree();
+        ops::rename(&root.join("b.txt"), &root.join("x/y/c.txt")).unwrap();
+        assert!(root.join("x/y/c.txt").is_file() && !root.join("b.txt").exists());
+
+        // A failed move (the source is gone) leaves no folders behind.
+        assert!(ops::rename(&root.join("gone.txt"), &root.join("p/q/r.txt")).is_err());
+        assert!(!root.join("p").exists());
+        // A folder can't go into itself, and nothing is created trying.
+        assert!(ops::rename(&root.join("src"), &root.join("src/inner/src")).is_err());
+        assert!(!root.join("src/inner").exists());
     }
 
     /// A reveal before the first draw (no height) waits for `set_height`, which scrolls the
