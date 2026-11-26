@@ -659,7 +659,7 @@ Review a Gitea, GitHub or GitLab merge request (MR) on its checked-out branch (t
 
 ### Logging
 - `tracing` everywhere; never write to stdout/stderr while the UI is up (corrupts the screen)
-- Log file: `~/.local/state/jed/logs/jed.YYYY-MM-DD.log`, rotated daily, keep last 7
+- Log file: `~/.local/state/jed/logs/jed.YYYY-MM-DD.log`, rotated daily, keep last 7; shared by every running jed: each line has the pid after its time, and each event is one append (`O_APPEND`, one `write_all`), so lines of concurrent instances never interleave
 - Level from `--log-level` or the `JED_LOG` env var (`EnvFilter` syntax, e.g. `JED_LOG=jed::lsp=trace,jed::git=debug`); default `info`
 - Targets are module paths (`jed::app`, `jed::buffer`, …) so each can be turned up alone; plus `input` and `panic`
 - LSP:
