@@ -442,6 +442,12 @@ impl DiffTab {
     /// The selected text (lines joined by `\n`); `None` when nothing is selected.
     pub fn selection_text(&mut self) -> Option<String> {
         self.sync_caret();
+        self.caret_text(usize::MAX).map(|(text, _)| text)
+    }
+
+    /// The caret's selected text as it stands (no `sync_caret`: drawing keeps it on the cursor's
+    /// row), at most `max` bytes, and whether it was cut; `None` when nothing is selected.
+    pub fn caret_text(&self, max: usize) -> Option<(String, bool)> {
         let c = self.caret;
         if c.is_empty() {
             return None;
@@ -454,12 +460,22 @@ impl DiffTab {
                 if line == lo.0 { lo.1 } else { 0 },
                 if line == hi.0 { hi.1 } else { text.len() },
             );
-            out.push_str(&text[a.min(text.len())..b.min(text.len())]);
+            let piece =
+                &text[text.floor_char_boundary(a)..text.floor_char_boundary(b).max(text.floor_char_boundary(a))];
+            if out.len() + piece.len() > max {
+                let room = max - out.len();
+                out.push_str(&piece[..piece.floor_char_boundary(room)]);
+                return Some((out, true));
+            }
+            out.push_str(piece);
             if line < hi.0 {
+                if out.len() == max {
+                    return Some((out, true));
+                }
                 out.push('\n');
             }
         }
-        Some(out)
+        Some((out, false))
     }
 }
 
@@ -559,6 +575,13 @@ mod tests {
         d.caret_move(Motion::DocEnd, true, 1);
         assert_eq!((d.caret.anchor, d.caret.head), ((2, 0), (3, 4)));
         assert_eq!(d.selection_text().as_deref(), Some("three\nfour"));
+        assert_eq!(d.caret_text(100), Some(("three\nfour".into(), false)));
+        assert_eq!(
+            d.caret_text(7),
+            Some(("three\nf".into(), true)),
+            "cut to the bytes asked"
+        );
+        assert_eq!(d.caret_text(5), Some(("three".into(), true)), "the line break counts");
     }
 
     #[test]

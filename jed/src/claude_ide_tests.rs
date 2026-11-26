@@ -19,11 +19,15 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::app::App;
 use crate::buffer::pos::ByteIdx;
 use crate::diagnostics::{Mark, Severity, tests::diag};
+use crate::diff_caret::Caret;
+use crate::diff_view::Pair;
+use crate::group::Tab;
+use crate::hex::{HexDoc, HexTab};
 use crate::ipc::client::Connection;
 use crate::ipc::{LogLine, Query, Reply, Request};
 use crate::lsp::ServerId;
@@ -120,6 +124,66 @@ async fn claude_ide_context_caps_a_huge_selection_and_its_ranges() {
     let editor = &data(&reply)["editor"];
     assert_eq!(editor["selection_count"], 500);
     assert_eq!(editor["ranges"].as_array().unwrap().len(), 8);
+}
+
+/// A diff tab's caret and selection are reported in the caret's side's text; a hex tab's as
+/// byte offsets.
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_ide_context_reports_a_diff_or_hex_tabs_selection() {
+    let (_d, mut app, socket, path) = with_file("fn main() {\n\tlet x = 1;\n}\n").await;
+    app.open_diff(path.clone(), Pair::SAVED);
+    assert!(
+        app.settle(|a| a.group().active_diff().is_some_and(|d| d.doc.is_some()))
+            .await,
+        "the diff loads"
+    );
+    let d = app.group_mut().active_diff_mut().unwrap();
+    // The left side (On Disk), from after the tab on line 2 to after `}` on line 3.
+    d.cursor = d.rows().iter().position(|r| r.left == Some(2)).unwrap();
+    d.caret = Caret {
+        right: false,
+        anchor: (1, 1),
+        head: (2, 1),
+        col: None,
+    };
+    let reply = query(&mut app, &socket, Query::Context).await;
+    let editor = &data(&reply)["editor"];
+    assert_eq!(editor["kind"], "diff");
+    assert_eq!(editor["relative"], "a.rs");
+    assert_eq!(editor["diff"]["left"], "On Disk");
+    assert_eq!(editor["side"], "left");
+    assert_eq!(editor["side_title"], "On Disk");
+    assert_eq!(editor["read_only"], true);
+    assert_eq!(editor["cursor"], json!({"line": 3, "col": 2}));
+    assert_eq!(editor["ranges"][0]["start"], json!({"line": 2, "col": 5}));
+    assert_eq!(editor["selection"]["text"], "let x = 1;\n}");
+    assert_eq!(editor["selection"]["truncated"], false);
+    // The right side (the buffer) is editable; an empty caret selects nothing.
+    let d = app.group_mut().active_diff_mut().unwrap();
+    d.caret = Caret {
+        right: true,
+        anchor: (2, 0),
+        head: (2, 0),
+        col: None,
+    };
+    let reply = query(&mut app, &socket, Query::Context).await;
+    let editor = &data(&reply)["editor"];
+    assert_eq!(
+        (&editor["side"], &editor["read_only"]),
+        (&json!("right"), &json!(false))
+    );
+    assert_eq!(editor["selection"]["empty"], true);
+
+    let bin = path.with_file_name("b.bin");
+    std::fs::write(&bin, [0u8; 32]).unwrap();
+    let mut hex = HexTab::new(bin, HexDoc::new(vec![0u8; 32]));
+    (hex.anchor, hex.cursor) = (Some(4), 7);
+    app.groups.active_group_mut().open_tab(Tab::Hex(Box::new(hex)));
+    let reply = query(&mut app, &socket, Query::Context).await;
+    let editor = &data(&reply)["editor"];
+    assert_eq!(editor["kind"], "hex");
+    assert_eq!(editor["cursor"]["offset"], 7);
+    assert_eq!(editor["selection"], json!({"empty": false, "start": 4, "end": 8}));
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -159,7 +159,9 @@ pub fn tools() -> Vec<Value> {
     vec![
         tool(
             "get_active_editor",
-            "The file focused in jed: path, language, dirty flag, 1-based cursor, selection ranges and the selected text.",
+            "The file focused in jed: path, language, dirty flag, 1-based cursor, selection ranges and the selected text. \
+             `kind` says what shows it: a text editor, a diff (`diff` names its two sides, `side` the one the cursor is in; \
+             lines and columns are that side's text) or a hex view (`cursor.offset`, the selection's byte `start`..`end`).",
             json!({}),
             &[],
         ),
@@ -720,9 +722,29 @@ fn prompt(jed: &mut dyn Jed) -> Result<String, String> {
             .or(editor["name"].as_str())
             .unwrap_or("?");
         let cursor = &editor["cursor"];
-        out.push_str(&format!("Active file: {path}:{}:{}", cursor["line"], cursor["col"]));
         let selection = &editor["selection"];
-        if selection["empty"] == false {
+        if editor["kind"] == "hex" {
+            out.push_str(&format!("Active file: {path} (hex view, offset {})", cursor["offset"]));
+            if selection["empty"] == false {
+                out.push_str(&format!(
+                    " (bytes {}\u{2013}{} selected)",
+                    selection["start"], selection["end"]
+                ));
+            }
+        } else {
+            out.push_str(&format!("Active file: {path}:{}:{}", cursor["line"], cursor["col"]));
+        }
+        if editor["kind"] == "diff" {
+            let diff = &editor["diff"];
+            let s = |v: &Value| v.as_str().unwrap_or("?").to_string();
+            out.push_str(&format!(
+                " (diff {} \u{2194} {}, in {})",
+                s(&diff["left"]),
+                s(&diff["right"]),
+                s(&editor["side_title"])
+            ));
+        }
+        if editor["kind"] != "hex" && selection["empty"] == false {
             let range = &editor["ranges"][0];
             let (a, b) = (&range["start"]["line"], &range["end"]["line"]);
             out.push_str(&format!(" (selection {a}\u{2013}{b})"));
@@ -1233,6 +1255,35 @@ pub(crate) mod tests {
         assert!(text.contains("Selected text:\nlet x;"));
         assert!(text.contains("Terminal 3 (sh) last command: cargo test (exit 101)"));
         assert!(!text.contains("Terminal 4"));
+    }
+
+    #[test]
+    fn prompt_hook_names_a_diffs_side_and_a_hex_views_bytes() {
+        let context = |editor: Value| Fake {
+            answers: vec![(Query::Context, Ok(json!({ "editor": editor })))],
+            ..Fake::default()
+        };
+        let mut jed = context(json!({
+            "kind": "diff", "relative": "a.rs", "cursor": {"line": 3, "col": 1},
+            "diff": {"left": "Index", "right": "Working Tree"}, "side_title": "Working Tree",
+            "selection": {"empty": false, "text": "b", "truncated": false},
+            "ranges": [{"start": {"line": 2, "col": 1}, "end": {"line": 3, "col": 1}}],
+        }));
+        let text = hook_text(HookKind::Prompt, &mut jed);
+        assert!(
+            text.contains("Active file: a.rs:3:1 (diff Index \u{2194} Working Tree, in Working Tree) (selection 2\u{2013}3)\nSelected text:\nb\n"),
+            "{text}"
+        );
+        let mut jed = context(json!({
+            "kind": "hex", "relative": "a.bin", "cursor": {"offset": 7},
+            "selection": {"empty": false, "start": 4, "end": 8},
+        }));
+        let text = hook_text(HookKind::Prompt, &mut jed);
+        assert!(
+            text.contains("Active file: a.bin (hex view, offset 7) (bytes 4\u{2013}8 selected)\n"),
+            "{text}"
+        );
+        assert!(!text.contains("Selected text"), "{text}");
     }
 
     #[test]

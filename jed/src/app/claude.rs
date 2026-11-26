@@ -16,7 +16,9 @@ use super::App;
 use super::tab_tip::path_text;
 use crate::buffer::{Buffer, pos};
 use crate::diagnostics::Severity;
+use crate::diff_view::DiffTab;
 use crate::group::{Tab, TextTab};
+use crate::hex::HexTab;
 use crate::ipc::{Query, Reply};
 use crate::selection::Selection;
 use crate::tasks::{Run, RunId, Status};
@@ -126,16 +128,17 @@ impl App {
         }
     }
 
-    /// The active group's text tab, else the first group's that has one (a shell moved into the
-    /// editor area can be the active tab while `claude` runs in it).
-    fn claude_editor(&self) -> Option<(&TextTab, &Buffer)> {
-        let tab = self.groups.active_group().active_tab().or_else(|| {
-            self.groups
-                .ids()
-                .into_iter()
-                .find_map(|id| self.groups.get(id)?.active_tab())
-        })?;
-        Some((tab, self.buffers.get(tab.buffer)?))
+    /// The active group's tab when it's a text, diff or hex tab, else the first group's active
+    /// tab that is one (a shell moved into the editor area can be the active tab while `claude`
+    /// runs in it).
+    fn claude_editor(&self) -> Option<&Tab> {
+        fn shown(g: &crate::group::Group) -> Option<&Tab> {
+            g.tabs
+                .get(g.active)
+                .filter(|t| matches!(t, Tab::Text(_) | Tab::Diff(_) | Tab::Hex(_)))
+        }
+        shown(self.groups.active_group())
+            .or_else(|| self.groups.ids().into_iter().find_map(|id| shown(self.groups.get(id)?)))
     }
 
     /// `{line, col}` of `at` in `buf`.
@@ -151,9 +154,19 @@ impl App {
     }
 
     fn claude_context(&self) -> Value {
-        let Some((tab, buf)) = self.claude_editor() else {
-            return json!({"editor": null});
+        let editor = match self.claude_editor() {
+            Some(Tab::Text(tab)) => self
+                .buffers
+                .get(tab.buffer)
+                .map(|buf| self.claude_text_context(tab, buf)),
+            Some(Tab::Diff(d)) => Some(self.claude_diff_context(d)),
+            Some(Tab::Hex(h)) => Some(self.claude_hex_context(h)),
+            _ => None,
         };
+        json!({ "editor": editor })
+    }
+
+    fn claude_text_context(&self, tab: &TextTab, buf: &Buffer) -> Value {
         let sels = &tab.view.selections;
         let primary = sels.primary();
         let (lo, hi) = (primary.anchor.min(primary.head), primary.anchor.max(primary.head));
@@ -167,7 +180,8 @@ impl App {
             .take(MAX_RANGES)
             .map(|s| self.claude_range(buf, s))
             .collect();
-        json!({"editor": {
+        json!({
+            "kind": "text",
             "path": buf.has_file().then(|| buf.path.display().to_string()),
             "relative": buf.has_file().then(|| path_text(&self.workspace.root, &buf.path)),
             "name": buf.name(),
@@ -182,7 +196,66 @@ impl App {
             },
             "selection_count": sels.len(),
             "ranges": ranges,
-        }})
+        })
+    }
+
+    /// A diff tab's caret and selection, in the caret's side's own text (its lines and columns
+    /// are that text's, as `diff_caret` keeps them; a renamed file's left side is its old path).
+    fn claude_diff_context(&self, d: &DiffTab) -> Value {
+        let c = d.caret;
+        let tab_width = d.tab_width.max(1);
+        let place = |(line, byte): crate::diff_caret::At| {
+            let col = pos::col_before_in(d.side_text(c.right, line), byte, tab_width).0;
+            json!({"line": line + 1, "col": col + 1})
+        };
+        let (lo, hi) = c.ordered();
+        let (text, truncated) = d.caret_text(MAX_SELECTION).unwrap_or_default();
+        let side = if c.right { d.pair.right } else { d.pair.left };
+        let path = match (&d.left_path, c.right) {
+            (Some(left), false) => left,
+            _ => &d.path,
+        };
+        let open = self.buffers.find_path(path).and_then(|id| self.buffers.get(id));
+        json!({
+            "kind": "diff",
+            "path": path.display().to_string(),
+            "relative": path_text(&self.workspace.root, path),
+            "name": path.file_name().map(|n| n.to_string_lossy().into_owned()),
+            "language": open.map(|b| b.syntax.language().name()),
+            "diff": {"left": d.pair.left.title(), "right": d.pair.right.title()},
+            "side": if c.right { "right" } else { "left" },
+            "side_title": side.title(),
+            "loaded": d.doc.is_some(),
+            "dirty": open.is_some_and(Buffer::is_dirty),
+            "read_only": !d.editable_sides()[c.right as usize],
+            "cursor": place(c.head),
+            "selection": {
+                "empty": c.is_empty(),
+                "text": text,
+                "truncated": truncated,
+            },
+            "selection_count": 1,
+            "ranges": [{"start": place(lo), "end": place(hi), "head": place(c.head)}],
+        })
+    }
+
+    /// A hex tab's cursor and selection as byte offsets (the selection's `end` exclusive).
+    fn claude_hex_context(&self, h: &HexTab) -> Value {
+        let selection = h.selection();
+        json!({
+            "kind": "hex",
+            "path": h.path.display().to_string(),
+            "relative": path_text(&self.workspace.root, &h.path),
+            "name": h.path.file_name().map(|n| n.to_string_lossy().into_owned()),
+            "read_only": true,
+            "size": h.len(),
+            "cursor": {"offset": h.cursor},
+            "selection": {
+                "empty": selection.is_none(),
+                "start": selection.as_ref().map(|r| r.start),
+                "end": selection.as_ref().map(|r| r.end),
+            },
+        })
     }
 
     fn claude_tab(&self, tab: &Tab, active: bool) -> Value {

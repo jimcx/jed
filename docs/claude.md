@@ -54,7 +54,7 @@ and not fed back to it):
 
 | Tool | What it does |
 |---|---|
-| `get_active_editor` | path, language, unsaved state, cursor, selections and their text (capped) |
+| `get_active_editor` | path, language, unsaved state, cursor, selections and their text (capped); in a diff view, the side the cursor is in and its selection; in a hex view, the cursor's offset and the selected bytes' range |
 | `get_open_editors` | every open file |
 | `get_diagnostics` | errors and warnings, for one file or all |
 | `get_environment` | workspace, branch, servers, tasks, shells |
