@@ -3,6 +3,7 @@
 //! Every jed instance appends to the same daily file: each line carries the writer's pid after
 //! its timestamp, and each event reaches the file in one `write_all` on a file opened with
 //! `O_APPEND` (tracing-appender's), so concurrent instances' lines never interleave mid-line.
+//! The fmt layer already writes an event in one `write_all`; `WholeEvents` pins that.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -80,7 +81,9 @@ impl FormatTime for WithPid {
 }
 
 /// Hands each event to the inner writer in a single `write_all` (on an `O_APPEND` file one
-/// `write`, which the kernel appends whole), however the formatter writes it.
+/// `write`, which the kernel appends whole). A guard only: tracing-subscriber 0.3's fmt layer
+/// already formats an event into one buffer and writes it with one `write_all`; this keeps the
+/// guarantee should an upstream change write an event in pieces.
 struct WholeEvents<M>(M);
 
 impl<'a, M: MakeWriter<'a>> MakeWriter<'a> for WholeEvents<M> {
